@@ -19,6 +19,7 @@ pub struct GpuInterpolator {
     device: wgpu::Device,
     queue: wgpu::Queue,
     circle_twiddle_pipeline: wgpu::ComputePipeline,
+    _interpolate_big_line_twiddle: wgpu::ComputePipeline,
     interpolate_pipeline: wgpu::ComputePipeline,
     bind_group_layout: wgpu::BindGroupLayout,
 }
@@ -53,8 +54,8 @@ pub struct InterpolateOutput {
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct DebugData {
-    index: [u32; 16],
-    values: [u32; 16],
+    index: [u32; 32],
+    values: [u32; 32],
     counter: u32,
 }
 
@@ -321,6 +322,16 @@ impl GpuInterpolator {
                 cache: None,
             });
 
+        let interpolate_big_line_twiddle =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: None,
+                layout: Some(&pipeline_layout),
+                module: &shader,
+                entry_point: Some("interpolate_big_line_twiddle"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+
         let interpolate_pipeline =
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: None,
@@ -335,6 +346,7 @@ impl GpuInterpolator {
             device,
             queue,
             circle_twiddle_pipeline,
+            _interpolate_big_line_twiddle: interpolate_big_line_twiddle,
             interpolate_pipeline,
             bind_group_layout,
         }
@@ -423,10 +435,15 @@ impl GpuInterpolator {
             let first_workgroup_size = 256;
             compute_pass.dispatch_workgroups(1, first_workgroup_size, 1);
 
+            compute_pass.set_pipeline(&self._interpolate_big_line_twiddle);
+            compute_pass.set_bind_group(0, &bind_group, &[]);
+            let second_workgroup_size = 256;
+            compute_pass.dispatch_workgroups(1, second_workgroup_size, 1);
+
             compute_pass.set_pipeline(&self.interpolate_pipeline);
             compute_pass.set_bind_group(0, &bind_group, &[]);
-            let second_workgroup_size = 1;
-            compute_pass.dispatch_workgroups(1, second_workgroup_size, 1);
+            let third_workgroup_size = 1;
+            compute_pass.dispatch_workgroups(1, third_workgroup_size, 1);
         }
         encoder.copy_buffer_to_buffer(
             &output_buffer,
@@ -451,7 +468,7 @@ impl GpuInterpolator {
                 tx.send(result).unwrap();
             });
             self.device.poll(wgpu::Maintain::Wait);
-            let _debug_result = async {
+            let _debug_fut = async {
                 rx.recv_async().await.unwrap().unwrap();
                 let data = slice.get_mapped_range();
                 let result = *DebugData::from_bytes(&data);
@@ -459,7 +476,10 @@ impl GpuInterpolator {
                 result
             };
 
-            println!("debug_result: {:?}", _debug_result.await);
+            // println!("debug_result: {:?}", _debug_result.await);
+            let _debug_result = _debug_fut.await;
+            println!("index: {:?}", _debug_result.index);
+            println!("values: {:?}", _debug_result.values);
 
             // #[cfg(target_family = "wasm")]
             // console_log!("debug_result: {:?}", _debug_result.await);
@@ -536,7 +556,7 @@ pub fn circle_eval_to_gpu_input(
     input.line_twiddles_layer_count = line_twiddles.len() as u32;
     for (i, twiddle) in line_twiddles.iter().enumerate() {
         input.line_twiddles_sizes[i] = twiddle.len() as u32;
-        println!("line twiddle size: {}", input.line_twiddles_sizes[i]);
+        // println!("line twiddle size: {}", input.line_twiddles_sizes[i]);
         // if i == 0, offset is 0, otherwise offset is sum of previous layer offset and layer
         // size
         input.line_twiddles_offsets[i] = if i == 0 {
@@ -596,17 +616,17 @@ mod tests {
 
     #[test]
     fn test_interpolate_n() {
-        let _max_log_size = 12;
-        for log_size in 12..=_max_log_size {
+        let _max_log_size = 22;
+        for log_size in 15..=_max_log_size {
             let poly = CpuCirclePoly::new((1..=1 << log_size).map(BaseField::from).collect());
             let domain = CanonicCoset::new(log_size).circle_domain();
             let evals = poly.evaluate(domain);
             let input = circle_eval_to_gpu_input(evals, log_size);
             println!("log size: {}", log_size);
-            let gpu_output = pollster::block_on(interpolate_gpu(input));
+            let _gpu_output = pollster::block_on(interpolate_gpu(input));
 
             assert_eq!(
-                gpu_output.results.to_vec()[..poly.coeffs.len()],
+                _gpu_output.results.to_vec()[..poly.coeffs.len()],
                 poly.coeffs
             );
         }

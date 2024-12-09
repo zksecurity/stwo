@@ -4,7 +4,7 @@ const HALF_BITS: u32 = 16u;
 const P: u32 = 2147483647u;
 const MAX_ARRAY_LOG_SIZE: u32 = 22;
 const MAX_ARRAY_SIZE: u32 = 1u << MAX_ARRAY_LOG_SIZE;
-const MAX_DEBUG_SIZE: u32 = 16;
+const MAX_DEBUG_SIZE: u32 = 32;
 const MAX_SHARED_SIZE: u32 = 1u << 14;
 
 fn partial_reduce(val: u32) -> u32 {
@@ -116,6 +116,96 @@ fn interpolate_first_circle_twiddle(@builtin(global_invocation_id) global_id: ve
     }
 }
 
+@compute @workgroup_size(128)
+fn interpolate_big_line_twiddle(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let workgroup_dispatch = 256u;
+    let workgroup_size = 128u;
+    let thread_size = workgroup_dispatch * workgroup_size;
+
+    let workgroup_id = global_id.y;
+    let local_id = global_id.x;
+    var workgroup_offset = 0u;
+    var copy_start_idx = 0u;
+    var copy_end_idx = 0u;
+
+    {
+        let size = 1u << input.log_size;
+        let workgroup_chunk_size = (size + workgroup_dispatch - 1u) / workgroup_dispatch;
+        let thread_chunk_size = (workgroup_chunk_size + workgroup_size - 1u) / workgroup_size;
+
+        workgroup_offset = workgroup_id * workgroup_chunk_size;
+        copy_start_idx = workgroup_offset + local_id * thread_chunk_size;
+        copy_end_idx = min(copy_start_idx + thread_chunk_size, size);
+
+        for (var i = copy_start_idx; i < copy_end_idx; i = i + 1u) {
+            shared_values[i - workgroup_offset] = output.values[i];
+        }
+    }
+
+    let first_layer_size = input.line_twiddles_sizes[0];
+
+    let workgroup_chunk_size = (first_layer_size + workgroup_dispatch - 1u) / workgroup_dispatch;
+    let thread_chunk_size = (workgroup_chunk_size + workgroup_size - 1u) / workgroup_size;
+
+    var start_idx = workgroup_id * workgroup_chunk_size + local_id * thread_chunk_size;
+    var end_idx = min(start_idx + thread_chunk_size, first_layer_size);
+
+    workgroupBarrier();
+
+    // done
+
+    // Process line_twiddles
+    var layer = 0u;
+    loop {
+        let layer_size = input.line_twiddles_sizes[layer];
+        let layer_offset = input.line_twiddles_offsets[layer];
+        let step = 1u << (layer + 1u);
+
+        // this workgroup will cover from workgroup_id * workgroup_chunk_size to workgroup_id * workgroup_chunk_size + workgroup_chunk_size
+        // if (workgroup_id == 0u && local_id == 0u) {
+        //     store_debug_value(workgroup_id, start_idx);
+        //     store_debug_value(workgroup_id, end_idx);
+        // }
+
+        for (var h = start_idx; h < end_idx; h = h + 1u) {
+            let t = input.line_twiddles_flat[layer_offset + h];
+            let idx0_offset = (h << (layer + 2u)) - workgroup_offset;
+            // if (workgroup_id == 0u && local_id == 0u) {
+            //     store_debug_value(idx0_offset, idx0_offset);
+            // }
+
+            for (var l = 0u; l < step; l = l + 1u) {
+                let idx0 = idx0_offset + l;
+                let idx1 = idx0 + step;
+
+                // if (workgroup_id == 0u && local_id == 0u) {
+                //     store_debug_value(idx0, idx1);
+                // }
+
+                var val0 = shared_values[idx0];
+                var val1 = shared_values[idx1];
+
+                ibutterfly(&val0, &val1, t);
+
+                shared_values[idx0] = val0;
+                shared_values[idx1] = val1;
+            }
+        }
+
+        workgroupBarrier();
+
+        layer = layer + 1u;
+        start_idx = start_idx >> 1u;
+        end_idx = end_idx >> 1u;
+        if (layer >= 6) { break; }
+    }
+
+    // copy values from shared memory to storage
+    for (var i = copy_start_idx; i < copy_end_idx; i = i + 1u) {
+        output.values[i] = shared_values[i - workgroup_offset];
+    }
+}
+
 @compute @workgroup_size(256)
 fn interpolate_compute(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let thread_size = 256u;
@@ -124,7 +214,7 @@ fn interpolate_compute(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let thread_id = global_id.x;
 
     // Process line_twiddles
-    var layer = 0u;
+    var layer = 6u;
     loop {
         let layer_size = input.line_twiddles_sizes[layer];
         let layer_offset = input.line_twiddles_offsets[layer];
