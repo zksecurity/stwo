@@ -84,8 +84,12 @@ impl<B: PolyOps> CircleEvaluation<B, BaseField, BitReversedOrder> {
 
     /// Computes a minimal [CirclePoly] that evaluates to the same values as this evaluation.
     pub fn interpolate(self) -> CirclePoly<B> {
+        // let start = std::time::Instant::now();
         let coset = self.domain.half_coset;
-        B::interpolate(self, &B::precompute_twiddles(coset))
+        let poly = B::interpolate(self, &B::precompute_twiddles(coset));
+        // let end = std::time::Instant::now();
+        // println!("interpolate time: {:?}", end - start);
+        poly
     }
 
     /// Computes a minimal [CirclePoly] that evaluates to the same values as this evaluation, using

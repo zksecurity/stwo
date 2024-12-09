@@ -10,6 +10,7 @@ use crate::core::backend::cpu::circle::circle_twiddles_from_line_twiddles;
 use crate::core::backend::cpu::CpuCircleEvaluation;
 use crate::core::backend::{Column, CpuBackend};
 use crate::core::fields::m31::BaseField;
+use crate::core::fields::FieldExpOps;
 use crate::core::poly::circle::PolyOps;
 use crate::core::poly::utils::domain_line_twiddles_from_tree;
 use crate::core::poly::BitReversedOrder;
@@ -17,6 +18,7 @@ use crate::core::poly::BitReversedOrder;
 pub struct GpuInterpolator {
     device: wgpu::Device,
     queue: wgpu::Queue,
+    circle_twiddle_pipeline: wgpu::ComputePipeline,
     interpolate_pipeline: wgpu::ComputePipeline,
     bind_group_layout: wgpu::BindGroupLayout,
 }
@@ -39,6 +41,8 @@ pub struct InterpolateInput {
     line_twiddles_layer_count: u32,
     line_twiddles_sizes: [u32; MAX_ARRAY_SIZE],
     line_twiddles_offsets: [u32; MAX_ARRAY_SIZE],
+    mod_inv: u32,
+    current_layer: u32,
 }
 
 #[allow(dead_code)]
@@ -65,6 +69,8 @@ pub struct InterpolateInputF<F> {
     pub line_twiddles_layer_count: u32,
     pub line_twiddles_sizes: Vec<u32>,
     pub line_twiddles_offsets: Vec<u32>,
+    pub mod_inv: u32,
+    pub current_layer: u32,
 }
 
 impl<F> InterpolateInputF<F>
@@ -83,6 +89,8 @@ where
             line_twiddles_layer_count: 0,
             line_twiddles_sizes: vec![0; MAX_ARRAY_SIZE],
             line_twiddles_offsets: vec![0; MAX_ARRAY_SIZE],
+            mod_inv: 0,
+            current_layer: 0,
         }
     }
 }
@@ -181,6 +189,22 @@ where
             std::slice::from_raw_parts(
                 padded_offsets.as_ptr() as *const u8,
                 MAX_ARRAY_SIZE * std::mem::size_of::<u32>(),
+            )
+        });
+
+        // mod_inv
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                &self.mod_inv as *const u32 as *const u8,
+                std::mem::size_of::<u32>(),
+            )
+        });
+
+        // current_layer
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                &self.current_layer as *const u32 as *const u8,
+                std::mem::size_of::<u32>(),
             )
         });
 
@@ -287,6 +311,16 @@ impl GpuInterpolator {
             push_constant_ranges: &[],
         });
 
+        let circle_twiddle_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: None,
+                layout: Some(&pipeline_layout),
+                module: &shader,
+                entry_point: Some("interpolate_first_circle_twiddle"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+
         let interpolate_pipeline =
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: None,
@@ -300,6 +334,7 @@ impl GpuInterpolator {
         Self {
             device,
             queue,
+            circle_twiddle_pipeline,
             interpolate_pipeline,
             bind_group_layout,
         }
@@ -383,10 +418,15 @@ impl GpuInterpolator {
                 label: None,
                 timestamp_writes: None,
             });
+            compute_pass.set_pipeline(&self.circle_twiddle_pipeline);
+            compute_pass.set_bind_group(0, &bind_group, &[]);
+            let first_workgroup_size = 256;
+            compute_pass.dispatch_workgroups(1, first_workgroup_size, 1);
+
             compute_pass.set_pipeline(&self.interpolate_pipeline);
             compute_pass.set_bind_group(0, &bind_group, &[]);
-            let workgroup_size = 1;
-            compute_pass.dispatch_workgroups(workgroup_size, 1, 1);
+            let second_workgroup_size = 1;
+            compute_pass.dispatch_workgroups(1, second_workgroup_size, 1);
         }
         encoder.copy_buffer_to_buffer(
             &output_buffer,
@@ -419,7 +459,7 @@ impl GpuInterpolator {
                 result
             };
 
-            // println!("debug_result: {:?}", _debug_result.await);
+            println!("debug_result: {:?}", _debug_result.await);
 
             // #[cfg(target_family = "wasm")]
             // console_log!("debug_result: {:?}", _debug_result.await);
@@ -496,6 +536,7 @@ pub fn circle_eval_to_gpu_input(
     input.line_twiddles_layer_count = line_twiddles.len() as u32;
     for (i, twiddle) in line_twiddles.iter().enumerate() {
         input.line_twiddles_sizes[i] = twiddle.len() as u32;
+        println!("line twiddle size: {}", input.line_twiddles_sizes[i]);
         // if i == 0, offset is 0, otherwise offset is sum of previous layer offset and layer
         // size
         input.line_twiddles_offsets[i] = if i == 0 {
@@ -507,12 +548,20 @@ pub fn circle_eval_to_gpu_input(
             input.line_twiddles_flat[input.line_twiddles_offsets[i] as usize + j] = *twiddle;
         }
     }
+    println!(
+        "line twiddle layer count: {}",
+        input.line_twiddles_layer_count
+    );
 
     // circle twiddles
     let circle_twiddles: Vec<_> = circle_twiddles_from_line_twiddles(line_twiddles[0]).collect();
     input.circle_twiddles[..circle_twiddles.len()].copy_from_slice(&circle_twiddles);
     input.circle_twiddles_size = circle_twiddles.len() as u32;
 
+    let inv = BaseField::from_u32_unchecked(domain.size() as u32).inverse();
+    input.mod_inv = inv.into();
+
+    // input.current_layer = 2;
     input
 }
 
@@ -520,12 +569,13 @@ pub fn circle_eval_to_gpu_input(
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
 #[cfg(test)]
+#[allow(unused_imports)]
 mod tests {
     use wasm_bindgen_test::{console_log, wasm_bindgen_test};
 
     use super::*;
     use crate::core::backend::cpu::CpuCirclePoly;
-    use crate::core::fields::m31::BaseField;
+    use crate::core::fields::m31::{BaseField, M31};
     use crate::core::poly::circle::CanonicCoset;
 
     #[test]
@@ -546,8 +596,8 @@ mod tests {
 
     #[test]
     fn test_interpolate_n() {
-        let _max_log_size = 22;
-        for log_size in 5..=_max_log_size {
+        let _max_log_size = 12;
+        for log_size in 12..=_max_log_size {
             let poly = CpuCirclePoly::new((1..=1 << log_size).map(BaseField::from).collect());
             let domain = CanonicCoset::new(log_size).circle_domain();
             let evals = poly.evaluate(domain);

@@ -147,6 +147,7 @@ impl PolyOps for SimdBackend {
         eval: CircleEvaluation<Self, BaseField, BitReversedOrder>,
         twiddles: &TwiddleTree<Self>,
     ) -> CirclePoly<Self> {
+        println!("interpolate");
         let log_size = eval.values.length.ilog2();
         if log_size < MIN_FFT_LOG_SIZE {
             let cpu_poly = eval.to_cpu().interpolate();
@@ -422,15 +423,22 @@ mod tests {
 
     #[test]
     fn test_interpolate_and_eval() {
-        for log_size in MIN_FFT_LOG_SIZE..CACHED_FFT_LOG_SIZE + 4 {
+        for log_size in MIN_FFT_LOG_SIZE..18 + 4 {
             let domain = CanonicCoset::new(log_size).circle_domain();
             let evaluation = CircleEvaluation::<SimdBackend, BaseField, BitReversedOrder>::new(
                 domain,
                 (0..1 << log_size).map(BaseField::from).collect(),
             );
 
+            // let start = std::time::Instant::now();
             let poly = evaluation.clone().interpolate();
+            // let end = std::time::Instant::now();
+            // println!("interpolate time: {:?}", end - start);
+
+            // let start = std::time::Instant::now();
             let evaluation2 = poly.evaluate(domain);
+            // let end = std::time::Instant::now();
+            // println!("evaluate time: {:?}", end - start);
 
             assert_eq!(evaluation.values.to_cpu(), evaluation2.values.to_cpu());
         }
