@@ -488,7 +488,8 @@ mod tests {
     #[test]
     fn test_gpu_poseidon_constraints() {
         // use crate::core::backend::gpu::gen_trace::gen_trace as gen_trace_gpu;
-        use crate::core::backend::gpu::gen_trace_parallel::gen_trace_parallel as gen_trace_gpu;
+        // use crate::core::backend::gpu::gen_trace_parallel::gen_trace_parallel as gen_trace_gpu;
+        use crate::core::backend::gpu::gen_trace_parallel_no_packed::gen_trace_parallel_no_packed as gen_trace_gpu;
 
         let log_n_instances = 12;
         let log_n_instances_per_row = 3;
