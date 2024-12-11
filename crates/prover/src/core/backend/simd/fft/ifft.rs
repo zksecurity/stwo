@@ -557,8 +557,8 @@ mod tests {
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
     use wasm_bindgen_test::wasm_bindgen_test;
-    use web_sys;
 
+    // use web_sys;
     use super::{
         get_itwiddle_dbls, ifft, ifft3, ifft_lower_with_vecwise, simd_ibutterfly,
         vecwise_ibutterflies,
@@ -702,7 +702,7 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn test_ifft_full() {
-        for log_size in CACHED_FFT_LOG_SIZE + 1..CACHED_FFT_LOG_SIZE + 7 {
+        for log_size in CACHED_FFT_LOG_SIZE + 1..CACHED_FFT_LOG_SIZE + 5 {
             let domain = CanonicCoset::new(log_size).circle_domain();
             let mut rng = SmallRng::seed_from_u64(0);
             let values = (0..domain.size()).map(|_| rng.gen()).collect_vec();

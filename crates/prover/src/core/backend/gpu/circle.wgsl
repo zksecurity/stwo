@@ -2,10 +2,10 @@ const MODULUS_BITS: u32 = 31u;
 const HALF_BITS: u32 = 16u;
 // Mersenne prime P = 2^31 - 1
 const P: u32 = 2147483647u;
-const MAX_ARRAY_LOG_SIZE: u32 = 22;
+const MAX_ARRAY_LOG_SIZE: u32 = 20;
 const MAX_ARRAY_SIZE: u32 = 1u << MAX_ARRAY_LOG_SIZE;
 const MAX_DEBUG_SIZE: u32 = 32;
-const MAX_SHARED_SIZE: u32 = 1u << 14;
+const MAX_SHARED_SIZE: u32 = 1u << 12;
 
 fn partial_reduce(val: u32) -> u32 {
     let reduced = val - P;
@@ -126,10 +126,10 @@ fn interpolate_first_circle_twiddle(@builtin(global_invocation_id) global_id: ve
     }
 }
 
-@compute @workgroup_size(16)
+@compute @workgroup_size(32)
 fn interpolate_big_line_twiddle(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let workgroup_dispatch = 256u;
-    let workgroup_size = 16u;
+    let workgroup_size = 32u;
     let thread_size = workgroup_dispatch * workgroup_size;
 
     let workgroup_id = global_id.y;
@@ -202,10 +202,10 @@ fn interpolate_big_line_twiddle(@builtin(global_invocation_id) global_id: vec3<u
     }
 }
 
-@compute @workgroup_size(64)
+@compute @workgroup_size(256)
 fn interpolate_compute(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // dispatch = 1
-    let thread_size = 64u;
+    let thread_size = 256u;
 
     let size = 1u << input.log_size;
     let thread_id = global_id.x;
