@@ -32,7 +32,7 @@ use crate::parallel_iter;
 ///
 /// Behavior is undefined if `values` does not have the same alignment as [`PackedBaseField`].
 pub unsafe fn ifft(values: *mut u32, twiddle_dbl: &[&[u32]], log_n_elements: usize) {
-    let start = std::time::Instant::now();
+    // let start = std::time::Instant::now();
     assert!(log_n_elements >= MIN_FFT_LOG_SIZE as usize);
 
     let log_n_vecs = log_n_elements - LOG_N_LANES as usize;
@@ -56,8 +56,9 @@ pub unsafe fn ifft(values: *mut u32, twiddle_dbl: &[&[u32]], log_n_elements: usi
         log_n_elements,
         fft_layers_post_transpose,
     );
-    let end = std::time::Instant::now();
-    println!("ifft time: {:?}", end - start);
+    // let end = std::time::Instant::now();
+    // println!("values size: {}", log_n_elements);
+    // println!("ifft time: {:?}", end - start);
 }
 
 /// Computes partial ifft on `2^log_size` M31 elements.

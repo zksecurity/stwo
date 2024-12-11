@@ -423,7 +423,7 @@ mod tests {
 
     #[test]
     fn test_interpolate_and_eval() {
-        for log_size in MIN_FFT_LOG_SIZE..18 + 4 {
+        for log_size in MIN_FFT_LOG_SIZE..18 + 5 {
             let domain = CanonicCoset::new(log_size).circle_domain();
             let evaluation = CircleEvaluation::<SimdBackend, BaseField, BitReversedOrder>::new(
                 domain,

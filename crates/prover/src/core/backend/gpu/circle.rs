@@ -15,12 +15,14 @@ use crate::core::poly::circle::PolyOps;
 use crate::core::poly::utils::domain_line_twiddles_from_tree;
 use crate::core::poly::BitReversedOrder;
 
+#[allow(dead_code)]
 pub struct GpuInterpolator {
     device: wgpu::Device,
     queue: wgpu::Queue,
     circle_twiddle_pipeline: wgpu::ComputePipeline,
-    _interpolate_big_line_twiddle: wgpu::ComputePipeline,
+    interpolate_big_line_twiddle: wgpu::ComputePipeline,
     interpolate_pipeline: wgpu::ComputePipeline,
+    mod_mul_pipeline: wgpu::ComputePipeline,
     bind_group_layout: wgpu::BindGroupLayout,
 }
 
@@ -342,12 +344,22 @@ impl GpuInterpolator {
                 cache: None,
             });
 
+        let mod_mul_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None,
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: Some("mod_mul_compute"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
         Self {
             device,
             queue,
             circle_twiddle_pipeline,
-            _interpolate_big_line_twiddle: interpolate_big_line_twiddle,
+            interpolate_big_line_twiddle,
             interpolate_pipeline,
+            mod_mul_pipeline,
             bind_group_layout,
         }
     }
@@ -435,15 +447,20 @@ impl GpuInterpolator {
             let first_workgroup_size = 256;
             compute_pass.dispatch_workgroups(1, first_workgroup_size, 1);
 
-            compute_pass.set_pipeline(&self._interpolate_big_line_twiddle);
+            compute_pass.set_pipeline(&self.interpolate_big_line_twiddle);
             compute_pass.set_bind_group(0, &bind_group, &[]);
-            let second_workgroup_size = 256;
+            let second_workgroup_size: u32 = 256;
             compute_pass.dispatch_workgroups(1, second_workgroup_size, 1);
 
             compute_pass.set_pipeline(&self.interpolate_pipeline);
             compute_pass.set_bind_group(0, &bind_group, &[]);
             let third_workgroup_size = 1;
             compute_pass.dispatch_workgroups(1, third_workgroup_size, 1);
+
+            compute_pass.set_pipeline(&self.mod_mul_pipeline);
+            compute_pass.set_bind_group(0, &bind_group, &[]);
+            let fourth_workgroup_size = 256;
+            compute_pass.dispatch_workgroups(1, fourth_workgroup_size, 1);
         }
         encoder.copy_buffer_to_buffer(
             &output_buffer,
@@ -477,9 +494,9 @@ impl GpuInterpolator {
             };
 
             // println!("debug_result: {:?}", _debug_result.await);
-            let _debug_result = _debug_fut.await;
-            println!("index: {:?}", _debug_result.index);
-            println!("values: {:?}", _debug_result.values);
+            // let _debug_result = _debug_fut.await;
+            // println!("index: {:?}", _debug_result.index);
+            // println!("values: {:?}", _debug_result.values);
 
             // #[cfg(target_family = "wasm")]
             // console_log!("debug_result: {:?}", _debug_result.await);
@@ -568,10 +585,12 @@ pub fn circle_eval_to_gpu_input(
             input.line_twiddles_flat[input.line_twiddles_offsets[i] as usize + j] = *twiddle;
         }
     }
-    println!(
-        "line twiddle layer count: {}",
-        input.line_twiddles_layer_count
-    );
+    // println!(
+    //     "line twiddle layer count: {}",
+    //     input.line_twiddles_layer_count
+    // );
+    // println!("eval values size: {}", input.values.len());
+    // println!("line twiddle size: {}", input.line_twiddles_sizes[0]);
 
     // circle twiddles
     let circle_twiddles: Vec<_> = circle_twiddles_from_line_twiddles(line_twiddles[0]).collect();
@@ -616,8 +635,8 @@ mod tests {
 
     #[test]
     fn test_interpolate_n() {
-        let _max_log_size = 22;
-        for log_size in 15..=_max_log_size {
+        let _max_log_size = 20;
+        for log_size in 12..=_max_log_size {
             let poly = CpuCirclePoly::new((1..=1 << log_size).map(BaseField::from).collect());
             let domain = CanonicCoset::new(log_size).circle_domain();
             let evals = poly.evaluate(domain);
@@ -634,11 +653,11 @@ mod tests {
 
     #[wasm_bindgen_test]
     async fn test_interpolate_n_wasm() {
-        let _max_log_size = 12;
+        let _max_log_size = 18;
         // alert(&format!("max log size: {}", _max_log_size));
         console_log!("max log size: {}", _max_log_size);
 
-        for log_size in 12..=_max_log_size {
+        for log_size in 18..=_max_log_size {
             let poly = CpuCirclePoly::new((1..=1 << log_size).map(BaseField::from).collect());
             let domain = CanonicCoset::new(log_size).circle_domain();
             let evals = poly.evaluate(domain);
