@@ -282,6 +282,9 @@ pub fn gen_trace(
                 .for_each(|(res, state_i)| res.data[vec_index] = state_i);
         }
     }
+    // for (i, c) in trace.iter().enumerate() {
+    //     println!("CPU Trace[{}].data[0]: {:?}", i, c.data[0]);
+    // }
     let domain = CanonicCoset::new(log_size).circle_domain();
     let trace = trace
         .into_iter()
@@ -491,7 +494,8 @@ mod tests {
         // use crate::core::backend::gpu::gen_trace_parallel::gen_trace_parallel as gen_trace_gpu;
         // use crate::core::backend::gpu::gen_trace_parallel_no_packed::gen_trace_parallel_no_packed
         // as gen_trace_gpu;
-        use crate::core::backend::gpu::gen_trace_parallel_no_packed_parallel_columns::gen_trace_parallel_no_packed_parallel_columns as gen_trace_gpu;
+        // use crate::core::backend::gpu::gen_trace_parallel_no_packed_parallel_columns::gen_trace_parallel_no_packed_parallel_columns as gen_trace_gpu;
+        use crate::core::backend::gpu::gen_trace_interpolate_columns::gen_trace_interpolate_columns as gen_trace_gpu;
 
         let log_n_instances = 12;
         let log_n_instances_per_row = 3;
