@@ -430,10 +430,12 @@ mod tests {
                 (0..1 << log_size).map(BaseField::from).collect(),
             );
 
-            // let start = std::time::Instant::now();
+            println!("log_size: {}", log_size);
+
+            let start = std::time::Instant::now();
             let poly = evaluation.clone().interpolate();
-            // let end = std::time::Instant::now();
-            // println!("interpolate time: {:?}", end - start);
+            let end = std::time::Instant::now();
+            println!("interpolate time: {:?}", end - start);
 
             // let start = std::time::Instant::now();
             let evaluation2 = poly.evaluate(domain);

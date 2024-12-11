@@ -256,7 +256,8 @@ impl GpuInterpolator {
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: None,
-                    required_features: wgpu::Features::empty(),
+                    required_features: wgpu::Features::TIMESTAMP_QUERY
+                        | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS,
                     required_limits: wgpu::Limits::downlevel_defaults(),
                     memory_hints: wgpu::MemoryHints::MemoryUsage,
                 },
@@ -409,6 +410,22 @@ impl GpuInterpolator {
             mapped_at_creation: false,
         });
 
+        // Create query buffer
+        let query_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: (std::mem::size_of::<u64>() * 4) as u64,
+            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        // Create read buffer
+        let read_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Read Buffer"),
+            size: std::mem::size_of::<u64>() as u64 * 4,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         // Create bind group
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
@@ -429,6 +446,12 @@ impl GpuInterpolator {
             ],
         });
 
+        let query_set = self.device.create_query_set(&wgpu::QuerySetDescriptor {
+            label: Some("Timestamp QuerySet"),
+            ty: wgpu::QueryType::Timestamp,
+            count: 4,
+        });
+
         // part 1 from here
         #[cfg(not(target_family = "wasm"))]
         let part1_start = std::time::Instant::now();
@@ -437,6 +460,7 @@ impl GpuInterpolator {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        encoder.write_timestamp(&query_set, 0);
         {
             let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
@@ -462,6 +486,7 @@ impl GpuInterpolator {
             let fourth_workgroup_size = 256;
             compute_pass.dispatch_workgroups(1, fourth_workgroup_size, 1);
         }
+        encoder.write_timestamp(&query_set, 1);
         encoder.copy_buffer_to_buffer(
             &output_buffer,
             0,
@@ -475,6 +500,14 @@ impl GpuInterpolator {
             &debug_staging_buffer,
             0,
             std::mem::size_of::<DebugData>() as u64,
+        );
+        encoder.resolve_query_set(&query_set, 0..4, &query_buffer, 0);
+        encoder.copy_buffer_to_buffer(
+            &query_buffer,
+            0,
+            &read_buffer,
+            0,
+            std::mem::size_of::<u64>() as u64 * 4,
         );
         self.queue.submit(Some(encoder.finish()));
         // // Read back the debug data
@@ -523,6 +556,41 @@ impl GpuInterpolator {
         let part1_duration = part1_start.elapsed();
         #[cfg(not(target_family = "wasm"))]
         println!("interpolate elapsed time: {:?}", part1_duration);
+
+        {
+            // self.device.poll(wgpu::Maintain::Wait);
+
+            let buffer_slice = read_buffer.slice(..);
+            let (tx, rx) = flume::bounded(1);
+            buffer_slice.map_async(wgpu::MapMode::Read, move |res| {
+                tx.send(res).unwrap();
+            });
+            self.device.poll(wgpu::Maintain::Wait);
+            rx.recv_async().await.unwrap().unwrap();
+            let data = buffer_slice.get_mapped_range();
+            let start_bytes = &data[0..8];
+            let end_bytes = &data[8..16];
+            // let output_bytes = &data[16..24];
+            // let debug_bytes = &data[24..32];
+
+            let start_timestamp = u64::from_ne_bytes(start_bytes.try_into().unwrap());
+            let end_timestamp = u64::from_ne_bytes(end_bytes.try_into().unwrap());
+
+            let timestamp_period = self.queue.get_timestamp_period() as f64;
+            let gpu_time_ns = (end_timestamp - start_timestamp) as f64 * timestamp_period;
+            println!("GPU compute time: {} ns", gpu_time_ns);
+            // let gpu_time_us = gpu_time_ns / 1000.0;
+            // println!("GPU compute time: {} us", gpu_time_us);
+
+            // let output_time_ns = (_output_timestamp - end_timestamp) as f64 * timestamp_period;
+            // println!("Output buffer copying time: {} ns", output_time_ns);
+
+            // // debug time_ns
+            // let debug_time_ns = (debug_timestamp - output_timestamp) as f64 * timestamp_period;
+            // println!("Debug buffer copying time: {} ns", debug_time_ns);
+
+            drop(data);
+        }
 
         result.await
 
@@ -635,8 +703,8 @@ mod tests {
 
     #[test]
     fn test_interpolate_n() {
-        let _max_log_size = 20;
-        for log_size in 12..=_max_log_size {
+        let _max_log_size = 22;
+        for log_size in 15..=_max_log_size {
             let poly = CpuCirclePoly::new((1..=1 << log_size).map(BaseField::from).collect());
             let domain = CanonicCoset::new(log_size).circle_domain();
             let evals = poly.evaluate(domain);

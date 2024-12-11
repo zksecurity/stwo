@@ -5,7 +5,7 @@ const P: u32 = 2147483647u;
 const MAX_ARRAY_LOG_SIZE: u32 = 22;
 const MAX_ARRAY_SIZE: u32 = 1u << MAX_ARRAY_LOG_SIZE;
 const MAX_DEBUG_SIZE: u32 = 32;
-const MAX_SHARED_SIZE: u32 = 1u << 12;
+const MAX_SHARED_SIZE: u32 = 1u << 14;
 
 fn partial_reduce(val: u32) -> u32 {
     let reduced = val - P;
@@ -43,6 +43,15 @@ fn mod_mul(a: u32, b: u32) -> u32 {
     
     return result;
 }
+
+// const product_mask: u64 = 0x7FFFFFFF;
+
+// fn mod_mul(a: u32, b: u32) -> u32 {
+//     let product: u64 = u64(a) * u64(b);
+//     let low = (product & product_mask) + (product >> 31);
+//     let reduced = low - u64(P);
+//     return select(u32(low), u32(reduced), u32(reduced) < u32(low));
+// }
 
 fn ibutterfly(v0: ptr<function, u32>, v1: ptr<function, u32>, itwid: u32) {
     let tmp = *v0;
@@ -87,10 +96,10 @@ fn store_debug_value(index: u32, value: u32) {
     debug_buffer.values[debug_idx] = value;
 }
 
-@compute @workgroup_size(128)
+@compute @workgroup_size(64)
 fn interpolate_first_circle_twiddle(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let workgroup_dispatch = 256u;
-    let workgroup_size = 128u;
+    let workgroup_size = 64u;
     let thread_size = workgroup_dispatch * workgroup_size;
     let size = 1u << (input.log_size - 1u);
     
@@ -184,7 +193,7 @@ fn interpolate_big_line_twiddle(@builtin(global_invocation_id) global_id: vec3<u
         start_idx = start_idx >> 1u;
         end_idx = end_idx >> 1u;
 
-        if (layer >= 3) { break; }
+        if (layer >= 6) { break; }
     }
 
     // copy values from shared memory to storage
@@ -193,15 +202,16 @@ fn interpolate_big_line_twiddle(@builtin(global_invocation_id) global_id: vec3<u
     }
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(64)
 fn interpolate_compute(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let thread_size = 256u;
+    // dispatch = 1
+    let thread_size = 64u;
 
     let size = 1u << input.log_size;
     let thread_id = global_id.x;
 
     // Process line_twiddles
-    var layer = 3u;
+    var layer = 6u;
     loop {
         let layer_size = input.line_twiddles_sizes[layer];
         let layer_offset = input.line_twiddles_offsets[layer];
@@ -236,10 +246,10 @@ fn interpolate_compute(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // }
 }
 
-@compute @workgroup_size(128)
+@compute @workgroup_size(64)
 fn mod_mul_compute(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let workgroup_dispatch = 256u;
-    let workgroup_size = 128u;
+    let workgroup_size = 64u;
     let thread_size = workgroup_dispatch * workgroup_size;
 
     let workgroup_id = global_id.y;

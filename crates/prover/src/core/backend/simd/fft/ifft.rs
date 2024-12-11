@@ -556,6 +556,8 @@ mod tests {
     use itertools::Itertools;
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
+    use wasm_bindgen_test::wasm_bindgen_test;
+    use web_sys;
 
     use super::{
         get_itwiddle_dbls, ifft, ifft3, ifft_lower_with_vecwise, simd_ibutterfly,
@@ -693,15 +695,21 @@ mod tests {
         }
     }
 
-    #[test]
+    //#[test]
+
+    #[cfg(test)]
+    wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
+
+    #[wasm_bindgen_test]
     fn test_ifft_full() {
-        for log_size in CACHED_FFT_LOG_SIZE + 1..CACHED_FFT_LOG_SIZE + 3 {
+        for log_size in CACHED_FFT_LOG_SIZE + 1..CACHED_FFT_LOG_SIZE + 7 {
             let domain = CanonicCoset::new(log_size).circle_domain();
             let mut rng = SmallRng::seed_from_u64(0);
             let values = (0..domain.size()).map(|_| rng.gen()).collect_vec();
             let twiddle_dbls = get_itwiddle_dbls(domain.half_coset);
 
             let mut res = values.iter().copied().collect::<BaseColumn>();
+            let start = web_sys::window().unwrap().performance().unwrap().now();
             unsafe {
                 ifft(
                     transmute(res.data.as_mut_ptr()),
@@ -712,6 +720,11 @@ mod tests {
             }
 
             assert_eq!(res.to_cpu(), ground_truth_ifft(domain, &values));
+
+            let end = web_sys::window().unwrap().performance().unwrap().now();
+            web_sys::console::log_1(
+                &format!("size {} Test took {} ms", log_size, end - start).into(),
+            );
         }
     }
 
