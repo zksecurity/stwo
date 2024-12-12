@@ -61,6 +61,7 @@ pub struct DebugData {
     counter: u32,
 }
 
+#[derive(Clone)]
 pub struct InterpolateInputF<F> {
     pub values: Vec<F>,
     pub initial_x: F,
@@ -107,6 +108,8 @@ where
     F: Into<u32> + From<u32> + Copy,
 {
     fn as_bytes(&self) -> &[u8] {
+        #[cfg(not(target_family = "wasm"))]
+        let as_bytes_start = std::time::Instant::now();
         let total_size = std::mem::size_of::<InterpolateInput>();
         let mut bytes = Vec::with_capacity(total_size);
 
@@ -210,6 +213,14 @@ where
                 std::mem::size_of::<u32>(),
             )
         });
+
+        #[cfg(not(target_family = "wasm"))]
+        let as_bytes_end = std::time::Instant::now();
+        #[cfg(not(target_family = "wasm"))]
+        println!(
+            "as_bytes took {} ms",
+            as_bytes_end.duration_since(as_bytes_start).as_millis()
+        );
 
         Box::leak(bytes.into_boxed_slice())
     }
@@ -368,14 +379,35 @@ impl GpuInterpolator {
     where
         F: Into<u32> + From<u32> + Copy,
     {
+        #[cfg(not(target_family = "wasm"))]
+        let input_outer_start = std::time::Instant::now();
+        #[cfg(target_family = "wasm")]
+        let checkpoint1 = web_sys::window().unwrap().performance().unwrap().now();
         // Create input storage buffer
         let input_buffer = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: None,
-                contents: input.as_bytes(),
+                contents: input.as_bytes(), // 2^22 10ms 소요
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             });
+
+        #[cfg(target_family = "wasm")]
+        let checkpoint2 = web_sys::window().unwrap().performance().unwrap().now();
+        #[cfg(target_family = "wasm")]
+        web_sys::console::log_1(
+            &format!("input buffer took {} ms", checkpoint2 - checkpoint1).into(),
+        );
+
+        #[cfg(not(target_family = "wasm"))]
+        let input_outer_end = std::time::Instant::now();
+        #[cfg(not(target_family = "wasm"))]
+        println!(
+            "input outer took {} ms",
+            input_outer_end
+                .duration_since(input_outer_start)
+                .as_millis()
+        );
 
         // Create output storage buffer
         let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -455,6 +487,13 @@ impl GpuInterpolator {
         #[cfg(not(target_family = "wasm"))]
         let part1_start = std::time::Instant::now();
 
+        #[cfg(target_family = "wasm")]
+        let checkpoint3 = web_sys::window().unwrap().performance().unwrap().now();
+        #[cfg(target_family = "wasm")]
+        web_sys::console::log_1(
+            &format!("bind group took {} ms", checkpoint3 - checkpoint2).into(),
+        );
+
         // Create and submit command buffer
         let mut encoder = self
             .device
@@ -470,17 +509,14 @@ impl GpuInterpolator {
             compute_pass.dispatch_workgroups(1, first_workgroup_size, 1);
 
             compute_pass.set_pipeline(&self.interpolate_big_line_twiddle);
-            compute_pass.set_bind_group(0, &bind_group, &[]);
             let second_workgroup_size: u32 = 256;
             compute_pass.dispatch_workgroups(1, second_workgroup_size, 1);
 
             compute_pass.set_pipeline(&self.interpolate_pipeline);
-            compute_pass.set_bind_group(0, &bind_group, &[]);
             let third_workgroup_size = 1;
             compute_pass.dispatch_workgroups(1, third_workgroup_size, 1);
 
             compute_pass.set_pipeline(&self.mod_mul_pipeline);
-            compute_pass.set_bind_group(0, &bind_group, &[]);
             let fourth_workgroup_size = 256;
             compute_pass.dispatch_workgroups(1, fourth_workgroup_size, 1);
         }
@@ -516,9 +552,9 @@ impl GpuInterpolator {
             };
 
             // println!("debug_result: {:?}", _debug_result.await);
-            // let _debug_result = _debug_fut.await;
-            // println!("index: {:?}", _debug_result.index);
-            // println!("values: {:?}", _debug_result.values);
+            let _debug_result = _debug_fut.await;
+            println!("index: {:?}", _debug_result.index);
+            println!("values: {:?}", _debug_result.values);
 
             // #[cfg(target_family = "wasm")]
             // console_log!("debug_result: {:?}", _debug_result.await);
@@ -546,7 +582,16 @@ impl GpuInterpolator {
         #[cfg(not(target_family = "wasm"))]
         println!("interpolate elapsed time: {:?}", part1_duration);
 
-        result.await
+        let ret = result.await;
+
+        #[cfg(target_family = "wasm")]
+        let checkpoint4 = web_sys::window().unwrap().performance().unwrap().now();
+        #[cfg(target_family = "wasm")]
+        web_sys::console::log_1(
+            &format!("gpu interpolation took {} ms", checkpoint4 - checkpoint3).into(),
+        );
+
+        return ret;
 
         // end part 2
     }
@@ -572,8 +617,17 @@ where
 
     #[cfg(target_family = "wasm")]
     {
+        let start = web_sys::window().unwrap().performance().unwrap().now();
         let gpu_interpolator = GpuInterpolator::new().await;
-        let result = gpu_interpolator.execute_interpolate(input).await;
+
+        let end1 = web_sys::window().unwrap().performance().unwrap().now();
+        web_sys::console::log_1(&format!("gpu interpolator init took {} ms", end1 - start).into());
+
+        let result = gpu_interpolator.execute_interpolate(input.clone()).await;
+
+        // let end2 = web_sys::window().unwrap().performance().unwrap().now();
+        // web_sys::console::log_1(&format!("gpu interpolation took {} ms", end2 - end1).into());
+
         result
     }
 }
@@ -657,7 +711,7 @@ mod tests {
 
     #[test]
     fn test_interpolate_n() {
-        let _max_log_size = 20;
+        let _max_log_size = 22;
         for log_size in 15..=_max_log_size {
             let poly = CpuCirclePoly::new((1..=1 << log_size).map(BaseField::from).collect());
             let domain = CanonicCoset::new(log_size).circle_domain();
@@ -675,11 +729,11 @@ mod tests {
 
     #[wasm_bindgen_test]
     async fn test_interpolate_n_wasm() {
-        let _max_log_size = 20;
+        let _max_log_size = 17;
         // alert(&format!("max log size: {}", _max_log_size));
         console_log!("max log size: {}", _max_log_size);
 
-        for log_size in 20..=_max_log_size {
+        for log_size in 17..=_max_log_size {
             let poly = CpuCirclePoly::new((1..=1 << log_size).map(BaseField::from).collect());
             let domain = CanonicCoset::new(log_size).circle_domain();
             let evals = poly.evaluate(domain);

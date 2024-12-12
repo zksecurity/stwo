@@ -126,79 +126,99 @@ fn interpolate_first_circle_twiddle(@builtin(global_invocation_id) global_id: ve
     }
 }
 
-@compute @workgroup_size(32)
+@compute @workgroup_size(64)
 fn interpolate_big_line_twiddle(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let workgroup_dispatch = 256u;
-    let workgroup_size = 32u;
+    let workgroup_size = 64u;
     let thread_size = workgroup_dispatch * workgroup_size;
 
     let workgroup_id = global_id.y;
     let local_id = global_id.x;
     var workgroup_offset = 0u;
-    var copy_start_idx = 0u;
-    var copy_end_idx = 0u;
 
-    {
-        let size = 1u << input.log_size;
-        let workgroup_chunk_size = (size + workgroup_dispatch - 1u) / workgroup_dispatch;
+    var workgroup_loop_count = 1u;
+    var loop_size_offset = 0u;
+    // if (input.log_size > 20u) {
+    //     workgroup_loop_count = 1u << (input.log_size - 20u);
+    //     loop_size_offset = 1u << (input.log_size - 1u);
+    // }
+    //store_debug_value(global_id.y, workgroup_loop_count);
+
+    for (var k = 0u; k < workgroup_loop_count; k = k + 1u) {
+        var copy_start_idx = 0u;
+        var copy_end_idx = 0u;
+
+        {
+            var size = 1u << input.log_size;
+            // if (input.log_size > 20u) {
+            //     size = 1u << 20u;
+            // }
+            let workgroup_chunk_size = (size + workgroup_dispatch - 1u) / workgroup_dispatch;
+            let thread_chunk_size = (workgroup_chunk_size + workgroup_size - 1u) / workgroup_size;
+
+            workgroup_offset = workgroup_id * workgroup_chunk_size;
+            copy_start_idx = workgroup_offset + local_id * thread_chunk_size;
+            copy_end_idx = min(copy_start_idx + thread_chunk_size, size);
+
+        }
+
+        var first_layer_size = input.line_twiddles_sizes[0];
+        // if (input.log_size > 20u) {
+        //     first_layer_size = 1u << 19u;
+        //     //store_debug_value(global_id.y, first_layer_size);
+        // }
+
+        let workgroup_chunk_size = (first_layer_size + workgroup_dispatch - 1u) / workgroup_dispatch;
         let thread_chunk_size = (workgroup_chunk_size + workgroup_size - 1u) / workgroup_size;
 
-        workgroup_offset = workgroup_id * workgroup_chunk_size;
-        copy_start_idx = workgroup_offset + local_id * thread_chunk_size;
-        copy_end_idx = min(copy_start_idx + thread_chunk_size, size);
+        var start_idx = workgroup_id * workgroup_chunk_size + local_id * thread_chunk_size;
+        var end_idx = min(start_idx + thread_chunk_size, first_layer_size);
+
 
         for (var i = copy_start_idx; i < copy_end_idx; i = i + 1u) {
             shared_values[i - workgroup_offset] = output.values[i];
         }
-    }
-
-    let first_layer_size = input.line_twiddles_sizes[0];
-
-    let workgroup_chunk_size = (first_layer_size + workgroup_dispatch - 1u) / workgroup_dispatch;
-    let thread_chunk_size = (workgroup_chunk_size + workgroup_size - 1u) / workgroup_size;
-
-    var start_idx = workgroup_id * workgroup_chunk_size + local_id * thread_chunk_size;
-    var end_idx = min(start_idx + thread_chunk_size, first_layer_size);
-
-    workgroupBarrier();
-
-    // Process line_twiddles
-    var layer = 0u;
-    loop {
-        let layer_size = input.line_twiddles_sizes[layer];
-        let layer_offset = input.line_twiddles_offsets[layer];
-        let step = 1u << (layer + 1u);
-
-        for (var h = start_idx; h < end_idx; h = h + 1u) {
-            let t = input.line_twiddles_flat[layer_offset + h];
-            let idx0_offset = (h << (layer + 2u)) - workgroup_offset;
-
-            for (var l = 0u; l < step; l = l + 1u) {
-                let idx0 = idx0_offset + l;
-                let idx1 = idx0 + step;
-
-                var val0 = shared_values[idx0];
-                var val1 = shared_values[idx1];
-
-                ibutterfly(&val0, &val1, t);
-
-                shared_values[idx0] = val0;
-                shared_values[idx1] = val1;
-            }
-        }
 
         workgroupBarrier();
 
-        layer = layer + 1u;
-        start_idx = start_idx >> 1u;
-        end_idx = end_idx >> 1u;
+        // Process line_twiddles
+        var layer = 0u;
+        loop {
+            let layer_size = input.line_twiddles_sizes[layer];
+            let layer_offset = input.line_twiddles_offsets[layer];
+            let step = 1u << (layer + 1u);
 
-        if (layer >= 6) { break; }
-    }
+            for (var h = start_idx; h < end_idx; h = h + 1u) {
+                let t = input.line_twiddles_flat[layer_offset + h];
+                let idx0_offset = (h << (layer + 2u)) - workgroup_offset;
 
-    // copy values from shared memory to storage
-    for (var i = copy_start_idx; i < copy_end_idx; i = i + 1u) {
-        output.values[i] = shared_values[i - workgroup_offset];
+                for (var l = 0u; l < step; l = l + 1u) {
+                    let idx0 = idx0_offset + l;
+                    let idx1 = idx0 + step;
+
+                    var val0 = shared_values[idx0];
+                    var val1 = shared_values[idx1];
+
+                    ibutterfly(&val0, &val1, t);
+
+                    shared_values[idx0] = val0;
+                    shared_values[idx1] = val1;
+                }
+            }
+
+            workgroupBarrier();
+
+            layer = layer + 1u;
+            start_idx = start_idx >> 1u;
+            end_idx = end_idx >> 1u;
+
+            if (layer >= 6) { break; }
+        }
+
+        // copy values from shared memory to storage
+        for (var i = copy_start_idx; i < copy_end_idx; i = i + 1u) {
+            output.values[i] = shared_values[i - workgroup_offset];
+        }
     }
 }
 
