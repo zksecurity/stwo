@@ -393,8 +393,12 @@ pub fn prove_poseidon(
 }
 
 #[cfg(test)]
+wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
+
+#[cfg(test)]
 mod tests {
     use std::env;
+    use std::time::Instant;
 
     use itertools::Itertools;
     use num_traits::One;
@@ -488,6 +492,23 @@ mod tests {
         );
     }
 
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn test_gpu_poseidon_constraints_wasm() {
+        use crate::core::backend::gpu::gen_trace_interpolate_columns::gen_trace_interpolate_columns;
+        let log_n_instances = 12;
+        let log_n_instances_per_row = 3;
+        let log_n_rows = log_n_instances - log_n_instances_per_row;
+        let (_gpu_trace, _gpu_lookup_data) = gen_trace_interpolate_columns(log_n_rows).await;
+
+        let checkpoint1 = web_sys::window().unwrap().performance().unwrap().now();
+        let (_trace, _lookup_data) = gen_trace(log_n_rows);
+        let checkpoint2 = web_sys::window().unwrap().performance().unwrap().now();
+        web_sys::console::log_1(&format!("CPU time: {:?}", checkpoint2 - checkpoint1).into());
+        let _cpu_trace = _trace.into_iter().map(|c| c.values.clone()).collect_vec();
+        assert_eq!(_cpu_trace, _gpu_trace);
+        assert_eq!(_lookup_data, _gpu_lookup_data);
+    }
+
     #[test]
     fn test_gpu_poseidon_constraints() {
         // use crate::core::backend::gpu::gen_trace::gen_trace as gen_trace_gpu;
@@ -502,7 +523,10 @@ mod tests {
         let log_n_rows = log_n_instances - log_n_instances_per_row;
         let (_gpu_trace, _gpu_lookup_data) = pollster::block_on(gen_trace_gpu(log_n_rows));
 
+        let cpu_start = Instant::now();
         let (_trace, _lookup_data) = gen_trace(log_n_rows);
+        let cpu_end = Instant::now();
+        println!("CPU time: {:?}", cpu_end - cpu_start);
         let _cpu_trace = _trace.into_iter().map(|c| c.values.clone()).collect_vec();
         assert_eq!(_cpu_trace, _gpu_trace);
         assert_eq!(_lookup_data, _gpu_lookup_data);

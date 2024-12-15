@@ -1,4 +1,5 @@
 const MODULUS_BITS: u32 = 31u;
+const HALF_BITS: u32 = 16u;
 const P: u32 = 2147483647u;
 
 // Define constants
@@ -12,8 +13,8 @@ const N_PARTIAL_ROUNDS: u32 = 14;
 const N_LANES: u32 = 16;
 const N_COLUMNS_PER_REP: u32 = N_STATE * (1 + FULL_ROUNDS) + N_PARTIAL_ROUNDS;
 const LOG_N_LANES: u32 = 4;
-const THREADS_PER_WORKGROUP: u32 = 256;
 const WORKGROUP_SIZE: u32 = 8;
+const THREADS_PER_WORKGROUP: u32 = 256;
 const TOTAL_THREAD_SIZE: u32 = THREADS_PER_WORKGROUP * WORKGROUP_SIZE;
 
 // Initialize EXTERNAL_ROUND_CONSTS with explicit values
@@ -237,8 +238,36 @@ fn add(a: M31, b: M31) -> M31 {
     return M31(partial_reduce(a.data + b.data));
 }
 
-fn mul(a: M31, b: M31) -> M31 {
-    return M31(full_reduce(u64(a.data) * u64(b.data)));
+fn mod_mul(a: M31, b: M31) -> M31 {
+    // Split into 16-bit parts
+    let a1 = a.data >> HALF_BITS;
+    let a0 = a.data & 0xFFFFu;
+    let b1 = b.data >> HALF_BITS;
+    let b0 = b.data & 0xFFFFu;
+    
+    // Compute partial products
+    let m0 = partial_reduce(a0 * b0);
+    let m1 = partial_reduce(a0 * b1);
+    let m2 = partial_reduce(a1 * b0);
+    let m3 = partial_reduce(a1 * b1);
+    
+    // Combine middle terms with reduction
+    let mid = partial_reduce(m1 + m2);
+    
+    // Combine parts with partial reduction
+    let shifted_mid = partial_reduce(mid << HALF_BITS);
+    let low = partial_reduce(m0 + shifted_mid);
+    
+    let high_part = partial_reduce(m3 + (mid >> HALF_BITS));
+    
+    // Final combination using Mersenne prime property
+    let result = partial_reduce(
+        partial_reduce((high_part << 1u)) + 
+        partial_reduce((low >> MODULUS_BITS)) + 
+        partial_reduce(low & P)
+    );
+    
+    return M31(result);
 }
 
 // Partial reduce for values in [0, 2P)
@@ -247,17 +276,9 @@ fn partial_reduce(val: u32) -> u32 {
     return select(val, reduced, reduced < val);
 }
 
-fn full_reduce(val: u64) -> u32 {
-    let first_shift = val >> MODULUS_BITS;
-    let first_sum = first_shift + val + 1;
-    let second_shift = first_sum >> MODULUS_BITS;
-    let final_sum = second_shift + val;
-    return u32(final_sum & u64(P));
-}
-
 // Function to apply pow5 operation
 fn pow5(x: M31) -> M31 {
-    return mul(mul(mul(x, x), mul(x, x)), x);
+    return mod_mul(mod_mul(mod_mul(x, x), mod_mul(x, x)), x);
 }
 
 /// Applies the external round matrix.
@@ -299,7 +320,7 @@ fn apply_internal_round_matrix(state: array<M31, N_STATE>) -> array<M31, N_STATE
     var result = array<M31, N_STATE>();
     for (var i = 0u; i < N_STATE; i++) {
         let factor = partial_reduce(1u << (i + 1));
-        result[i] = add(mul(M31(factor), state[i]), sum);
+        result[i] = add(mod_mul(M31(factor), state[i]), sum);
     }
 
     return result;
