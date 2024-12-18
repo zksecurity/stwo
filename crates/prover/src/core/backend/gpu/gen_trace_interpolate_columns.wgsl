@@ -16,6 +16,8 @@ const LOG_N_LANES: u32 = 4;
 const WORKGROUP_SIZE: u32 = 8;
 const THREADS_PER_WORKGROUP: u32 = 256;
 const TOTAL_THREAD_SIZE: u32 = THREADS_PER_WORKGROUP * WORKGROUP_SIZE;
+const MAX_ARRAY_LOG_SIZE: u32 = 20;
+const MAX_ARRAY_SIZE: u32 = 1u << MAX_ARRAY_LOG_SIZE;
 
 // Initialize EXTERNAL_ROUND_CONSTS with explicit values
 var<private> EXTERNAL_ROUND_CONSTS: array<array<u32, N_STATE>, FULL_ROUNDS> = array<array<u32, N_STATE>, FULL_ROUNDS>(
@@ -44,11 +46,17 @@ struct M31 {
 }
 
 struct GenTraceInput {
-    log_n_rows: u32,
-}
-
-struct StateData {
-    data: array<M31, N_STATE>,
+    initial_x: u32,
+    initial_y: u32,
+    log_size: u32,
+    circle_twiddles: array<u32, MAX_ARRAY_SIZE>,
+    circle_twiddles_size: u32,
+    line_twiddles_flat: array<u32, MAX_ARRAY_SIZE>,
+    line_twiddles_layer_count: u32,
+    line_twiddles_sizes: array<u32, MAX_ARRAY_SIZE>,
+    line_twiddles_offsets: array<u32, MAX_ARRAY_SIZE>,
+    mod_inv: u32,
+    current_layer: u32,
 }
 
 struct LookupData {
@@ -61,42 +69,21 @@ struct GenTraceOutput {
     lookup_data: LookupData,
 }
 
-struct ShaderResult {
-    values: array<Ids, TOTAL_THREAD_SIZE>,
-}
-
-struct Ids {
-    workgroup_id_x: u32,
-    workgroup_id_y: u32,
-    workgroup_id_z: u32,
-    local_invocation_id_x: u32,
-    local_invocation_id_y: u32,
-    local_invocation_id_z: u32,
-    global_invocation_id_x: u32,
-    global_invocation_id_y: u32,
-    global_invocation_id_z: u32,
-    local_invocation_index: u32,
-    num_workgroups_x: u32,
-    num_workgroups_y: u32,
-    num_workgroups_z: u32,
-    workgroup_index: u32,
-    global_invocation_index: u32,
+struct Results {
+    values: array<u32, MAX_ARRAY_SIZE>,
 }
 
 @group(0) @binding(0)
 var<storage, read> input: GenTraceInput;
 
-// Output buffer
+// Intermediate buffer
 @group(0) @binding(1)
-var<storage, read_write> output: GenTraceOutput;
+var<storage, read_write> gen_trace_output: GenTraceOutput;
 
 @group(0) @binding(2)
-var<storage, read_write> state_data: StateData;
+var<storage, read_write> interpolate_output: Results;
 
-@group(0) @binding(3)
-var<storage, read_write> shader_result: ShaderResult;
-
-@compute @workgroup_size(256)
+@compute @workgroup_size(THREADS_PER_WORKGROUP)
 fn gen_trace_interpolate_columns(
     @builtin(workgroup_id) workgroup_id: vec3<u32>,
     @builtin(local_invocation_id) local_invocation_id: vec3<u32>,
@@ -111,36 +98,18 @@ fn gen_trace_interpolate_columns(
 
     let global_invocation_index = workgroup_index * THREADS_PER_WORKGROUP + local_invocation_index;
 
-    shader_result.values[global_invocation_index] = Ids(
-        workgroup_id.x,
-        workgroup_id.y,
-        workgroup_id.z,
-        local_invocation_id.x,
-        local_invocation_id.y,
-        local_invocation_id.z,
-        global_invocation_id.x,
-        global_invocation_id.y,
-        global_invocation_id.z,
-        local_invocation_index,
-        num_workgroups.x,
-        num_workgroups.y,
-        num_workgroups.z,
-        workgroup_index,
-        global_invocation_index,
-    );
-
     for (var i = 0u; i < N_COLUMNS; i++) {
-        output.trace[i].length = N_ROWS * N_LANES;
+        gen_trace_output.trace[i].length = N_ROWS * N_LANES;
     }
 
     for (var i = 0u; i < N_INSTANCES_PER_ROW; i++) {
         for (var j = 0u; j < N_STATE; j++) {
-            output.lookup_data.initial_state[i][j].length = N_ROWS * N_LANES;
-            output.lookup_data.final_state[i][j].length = N_ROWS * N_LANES;
+            gen_trace_output.lookup_data.initial_state[i][j].length = N_ROWS * N_LANES;
+            gen_trace_output.lookup_data.final_state[i][j].length = N_ROWS * N_LANES;
         }
     }
 
-    let log_size = input.log_n_rows;
+    let log_size = input.log_size;
 
     var instance_index = global_invocation_index / (N_ROWS * N_LANES / 2u);
     var instance_rep_index = global_invocation_index % (N_ROWS * N_LANES / 2u);
@@ -155,15 +124,15 @@ fn gen_trace_interpolate_columns(
             var state_2: array<M31, N_STATE> = initialize_state(vec_index, inner_vec_index + 1u, rep_i);
 
             for (var i = 0u; i < N_STATE; i++) {
-                output.trace[col_index].data[vec_index][inner_vec_index] = state_1[i];
-                output.trace[col_index].data[vec_index][inner_vec_index + 1u] = state_2[i];
+                gen_trace_output.trace[col_index].data[vec_index][inner_vec_index] = state_1[i];
+                gen_trace_output.trace[col_index].data[vec_index][inner_vec_index + 1u] = state_2[i];
                 col_index += 1u;
             }
 
             for (var i = 0u; i < N_STATE; i++) {
-                output.lookup_data.initial_state[rep_i][i].data[vec_index][inner_vec_index] = state_1[i];
-                output.lookup_data.initial_state[rep_i][i].data[vec_index][inner_vec_index + 1u] = state_2[i];
-                output.lookup_data.initial_state[rep_i][i].length = N_ROWS * N_LANES;
+                gen_trace_output.lookup_data.initial_state[rep_i][i].data[vec_index][inner_vec_index] = state_1[i];
+                gen_trace_output.lookup_data.initial_state[rep_i][i].data[vec_index][inner_vec_index + 1u] = state_2[i];
+                gen_trace_output.lookup_data.initial_state[rep_i][i].length = N_ROWS * N_LANES;
             }
 
             // 4 full rounds
@@ -179,8 +148,8 @@ fn gen_trace_interpolate_columns(
                     state_2[j] = pow5(state_2[j]);
                 }
                 for (var j = 0u; j < N_STATE; j++) {
-                    output.trace[col_index].data[vec_index][inner_vec_index] = state_1[j];
-                    output.trace[col_index].data[vec_index][inner_vec_index + 1u] = state_2[j];
+                    gen_trace_output.trace[col_index].data[vec_index][inner_vec_index] = state_1[j];
+                    gen_trace_output.trace[col_index].data[vec_index][inner_vec_index + 1u] = state_2[j];
                     col_index += 1u;
                 }
             }
@@ -192,8 +161,8 @@ fn gen_trace_interpolate_columns(
                 state_2 = apply_internal_round_matrix(state_2);
                 state_1[0] = pow5(state_1[0]);
                 state_2[0] = pow5(state_2[0]);
-                output.trace[col_index].data[vec_index][inner_vec_index] = state_1[0];
-                output.trace[col_index].data[vec_index][inner_vec_index + 1u] = state_2[0];
+                gen_trace_output.trace[col_index].data[vec_index][inner_vec_index] = state_1[0];
+                gen_trace_output.trace[col_index].data[vec_index][inner_vec_index + 1u] = state_2[0];
                 col_index += 1u;
             }
             // 4 full rounds
@@ -209,15 +178,15 @@ fn gen_trace_interpolate_columns(
                     state_2[j] = pow5(state_2[j]);
                 }
                 for (var j = 0u; j < N_STATE; j++) {
-                    output.trace[col_index].data[vec_index][inner_vec_index] = state_1[j];
-                    output.trace[col_index].data[vec_index][inner_vec_index + 1u] = state_2[j];
+                    gen_trace_output.trace[col_index].data[vec_index][inner_vec_index] = state_1[j];
+                    gen_trace_output.trace[col_index].data[vec_index][inner_vec_index + 1u] = state_2[j];
                     col_index += 1u;
                 }
             }
 
             for (var j = 0u; j < N_STATE; j++) {
-                output.lookup_data.final_state[rep_i][j].data[vec_index][inner_vec_index] = state_1[j];
-                output.lookup_data.final_state[rep_i][j].data[vec_index][inner_vec_index + 1u] = state_2[j];
+                gen_trace_output.lookup_data.final_state[rep_i][j].data[vec_index][inner_vec_index] = state_1[j];
+                gen_trace_output.lookup_data.final_state[rep_i][j].data[vec_index][inner_vec_index + 1u] = state_2[j];
             }
         // }
     // }

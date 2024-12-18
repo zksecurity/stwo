@@ -16,15 +16,24 @@ const N_LANES: u32 = 16;
 const N_COLUMNS_PER_REP: u32 = N_STATE * (1 + FULL_ROUNDS) + N_PARTIAL_ROUNDS;
 // const LOG_N_LANES: u32 = 4;
 const WORKGROUP_SIZE: u32 = 8;
+#[allow(dead_code)]
 const THREADS_PER_WORKGROUP: u32 = 256;
+const MAX_ARRAY_LOG_SIZE: u32 = 20;
+const MAX_ARRAY_SIZE: usize = 1 << MAX_ARRAY_LOG_SIZE;
 
+use crate::core::backend::cpu::circle::circle_twiddles_from_line_twiddles;
 use crate::core::backend::simd::column::BaseColumn;
 #[allow(unused_imports)]
 use crate::core::backend::simd::m31::PackedM31;
 #[allow(unused_imports)]
 use crate::core::backend::Column;
+use crate::core::backend::CpuBackend;
+use crate::core::fields::m31::BaseField;
 #[allow(unused_imports)]
 use crate::core::fields::m31::M31;
+use crate::core::fields::FieldExpOps;
+use crate::core::poly::circle::{CanonicCoset, CirclePoly, PolyOps};
+use crate::core::poly::utils::domain_line_twiddles_from_tree;
 #[allow(unused_imports)]
 use crate::examples::poseidon::LookupData;
 
@@ -35,10 +44,140 @@ struct Complex {
     imag: f32,
 }
 
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone)]
 #[repr(C)]
-struct GenTraceInput {
-    log_n_rows: u32,
+struct GenTraceInput<F> {
+    pub initial_x: F,
+    pub initial_y: F,
+    pub log_size: u32,
+    pub circle_twiddles: Vec<F>,
+    pub circle_twiddles_size: u32,
+    pub line_twiddles_flat: Vec<F>,
+    pub line_twiddles_layer_count: u32,
+    pub line_twiddles_sizes: Vec<u32>,
+    pub line_twiddles_offsets: Vec<u32>,
+    pub mod_inv: u32,
+    pub current_layer: u32,
+}
+
+impl<F> GenTraceInput<F>
+where
+    F: Into<u32> + From<u32> + Copy,
+{
+    fn as_bytes(&self) -> &[u8] {
+        let total_size = std::mem::size_of::<GenTraceInput<F>>();
+        let mut bytes = Vec::with_capacity(total_size);
+
+        // initial_x, initial_y
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                &self.initial_x as *const F as *const u8,
+                std::mem::size_of::<F>(),
+            )
+        });
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                &self.initial_y as *const F as *const u8,
+                std::mem::size_of::<F>(),
+            )
+        });
+
+        // log_size
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                &self.log_size as *const u32 as *const u8,
+                std::mem::size_of::<u32>(),
+            )
+        });
+
+        let mut padded_circle_twiddles = vec![F::from(0u32); MAX_ARRAY_SIZE];
+        padded_circle_twiddles[..self.circle_twiddles.len()].copy_from_slice(&self.circle_twiddles);
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                padded_circle_twiddles.as_ptr() as *const u8,
+                MAX_ARRAY_SIZE * std::mem::size_of::<F>(),
+            )
+        });
+
+        // circle_twiddles_size
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                &self.circle_twiddles_size as *const u32 as *const u8,
+                std::mem::size_of::<u32>(),
+            )
+        });
+
+        let mut padded_line_twiddles = vec![F::from(0u32); MAX_ARRAY_SIZE];
+        padded_line_twiddles[..self.line_twiddles_flat.len()]
+            .copy_from_slice(&self.line_twiddles_flat);
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                padded_line_twiddles.as_ptr() as *const u8,
+                MAX_ARRAY_SIZE * std::mem::size_of::<F>(),
+            )
+        });
+
+        // line_twiddles_layer_count
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                &self.line_twiddles_layer_count as *const u32 as *const u8,
+                std::mem::size_of::<u32>(),
+            )
+        });
+
+        let mut padded_sizes = vec![0u32; MAX_ARRAY_SIZE];
+        padded_sizes[..self.line_twiddles_sizes.len()].copy_from_slice(&self.line_twiddles_sizes);
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                padded_sizes.as_ptr() as *const u8,
+                MAX_ARRAY_SIZE * std::mem::size_of::<u32>(),
+            )
+        });
+
+        let mut padded_offsets = vec![0u32; MAX_ARRAY_SIZE];
+        padded_offsets[..self.line_twiddles_offsets.len()]
+            .copy_from_slice(&self.line_twiddles_offsets);
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                padded_offsets.as_ptr() as *const u8,
+                MAX_ARRAY_SIZE * std::mem::size_of::<u32>(),
+            )
+        });
+
+        // mod_inv
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                &self.mod_inv as *const u32 as *const u8,
+                std::mem::size_of::<u32>(),
+            )
+        });
+
+        // current_layer
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                &self.current_layer as *const u32 as *const u8,
+                std::mem::size_of::<u32>(),
+            )
+        });
+
+        Box::leak(bytes.into_boxed_slice())
+    }
+
+    fn zero() -> Self {
+        Self {
+            initial_x: F::from(0),
+            initial_y: F::from(0),
+            log_size: 0,
+            circle_twiddles: vec![F::from(0); MAX_ARRAY_SIZE],
+            circle_twiddles_size: 0,
+            line_twiddles_flat: vec![F::from(0); MAX_ARRAY_SIZE],
+            line_twiddles_layer_count: 0,
+            line_twiddles_sizes: vec![0; MAX_ARRAY_SIZE],
+            line_twiddles_offsets: vec![0; MAX_ARRAY_SIZE],
+            mod_inv: 0,
+            current_layer: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -56,13 +195,7 @@ struct GpuM31 {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
-struct GpuStateData {
-    data: [[GpuM31; N_LANES as usize]; N_STATE as usize],
-}
-
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-struct GpuBaseColumn {
+pub struct GpuBaseColumn {
     data: [[GpuM31; N_LANES as usize]; N_ROWS as usize],
     length: u32,
 }
@@ -88,9 +221,14 @@ impl From<GpuBaseColumn> for BaseColumn {
 
 #[derive(Clone, Debug, Copy)]
 #[repr(C)]
-struct GenTraceOutput {
+pub struct GenTraceOutput {
     trace: [GpuBaseColumn; N_COLUMNS as usize],
     lookup_data: GpuLookupData,
+}
+
+#[allow(dead_code)]
+pub struct InterpolateOutput {
+    results: [u32; MAX_ARRAY_SIZE],
 }
 
 #[derive(Clone, Debug)]
@@ -100,6 +238,39 @@ struct GenTraceOutputVec {
     lookup_data: LookupData,
 }
 
+#[allow(dead_code)]
+struct InterpolateOutputVec {
+    results: Vec<CirclePoly<CpuBackend>>,
+}
+
+impl InterpolateOutputVec {
+    #[allow(dead_code)]
+    pub fn from_bytes(bytes: &[u8], log_n_rows: u32) -> Self {
+        assert!(bytes.len() >= std::mem::size_of::<[u32; MAX_ARRAY_SIZE]>());
+
+        let results_slice = unsafe {
+            std::slice::from_raw_parts(
+                bytes.as_ptr() as *const u32,
+                N_COLUMNS as usize * (1 << log_n_rows) as usize,
+            )
+        };
+
+        let mut polys = Vec::new();
+        for i in 0..N_COLUMNS {
+            polys.push(CirclePoly::new(
+                results_slice[i as usize * (1 << log_n_rows) as usize
+                    ..(i as usize + 1) * (1 << log_n_rows) as usize]
+                    .iter()
+                    .map(|&x| M31(x))
+                    .collect(),
+            ));
+        }
+
+        Self { results: polys }
+    }
+}
+
+#[allow(dead_code)]
 impl GenTraceOutputVec {
     fn from_bytes(bytes: &[u8]) -> Self {
         let base_column_size = std::mem::size_of::<GpuBaseColumn>();
@@ -120,6 +291,7 @@ impl GenTraceOutputVec {
     }
 }
 
+#[allow(dead_code)]
 impl BaseColumn {
     fn from_bytes(bytes: &[u8]) -> Self {
         assert!(bytes.len() >= std::mem::size_of::<Self>());
@@ -128,6 +300,7 @@ impl BaseColumn {
     }
 }
 
+#[allow(dead_code)]
 impl LookupData {
     fn from_bytes(bytes: &[u8]) -> Self {
         let base_column_size = std::mem::size_of::<GpuBaseColumn>();
@@ -176,12 +349,6 @@ impl LookupData {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
-struct ShaderResult {
-    values: [Ids; THREADS_PER_WORKGROUP as usize * WORKGROUP_SIZE as usize],
-}
-
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
 struct Ids {
     workgroup_id_x: u32,
     workgroup_id_y: u32,
@@ -216,11 +383,8 @@ pub trait ByteSerialize: Sized {
     }
 }
 
-impl ByteSerialize for GenTraceInput {}
 impl ByteSerialize for BaseColumn {}
-impl ByteSerialize for GpuStateData {}
 impl ByteSerialize for GenTraceOutput {}
-impl ByteSerialize for ShaderResult {}
 
 #[allow(dead_code)]
 struct WgpuInstance {
@@ -229,9 +393,42 @@ struct WgpuInstance {
     device: wgpu::Device,
     queue: wgpu::Queue,
     staging_buffer: wgpu::Buffer,
-    state_staging_buffer: wgpu::Buffer,
-    shader_result_staging_buffer: wgpu::Buffer,
+    interpolate_staging_buffer: wgpu::Buffer,
     encoder: wgpu::CommandEncoder,
+}
+
+fn create_gpu_input(log_size: u32) -> GenTraceInput<BaseField> {
+    let mut input = GenTraceInput::zero();
+    input.log_size = log_size;
+
+    let domain = CanonicCoset::new(log_size + 3).circle_domain();
+    let twiddles = CpuBackend::precompute_twiddles(domain.half_coset);
+
+    // line twiddles
+    let domain = CanonicCoset::new(log_size).circle_domain();
+    let line_twiddles = domain_line_twiddles_from_tree(domain, &twiddles.itwiddles);
+    input.line_twiddles_layer_count = line_twiddles.len() as u32;
+    for (i, twiddle) in line_twiddles.iter().enumerate() {
+        input.line_twiddles_sizes[i] = twiddle.len() as u32;
+        input.line_twiddles_offsets[i] = if i == 0 {
+            0
+        } else {
+            input.line_twiddles_offsets[i - 1] + input.line_twiddles_sizes[i - 1]
+        };
+        for (j, twiddle) in twiddle.iter().enumerate() {
+            input.line_twiddles_flat[input.line_twiddles_offsets[i] as usize + j] = *twiddle;
+        }
+    }
+
+    // circle twiddles
+    let circle_twiddles: Vec<_> = circle_twiddles_from_line_twiddles(line_twiddles[0]).collect();
+    input.circle_twiddles[..circle_twiddles.len()].copy_from_slice(&circle_twiddles);
+    input.circle_twiddles_size = circle_twiddles.len() as u32;
+
+    let inv = BaseField::from_u32_unchecked(domain.size() as u32).inverse();
+    input.mod_inv = inv.into();
+
+    input
 }
 
 async fn init(log_n_rows: u32) -> WgpuInstance {
@@ -258,12 +455,12 @@ async fn init(log_n_rows: u32) -> WgpuInstance {
         .await
         .unwrap();
 
-    let input_data: GenTraceInput = GenTraceInput { log_n_rows };
+    let input_data = create_gpu_input(log_n_rows);
 
     // Create buffers
     let input_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Input Buffer"),
-        contents: bytemuck::cast_slice(&[input_data]),
+        contents: input_data.as_bytes(),
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
     });
 
@@ -279,16 +476,9 @@ async fn init(log_n_rows: u32) -> WgpuInstance {
         mapped_at_creation: false,
     });
 
-    let state_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("State Buffer"),
-        size: (std::mem::size_of::<GpuStateData>()) as wgpu::BufferAddress,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    });
-
-    let shader_result = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Shader Result Buffer"),
-        size: (std::mem::size_of::<ShaderResult>()) as wgpu::BufferAddress,
+    let interpolate_output_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Interpolate Output Buffer"),
+        size: std::mem::size_of::<InterpolateOutput>() as wgpu::BufferAddress,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
@@ -298,6 +488,13 @@ async fn init(log_n_rows: u32) -> WgpuInstance {
     let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Gen Trace Shader"),
         source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+    });
+
+    // Load interpolate shader
+    let interpolate_shader_source = include_str!("interpolate.wgsl");
+    let interpolate_shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Interpolate Shader"),
+        source: wgpu::ShaderSource::Wgsl(interpolate_shader_source.into()),
     });
 
     // Get the maximum buffer size supported by the device
@@ -326,7 +523,7 @@ async fn init(log_n_rows: u32) -> WgpuInstance {
                 },
                 count: None,
             },
-            // Binding 1: Output buffer
+            // Binding 1: Gen Trace Output buffer
             wgpu::BindGroupLayoutEntry {
                 binding: 1,
                 visibility: wgpu::ShaderStages::COMPUTE,
@@ -337,20 +534,9 @@ async fn init(log_n_rows: u32) -> WgpuInstance {
                 },
                 count: None,
             },
-            // Binding 2: Debug buffer
+            // Binding 2: Interpolate Output buffer
             wgpu::BindGroupLayoutEntry {
                 binding: 2,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: false },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            // Binding 3: Workgroup result buffer
-            wgpu::BindGroupLayoutEntry {
-                binding: 3,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage { read_only: false },
@@ -377,11 +563,7 @@ async fn init(log_n_rows: u32) -> WgpuInstance {
             },
             wgpu::BindGroupEntry {
                 binding: 2,
-                resource: state_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: shader_result.as_entire_binding(),
+                resource: interpolate_output_buffer.as_entire_binding(),
             },
         ],
         label: Some("Gen Trace Bind Group"),
@@ -404,6 +586,15 @@ async fn init(log_n_rows: u32) -> WgpuInstance {
         compilation_options: Default::default(),
     });
 
+    let interpolate_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: None,
+        layout: Some(&pipeline_layout),
+        module: &interpolate_shader_module,
+        entry_point: Some("interpolate"),
+        compilation_options: Default::default(),
+        cache: None,
+    });
+
     // Create encoder
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("Gen Trace Command Encoder"),
@@ -417,9 +608,12 @@ async fn init(log_n_rows: u32) -> WgpuInstance {
         });
         compute_pass.set_pipeline(&compute_pipeline);
         compute_pass.set_bind_group(0, &bind_group, &[]);
-
-        // Workgroup size defined in shader
         compute_pass.dispatch_workgroups(WORKGROUP_SIZE, 1, 1);
+
+        compute_pass.set_pipeline(&interpolate_pipeline);
+        compute_pass.set_bind_group(0, &bind_group, &[]);
+        let first_workgroup_size = 32;
+        compute_pass.dispatch_workgroups(1, first_workgroup_size, 1);
     }
 
     // Copy output to staging buffer for read access
@@ -430,38 +624,19 @@ async fn init(log_n_rows: u32) -> WgpuInstance {
         mapped_at_creation: false,
     });
 
+    let interpolate_staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Interpolate Staging Buffer"),
+        size: std::mem::size_of::<InterpolateOutput>() as u64,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
     encoder.copy_buffer_to_buffer(&output_buffer, 0, &staging_buffer, 0, staging_buffer.size());
-
-    // create storage buffer for debug data
-    let state_staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("State Staging Buffer"),
-        size: (std::mem::size_of::<GpuStateData>()) as u64,
-        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-
-    // create storage buffer for workgroup result
-    let shader_result_staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Shader Result Staging Buffer"),
-        size: (std::mem::size_of::<ShaderResult>()) as u64,
-        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-
     encoder.copy_buffer_to_buffer(
-        &state_buffer,
+        &interpolate_output_buffer,
         0,
-        &state_staging_buffer,
+        &interpolate_staging_buffer,
         0,
-        state_staging_buffer.size(),
-    );
-
-    encoder.copy_buffer_to_buffer(
-        &shader_result,
-        0,
-        &shader_result_staging_buffer,
-        0,
-        shader_result_staging_buffer.size(),
+        interpolate_staging_buffer.size(),
     );
 
     WgpuInstance {
@@ -470,13 +645,14 @@ async fn init(log_n_rows: u32) -> WgpuInstance {
         device,
         queue,
         staging_buffer,
-        state_staging_buffer,
-        shader_result_staging_buffer,
+        interpolate_staging_buffer,
         encoder,
     }
 }
 
-pub async fn gen_trace_interpolate_columns(log_n_rows: u32) -> (Vec<BaseColumn>, LookupData) {
+pub async fn gen_trace_interpolate_columns(
+    log_n_rows: u32,
+) -> (Vec<BaseColumn>, LookupData, Vec<CirclePoly<CpuBackend>>) {
     let instance = init(log_n_rows).await;
 
     #[cfg(not(target_family = "wasm"))]
@@ -487,61 +663,45 @@ pub async fn gen_trace_interpolate_columns(log_n_rows: u32) -> (Vec<BaseColumn>,
     // Submit the commands
     instance.queue.submit(Some(instance.encoder.finish()));
 
-    // let buffer_slice = state_staging_buffer.slice(..);
+    // // Wait for the GPU to finish and map the staging buffer
+    // let buffer_slice = instance.staging_buffer.slice(..);
     // let (sender, receiver) = flume::bounded(1);
     // buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
-    // device.poll(wgpu::Maintain::wait()).panic_on_timeout();
-
-    // if let Ok(Ok(())) = receiver.recv_async().await {
+    // instance
+    //     .device
+    //     .poll(wgpu::Maintain::wait())
+    //     .panic_on_timeout();
+    // let result = async {
+    //     receiver.recv_async().await.unwrap().unwrap();
     //     let data = buffer_slice.get_mapped_range();
-    //     let _result = *GpuStateData::from_bytes(&data);
+
+    //     let output = GenTraceOutputVec::from_bytes(&data);
     //     drop(data);
-    //     state_staging_buffer.unmap();
+    //     instance.staging_buffer.unmap();
 
-    //     println!("State data: {:?}", _result);
-    // }
+    //     let output_trace: Vec<BaseColumn> =
+    //         output.trace.clone().into_iter().map(|c| c.into()).collect();
+    //     (output_trace, output.lookup_data.into())
+    // };
 
-    let buffer_slice = instance.shader_result_staging_buffer.slice(..);
+    let interpolate_output_slice = instance.interpolate_staging_buffer.slice(..);
     let (sender, receiver) = flume::bounded(1);
-    buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
+    interpolate_output_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
     instance
         .device
         .poll(wgpu::Maintain::wait())
         .panic_on_timeout();
-
-    if let Ok(Ok(())) = receiver.recv_async().await {
-        let data = buffer_slice.get_mapped_range();
-        let _result = *ShaderResult::from_bytes(&data);
-        drop(data);
-        instance.shader_result_staging_buffer.unmap();
-
-        // _result.values.iter().enumerate().for_each(|(i, v)| {
-        //     println!("Shader result[{}]: {:?}", i, v);
-        // });
-    }
-
-    // Wait for the GPU to finish and map the staging buffer
-    let buffer_slice = instance.staging_buffer.slice(..);
-    let (sender, receiver) = flume::bounded(1);
-    buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
-    instance
-        .device
-        .poll(wgpu::Maintain::wait())
-        .panic_on_timeout();
-    let result = async {
+    let interpolate_result = async {
         receiver.recv_async().await.unwrap().unwrap();
-        let data = buffer_slice.get_mapped_range();
-
-        let output = GenTraceOutputVec::from_bytes(&data);
+        let data = interpolate_output_slice.get_mapped_range();
+        let output = InterpolateOutputVec::from_bytes(&data, log_n_rows);
         drop(data);
-        instance.staging_buffer.unmap();
-
-        let output_trace: Vec<BaseColumn> =
-            output.trace.clone().into_iter().map(|c| c.into()).collect();
-        (output_trace, output.lookup_data.into())
+        instance.interpolate_staging_buffer.unmap();
+        output
     };
 
-    let (trace, lookup_data) = result.await;
+    // let (trace, lookup_data) = result.await;
+    let _interpolate_output = interpolate_result.await;
 
     #[cfg(not(target_family = "wasm"))]
     println!("GPU time: {:?}", gpu_start.elapsed());
@@ -549,7 +709,12 @@ pub async fn gen_trace_interpolate_columns(log_n_rows: u32) -> (Vec<BaseColumn>,
     #[cfg(target_family = "wasm")]
     let gpu_end = web_sys::window().unwrap().performance().unwrap().now();
     #[cfg(target_family = "wasm")]
-    web_sys::console::log_1(&format!("GPU time: {:?}", gpu_end - gpu_start).into());
+    web_sys::console::log_1(&format!("GPU time: {:?}ms", gpu_end - gpu_start).into());
 
-    (trace, lookup_data)
+    let lookup_data = LookupData {
+        initial_state: std::array::from_fn(|_| std::array::from_fn(|_| BaseColumn::zeros(1))),
+        final_state: std::array::from_fn(|_| std::array::from_fn(|_| BaseColumn::zeros(1))),
+    };
+    (Vec::new(), lookup_data, _interpolate_output.results)
+    // (trace, lookup_data, _interpolate_output.results)
 }
