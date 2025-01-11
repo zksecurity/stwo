@@ -1,5 +1,6 @@
 //! AIR for Poseidon2 hash function from <https://eprint.iacr.org/2023/323.pdf>.
 
+use core::fmt::Debug;
 use std::ops::{Add, AddAssign, Mul, Sub};
 
 use itertools::Itertools;
@@ -195,9 +196,10 @@ pub fn eval_poseidon_constraints<E: EvalAtRow>(eval: &mut E, lookup_elements: &P
     eval.finalize_logup();
 }
 
+#[derive(Debug, Clone, PartialEq)]
 pub struct LookupData {
-    initial_state: [[BaseColumn; N_STATE]; N_INSTANCES_PER_ROW],
-    final_state: [[BaseColumn; N_STATE]; N_INSTANCES_PER_ROW],
+    pub initial_state: [[BaseColumn; N_STATE]; N_INSTANCES_PER_ROW],
+    pub final_state: [[BaseColumn; N_STATE]; N_INSTANCES_PER_ROW],
 }
 pub fn gen_trace(
     log_size: u32,
@@ -280,6 +282,9 @@ pub fn gen_trace(
                 .for_each(|(res, state_i)| res.data[vec_index] = state_i);
         }
     }
+    // for (i, c) in trace.iter().enumerate() {
+    //     println!("CPU Trace[{}].data[0]: {:?}", i, c.data[0]);
+    // }
     let domain = CanonicCoset::new(log_size).circle_domain();
     let trace = trace
         .into_iter()
@@ -388,8 +393,12 @@ pub fn prove_poseidon(
 }
 
 #[cfg(test)]
+wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
+
+#[cfg(test)]
 mod tests {
     use std::env;
+    use std::time::Instant;
 
     use itertools::Itertools;
     use num_traits::One;
@@ -397,11 +406,12 @@ mod tests {
     use crate::constraint_framework::assert_constraints;
     use crate::constraint_framework::preprocessed_columns::gen_is_first;
     use crate::core::air::Component;
+    use crate::core::backend::CpuBackend;
     use crate::core::channel::Blake2sChannel;
     use crate::core::fields::m31::BaseField;
     use crate::core::fri::FriConfig;
     use crate::core::pcs::{CommitmentSchemeVerifier, PcsConfig, TreeVec};
-    use crate::core::poly::circle::CanonicCoset;
+    use crate::core::poly::circle::{CanonicCoset, PolyOps};
     use crate::core::prover::verify;
     use crate::core::vcs::blake2_merkle::Blake2sMerkleChannel;
     use crate::examples::poseidon::{
@@ -483,6 +493,75 @@ mod tests {
         );
     }
 
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn test_gpu_poseidon_constraints_wasm() {
+        use crate::core::backend::gpu::gen_trace_interpolate_columns::gen_trace_interpolate_columns;
+        use crate::examples::poseidon::N_COLUMNS;
+
+        let log_n_instances = 12;
+        let log_n_instances_per_row = 3;
+        let log_n_rows = log_n_instances - log_n_instances_per_row;
+        let (_gpu_trace, _gpu_lookup_data, _gpu_trace_polys) =
+            gen_trace_interpolate_columns(log_n_rows).await;
+
+        let checkpoint1 = web_sys::window().unwrap().performance().unwrap().now();
+        let (_trace, _lookup_data) = gen_trace(log_n_rows);
+        let twiddles = CpuBackend::precompute_twiddles(
+            CanonicCoset::new(log_n_rows).circle_domain().half_coset,
+        );
+        let circle_evals: Vec<_> = _trace.iter().map(|eval| eval.to_cpu()).collect();
+        let _cpu_trace_polys = CpuBackend::interpolate_columns(circle_evals, &twiddles);
+        let checkpoint2 = web_sys::window().unwrap().performance().unwrap().now();
+        web_sys::console::log_1(&format!("CPU time: {:?}ms", checkpoint2 - checkpoint1).into());
+        let _cpu_trace = _trace.into_iter().map(|c| c.values.clone()).collect_vec();
+        // assert_eq!(_cpu_trace, _gpu_trace);
+        // assert_eq!(_lookup_data, _gpu_lookup_data);
+        for i in 0..N_COLUMNS {
+            assert_eq!(_cpu_trace_polys[i].coeffs, _gpu_trace_polys[i].coeffs);
+            assert_eq!(
+                _cpu_trace_polys[i].log_size(),
+                _gpu_trace_polys[i].log_size()
+            );
+        }
+    }
+
+    #[test]
+    fn test_gpu_poseidon_constraints() {
+        // use crate::core::backend::gpu::gen_trace::gen_trace as gen_trace_gpu;
+        // use crate::core::backend::gpu::gen_trace_parallel::gen_trace_parallel as gen_trace_gpu;
+        // use crate::core::backend::gpu::gen_trace_parallel_no_packed::gen_trace_parallel_no_packed
+        // as gen_trace_gpu;
+        // use crate::core::backend::gpu::gen_trace_parallel_no_packed_parallel_columns::gen_trace_parallel_no_packed_parallel_columns as gen_trace_gpu;
+        use crate::core::backend::gpu::gen_trace_interpolate_columns::gen_trace_interpolate_columns as gen_trace_gpu;
+        use crate::examples::poseidon::N_COLUMNS;
+
+        let log_n_instances = 12;
+        let log_n_instances_per_row = 3;
+        let log_n_rows = log_n_instances - log_n_instances_per_row;
+        let (_gpu_trace, _gpu_lookup_data, _gpu_trace_polys) =
+            pollster::block_on(gen_trace_gpu(log_n_rows));
+
+        let cpu_start = Instant::now();
+        let (_trace, _lookup_data) = gen_trace(log_n_rows);
+        let twiddles = CpuBackend::precompute_twiddles(
+            CanonicCoset::new(log_n_rows).circle_domain().half_coset,
+        );
+        let circle_evals: Vec<_> = _trace.iter().map(|eval| eval.to_cpu()).collect();
+        let _cpu_trace_polys = CpuBackend::interpolate_columns(circle_evals, &twiddles);
+        let cpu_end = Instant::now();
+        println!("CPU time: {:?}", cpu_end - cpu_start);
+        let _cpu_trace = _trace.into_iter().map(|c| c.values.clone()).collect_vec();
+        // assert_eq!(_cpu_trace, _gpu_trace);
+        // assert_eq!(_lookup_data, _gpu_lookup_data);
+        for i in 0..N_COLUMNS {
+            assert_eq!(_cpu_trace_polys[i].coeffs, _gpu_trace_polys[i].coeffs);
+            assert_eq!(
+                _cpu_trace_polys[i].log_size(),
+                _gpu_trace_polys[i].log_size()
+            );
+        }
+    }
+
     #[test_log::test]
     fn test_simd_poseidon_prove() {
         // Note: To see time measurement, run test with
@@ -492,7 +571,7 @@ mod tests {
 
         // Get from environment variable:
         let log_n_instances = env::var("LOG_N_INSTANCES")
-            .unwrap_or_else(|_| "10".to_string())
+            .unwrap_or_else(|_| "12".to_string())
             .parse::<u32>()
             .unwrap();
         let config = PcsConfig {
