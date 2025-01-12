@@ -48,6 +48,17 @@ impl From<QM31> for GpuQM31 {
     }
 }
 
+impl From<GpuQM31> for QM31 {
+    fn from(value: GpuQM31) -> Self {
+        QM31::from_m31_array([
+            value.a.a.data.into(),
+            value.a.b.data.into(),
+            value.b.a.data.into(),
+            value.b.b.data.into(),
+        ])
+    }
+}
+
 pub trait ByteSerialize: Sized {
     fn as_bytes(&self) -> &[u8] {
         unsafe {

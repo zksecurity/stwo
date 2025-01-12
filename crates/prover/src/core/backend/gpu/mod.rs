@@ -1,3 +1,4 @@
+pub mod fraction;
 pub mod gen_trace;
 pub mod gen_trace_interpolate_columns;
 pub mod gen_trace_parallel;
