@@ -71,6 +71,10 @@ fn m31_square(x: M31, n: u32) -> M31 {
     return result;
 }
 
+fn m31_pow5(x: M31) -> M31 {
+    return m31_mul(m31_square(x, 2u), x);
+}
+
 fn m31_inverse(x: M31) -> M31 {
     // Computes x^(2^31-2) using the same sequence as pow2147483645
     // This is equivalent to x^(P-2) where P = 2^31-1
