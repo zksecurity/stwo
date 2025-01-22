@@ -13,9 +13,9 @@ pub trait ByteSerialize: Sized {
         }
     }
 
-    fn from_bytes(bytes: &[u8]) -> &Self {
+    fn from_bytes(bytes: &[u8]) -> Self {
         assert!(bytes.len() >= std::mem::size_of::<Self>());
-        unsafe { &*(bytes.as_ptr() as *const Self) }
+        unsafe { std::ptr::read(bytes.as_ptr() as *const Self) }
     }
 }
 
@@ -162,7 +162,7 @@ impl GpuComputeInstance {
         (pipeline, bind_group)
     }
 
-    pub async fn run_computation<T: ByteSerialize + Copy>(
+    pub async fn run_computation<T: ByteSerialize>(
         &self,
         pipeline: &wgpu::ComputePipeline,
         bind_group: &wgpu::BindGroup,
@@ -206,11 +206,15 @@ impl GpuComputeInstance {
 
         self.device.poll(wgpu::Maintain::wait());
 
-        rx.recv_async().await.unwrap().unwrap();
-        let data = buffer_slice.get_mapped_range();
-        let result = *T::from_bytes(&data);
-        drop(data);
-        self.staging_buffer.unmap();
+        let result = async {
+            rx.recv_async().await.unwrap().unwrap();
+            let data = buffer_slice.get_mapped_range();
+            let result = T::from_bytes(&data);
+            drop(data);
+            self.staging_buffer.unmap();
+            result
+        };
+        let result = result.await;
 
         result
     }

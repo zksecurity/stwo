@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
-use super::compute_composition_polynomial::GpuQM31;
 use super::gpu_common::{ByteSerialize, GpuComputeInstance, GpuOperation};
+use super::qm31::GpuQM31;
 use crate::core::fields::qm31::QM31;
 use crate::core::lookups::utils::Fraction;
 

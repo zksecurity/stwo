@@ -1,8 +1,73 @@
 use std::borrow::Cow;
 
-use super::compute_composition_polynomial::GpuQM31;
 use super::gpu_common::{ByteSerialize, GpuComputeInstance, GpuOperation};
+use crate::core::fields::cm31::CM31;
+use crate::core::fields::m31::M31;
 use crate::core::fields::qm31::QM31;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(C)]
+pub struct GpuM31 {
+    pub data: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(C)]
+pub struct GpuCM31 {
+    pub a: GpuM31,
+    pub b: GpuM31,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(C)]
+pub struct GpuQM31 {
+    pub a: GpuCM31,
+    pub b: GpuCM31,
+}
+
+impl From<QM31> for GpuQM31 {
+    fn from(value: QM31) -> Self {
+        GpuQM31 {
+            a: GpuCM31 {
+                a: GpuM31 {
+                    data: value.0 .0.into(),
+                },
+                b: GpuM31 {
+                    data: value.0 .1.into(),
+                },
+            },
+            b: GpuCM31 {
+                a: GpuM31 {
+                    data: value.1 .0.into(),
+                },
+                b: GpuM31 {
+                    data: value.1 .1.into(),
+                },
+            },
+        }
+    }
+}
+
+impl From<GpuQM31> for QM31 {
+    fn from(value: GpuQM31) -> Self {
+        QM31(
+            CM31::from_m31(value.a.a.data.into(), value.a.b.data.into()),
+            CM31::from_m31(value.b.a.data.into(), value.b.b.data.into()),
+        )
+    }
+}
+
+impl From<M31> for GpuM31 {
+    fn from(value: M31) -> Self {
+        GpuM31 { data: value.into() }
+    }
+}
+
+impl From<GpuM31> for M31 {
+    fn from(value: GpuM31) -> Self {
+        M31::from(value.data)
+    }
+}
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq)]
