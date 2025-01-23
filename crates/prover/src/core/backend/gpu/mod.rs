@@ -6,5 +6,6 @@ pub mod gen_trace_parallel;
 pub mod gen_trace_parallel_no_packed;
 pub mod gen_trace_parallel_no_packed_parallel_columns;
 pub mod gpu_common;
+pub mod prove;
 pub mod qm31;
 pub mod utils;

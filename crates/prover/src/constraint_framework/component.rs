@@ -17,9 +17,9 @@ use super::preprocessed_columns::PreprocessedColumn;
 use super::{
     EvalAtRow, InfoEvaluator, PointEvaluator, SimdDomainEvaluator, PREPROCESSED_TRACE_IDX,
 };
-use crate::constraint_framework::logup::LookupElements;
 use crate::core::air::accumulation::{DomainEvaluationAccumulator, PointEvaluationAccumulator};
 use crate::core::air::{Component, ComponentProver, Trace};
+#[cfg(not(target_family = "wasm"))]
 use crate::core::backend::gpu::compute_composition_polynomial::compute_composition_polynomial_gpu;
 use crate::core::backend::simd::column::VeryPackedSecureColumnByCoords;
 use crate::core::backend::simd::m31::LOG_N_LANES;
@@ -27,6 +27,7 @@ use crate::core::backend::simd::very_packed_m31::{VeryPackedBaseField, LOG_N_VER
 use crate::core::backend::simd::SimdBackend;
 use crate::core::circle::CirclePoint;
 use crate::core::constraints::coset_vanishing;
+#[cfg(not(target_family = "wasm"))]
 use crate::core::fields::cm31::CM31;
 use crate::core::fields::m31::{BaseField, M31};
 use crate::core::fields::qm31::{SecureField, QM31};
@@ -36,6 +37,7 @@ use crate::core::pcs::{TreeSubspan, TreeVec};
 use crate::core::poly::circle::{CanonicCoset, CircleEvaluation, PolyOps};
 use crate::core::poly::BitReversedOrder;
 use crate::core::{utils, ColumnVec};
+use crate::examples::poseidon::PoseidonElements;
 
 const CHUNK_SIZE: usize = 1;
 
@@ -177,6 +179,10 @@ impl<E: FrameworkEval> FrameworkComponent<E> {
     pub fn trace_locations(&self) -> &[TreeSubspan] {
         &self.trace_locations
     }
+
+    pub fn eval(&self) -> &E {
+        &self.eval
+    }
 }
 
 impl<E: FrameworkEval> Component for FrameworkComponent<E> {
@@ -246,6 +252,7 @@ impl<E: FrameworkEval> Component for FrameworkComponent<E> {
     }
 }
 
+#[allow(unused_variables)]
 impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponent<E> {
     fn evaluate_constraint_quotients_on_domain(
         &self,
@@ -337,15 +344,15 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
         let trace_cols = trace.as_cols_ref().map_cols(|c| c.to_cpu());
         let trace_cols = trace_cols.as_cols_ref();
 
-        let mut lookup_elements: LookupElements<16> = LookupElements::dummy();
+        let mut lookup_elements: PoseidonElements = PoseidonElements::dummy();
         // // 2^9 instances
-        // lookup_elements.z = QM31::from_m31_array([
+        // lookup_elements.0.z = QM31::from_m31_array([
         //     M31::from(1620680704),
         //     M31::from(1901317872),
         //     M31::from(913853993),
         //     M31::from(1286799353),
         // ]);
-        // lookup_elements.alpha = QM31::from_m31_array([
+        // lookup_elements.0.alpha = QM31::from_m31_array([
         //     M31::from(2011422255),
         //     M31::from(1962282213),
         //     M31::from(69078916),
@@ -353,13 +360,13 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
         // ]);
 
         // // 2^10 instances
-        // lookup_elements.z = QM31::from_m31_array([
+        // lookup_elements.0.z = QM31::from_m31_array([
         //     M31::from(1465862614),
         //     M31::from(1583357442),
         //     M31::from(1715957657),
         //     M31::from(977402081),
         // ]);
-        // lookup_elements.alpha = QM31::from_m31_array([
+        // lookup_elements.0.alpha = QM31::from_m31_array([
         //     M31::from(1058568156),
         //     M31::from(1376697150),
         //     M31::from(1770783003),
@@ -367,13 +374,13 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
         // ]);
 
         // // 2^11 instances
-        // lookup_elements.z = QM31::from_m31_array([
+        // lookup_elements.0.z = QM31::from_m31_array([
         //     M31::from(1465160322),
         //     M31::from(1969992531),
         //     M31::from(2003820064),
         //     M31::from(1543307892),
         // ]);
-        // lookup_elements.alpha = QM31::from_m31_array([
+        // lookup_elements.0.alpha = QM31::from_m31_array([
         //     M31::from(1503490752),
         //     M31::from(1175877240),
         //     M31::from(1430566545),
@@ -381,13 +388,13 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
         // ]);
 
         // 2^12 instances
-        lookup_elements.z = QM31::from_m31_array([
+        lookup_elements.0.z = QM31::from_m31_array([
             M31::from(589075703),
             M31::from(149359250),
             M31::from(1907284710),
             M31::from(729671227),
         ]);
-        lookup_elements.alpha = QM31::from_m31_array([
+        lookup_elements.0.alpha = QM31::from_m31_array([
             M31::from(318198925),
             M31::from(1203679427),
             M31::from(870875217),
@@ -395,13 +402,13 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
         ]);
 
         // // 2^13 instances
-        // lookup_elements.z = QM31::from_m31_array([
+        // lookup_elements.0.z = QM31::from_m31_array([
         //     M31::from(1628655791),
         //     M31::from(1055381932),
         //     M31::from(980792236),
         //     M31::from(1563574579),
         // ]);
-        // lookup_elements.alpha = QM31::from_m31_array([
+        // lookup_elements.0.alpha = QM31::from_m31_array([
         //     M31::from(758947366),
         //     M31::from(782855802),
         //     M31::from(792359994),
@@ -409,13 +416,13 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
         // ]);
 
         // // 2^14 instances
-        // lookup_elements.z = QM31::from_m31_array([
+        // lookup_elements.0.z = QM31::from_m31_array([
         //     M31::from(668979421),
         //     M31::from(2097978502),
         //     M31::from(428317414),
         //     M31::from(1503540921),
         // ]);
-        // lookup_elements.alpha = QM31::from_m31_array([
+        // lookup_elements.0.alpha = QM31::from_m31_array([
         //     M31::from(962480916),
         //     M31::from(462545530),
         //     M31::from(118859601),
@@ -423,7 +430,7 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
         // ]);
 
         // // 2^15 instances
-        // lookup_elements.z = QM31::from_m31_array([
+        // lookup_elements.0.z = QM31::from_m31_array([
         //     M31::from(1185288908),
         //     M31::from(1548569092),
         //     M31::from(792634712),
@@ -436,9 +443,9 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
         //     M31::from(2053058841),
         // ]);
         let mut cur = QM31::from(1);
-        lookup_elements.alpha_powers = std::array::from_fn(|_| {
+        lookup_elements.0.alpha_powers = std::array::from_fn(|_| {
             let res = cur;
-            cur *= lookup_elements.alpha;
+            cur *= lookup_elements.0.alpha;
             res
         });
 
@@ -461,6 +468,9 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
 
         #[cfg(not(target_family = "wasm"))]
         let cpu_start = Instant::now();
+
+        #[cfg(target_family = "wasm")]
+        let cpu_start = web_sys::window().unwrap().performance().unwrap().now();
 
         let col = unsafe { VeryPackedSecureColumnByCoords::transform_under_mut(accum.col) };
 
@@ -515,9 +525,17 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
         let cpu_end = Instant::now();
         #[cfg(not(target_family = "wasm"))]
         println!("CPU time: {:?}", cpu_end - cpu_start);
+        #[cfg(target_family = "wasm")]
+        let cpu_end = web_sys::window().unwrap().performance().unwrap().now();
+        #[cfg(target_family = "wasm")]
+        web_sys::console::log_1(
+            &format!("Evaluate Constraints CPU time: {:?}", cpu_end - cpu_start).into(),
+        );
 
         // Compare CPU and GPU results
+        #[cfg(not(target_family = "wasm"))]
         let cpu_vec = col.to_vec();
+        #[cfg(not(target_family = "wasm"))]
         let gpu_vec: Vec<QM31> = gpu_results
             .output
             .poly
@@ -532,12 +550,14 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
             })
             .collect();
 
+        #[cfg(not(target_family = "wasm"))]
         assert_eq!(
             cpu_vec.len(),
             gpu_vec.len(),
             "CPU and GPU result lengths differ"
         );
 
+        #[cfg(not(target_family = "wasm"))]
         for (_i, (cpu_val, gpu_val)) in zip(cpu_vec.iter(), gpu_vec.iter()).enumerate() {
             assert_eq!(
                 cpu_val, gpu_val,

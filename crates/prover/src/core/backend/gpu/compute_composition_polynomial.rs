@@ -4,7 +4,6 @@ use itertools::Itertools;
 use wgpu::util::DeviceExt;
 
 use super::qm31::GpuQM31;
-use crate::constraint_framework::logup::LookupElements;
 use crate::constraint_framework::{
     INTERACTION_TRACE_IDX, ORIGINAL_TRACE_IDX, PREPROCESSED_TRACE_IDX,
 };
@@ -15,6 +14,7 @@ use crate::core::fields::qm31::QM31;
 use crate::core::pcs::TreeVec;
 use crate::core::poly::circle::CircleEvaluation;
 use crate::core::poly::BitReversedOrder;
+use crate::examples::poseidon::PoseidonElements;
 
 pub const N_ROWS: u32 = 32;
 pub const N_STATE: u32 = 16;
@@ -62,15 +62,13 @@ pub struct GpuLookupElements {
     pub alpha_powers: [GpuQM31; N_STATE as usize],
 }
 
-impl<const N: usize> From<LookupElements<N>> for GpuLookupElements
-where
-    [GpuQM31; N]: Sized,
-{
-    fn from(value: LookupElements<N>) -> Self {
+impl From<PoseidonElements> for GpuLookupElements {
+    fn from(value: PoseidonElements) -> Self {
         GpuLookupElements {
-            z: value.z.into(),
-            alpha: value.alpha.into(),
+            z: value.0.z.into(),
+            alpha: value.0.alpha.into(),
             alpha_powers: value
+                .0
                 .alpha_powers
                 .iter()
                 .map(|&x| x.into())
@@ -208,11 +206,11 @@ pub struct WgpuInstance {
     pub encoder: wgpu::CommandEncoder,
 }
 
-async fn init<const N: usize>(
+async fn init(
     trace: TreeVec<Vec<&CircleEvaluation<CpuBackend, M31, BitReversedOrder>>>,
     denom_inv: Vec<M31>,
     random_coeff_powers: Vec<QM31>,
-    lookup_elements: LookupElements<N>,
+    lookup_elements: PoseidonElements,
     trace_domain_log_size: u32,
     eval_domain_log_size: u32,
     total_sum: QM31,
@@ -239,7 +237,7 @@ async fn init<const N: usize>(
         .await
         .unwrap();
 
-    let input_data = create_gpu_input::<N>(
+    let input_data = create_gpu_input(
         trace,
         denom_inv,
         random_coeff_powers,
@@ -381,11 +379,11 @@ async fn init<const N: usize>(
     }
 }
 
-fn create_gpu_input<const N: usize>(
+fn create_gpu_input(
     trace: TreeVec<Vec<&CircleEvaluation<CpuBackend, M31, BitReversedOrder>>>,
     denom_inv: Vec<M31>,
     random_coeff_powers: Vec<QM31>,
-    lookup_elements: LookupElements<N>,
+    lookup_elements: PoseidonElements,
     trace_domain_log_size: u32,
     eval_domain_log_size: u32,
     total_sum: QM31,
@@ -437,11 +435,11 @@ fn create_gpu_input<const N: usize>(
     }
 }
 
-pub async fn compute_composition_polynomial_gpu<'a, const N: usize>(
+pub async fn compute_composition_polynomial_gpu<'a>(
     trace: TreeVec<Vec<&CircleEvaluation<CpuBackend, M31, BitReversedOrder>>>,
     denom_inv: Vec<M31>,
     random_coeff_powers: Vec<QM31>,
-    lookup_elements: LookupElements<N>,
+    lookup_elements: PoseidonElements,
     trace_domain_log_size: u32,
     eval_domain_log_size: u32,
     total_sum: QM31,

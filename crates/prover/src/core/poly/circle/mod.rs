@@ -1,7 +1,7 @@
 mod canonic;
 mod domain;
 mod evaluation;
-mod ops;
+pub mod ops;
 mod poly;
 mod secure_poly;
 

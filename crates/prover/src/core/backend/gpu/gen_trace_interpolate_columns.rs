@@ -704,12 +704,21 @@ pub async fn gen_trace_interpolate_columns(
     let _interpolate_output = interpolate_result.await;
 
     #[cfg(not(target_family = "wasm"))]
-    println!("GPU time: {:?}", gpu_start.elapsed());
+    println!(
+        "Gen Trace Interpolate Columns GPU time: {:?}",
+        gpu_start.elapsed()
+    );
 
     #[cfg(target_family = "wasm")]
     let gpu_end = web_sys::window().unwrap().performance().unwrap().now();
     #[cfg(target_family = "wasm")]
-    web_sys::console::log_1(&format!("GPU time: {:?}ms", gpu_end - gpu_start).into());
+    web_sys::console::log_1(
+        &format!(
+            "Gen Trace Interpolate Columns GPU time: {:?}ms",
+            gpu_end - gpu_start
+        )
+        .into(),
+    );
 
     let lookup_data = LookupData {
         initial_state: std::array::from_fn(|_| std::array::from_fn(|_| BaseColumn::zeros(1))),

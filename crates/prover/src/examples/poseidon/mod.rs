@@ -406,6 +406,7 @@ mod tests {
     use crate::constraint_framework::assert_constraints;
     use crate::constraint_framework::preprocessed_columns::gen_is_first;
     use crate::core::air::Component;
+    use crate::core::backend::gpu::prove::prove_gpu;
     use crate::core::backend::CpuBackend;
     use crate::core::channel::Blake2sChannel;
     use crate::core::fields::m31::BaseField;
@@ -512,7 +513,13 @@ mod tests {
         let circle_evals: Vec<_> = _trace.iter().map(|eval| eval.to_cpu()).collect();
         let _cpu_trace_polys = CpuBackend::interpolate_columns(circle_evals, &twiddles);
         let checkpoint2 = web_sys::window().unwrap().performance().unwrap().now();
-        web_sys::console::log_1(&format!("CPU time: {:?}ms", checkpoint2 - checkpoint1).into());
+        web_sys::console::log_1(
+            &format!(
+                "Gen Trace Interpolate Columns CPU time: {:?}ms",
+                checkpoint2 - checkpoint1
+            )
+            .into(),
+        );
         let _cpu_trace = _trace.into_iter().map(|c| c.values.clone()).collect_vec();
         // assert_eq!(_cpu_trace, _gpu_trace);
         // assert_eq!(_lookup_data, _gpu_lookup_data);
@@ -602,5 +609,75 @@ mod tests {
         commitment_scheme.commit(proof.commitments[2], &sizes[2], channel);
 
         verify(&[&component], channel, commitment_scheme, proof).unwrap();
+    }
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn test_poseidon_prove_wasm_gpu_cpu() {
+        use crate::constraint_framework::TraceLocationAllocator;
+        use crate::core::pcs::CommitmentSchemeProver;
+        use crate::examples::poseidon::{
+            PoseidonComponent, PoseidonEval, SimdBackend, LOG_EXPAND, N_LOG_INSTANCES_PER_ROW,
+        };
+
+        let log_n_instances = env::var("LOG_N_INSTANCES")
+            .unwrap_or_else(|_| "12".to_string())
+            .parse::<u32>()
+            .unwrap();
+        let config = PcsConfig {
+            pow_bits: 10,
+            fri_config: FriConfig::new(5, 1, 64),
+        };
+
+        assert!(log_n_instances >= N_LOG_INSTANCES_PER_ROW as u32);
+        let log_n_rows = log_n_instances - N_LOG_INSTANCES_PER_ROW as u32;
+
+        // Precompute twiddles.
+        let twiddles = SimdBackend::precompute_twiddles(
+            CanonicCoset::new(log_n_rows + LOG_EXPAND + config.fri_config.log_blowup_factor)
+                .circle_domain()
+                .half_coset,
+        );
+
+        // Setup protocol.
+        let channel = &mut Blake2sChannel::default();
+        let mut commitment_scheme =
+            CommitmentSchemeProver::<_, Blake2sMerkleChannel>::new(config, &twiddles);
+
+        // Preprocessed trace.
+        let mut tree_builder = commitment_scheme.tree_builder();
+        let constant_trace = vec![gen_is_first(log_n_rows)];
+        tree_builder.extend_evals(constant_trace);
+        tree_builder.commit(channel);
+
+        // Trace.
+        let (trace, lookup_data) = gen_trace(log_n_rows);
+        let mut tree_builder = commitment_scheme.tree_builder();
+        tree_builder.extend_evals(trace);
+        tree_builder.commit(channel);
+
+        // Draw lookup elements.
+        let lookup_elements = PoseidonElements::draw(channel);
+
+        // Interaction trace.
+        let (trace, total_sum) = gen_interaction_trace(log_n_rows, lookup_data, &lookup_elements);
+        let mut tree_builder = commitment_scheme.tree_builder();
+        tree_builder.extend_evals(trace);
+        tree_builder.commit(channel);
+
+        // Prove constraints.
+        let component = PoseidonComponent::new(
+            &mut TraceLocationAllocator::default(),
+            PoseidonEval {
+                log_n_rows,
+                lookup_elements,
+                total_sum,
+            },
+            (total_sum, None),
+        );
+
+        prove_gpu(&[&component], channel, commitment_scheme).await;
+
+        // Prove in CPU
+        let (_component, _proof) = prove_poseidon(log_n_instances, config);
     }
 }
