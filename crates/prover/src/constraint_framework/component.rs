@@ -266,9 +266,6 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
 
         let eval_domain = CanonicCoset::new(self.max_constraint_log_degree_bound()).circle_domain();
         let trace_domain = CanonicCoset::new(self.eval.log_size());
-        // print trace_domain and eval_domain
-        println!("trace_domain: {:?}", trace_domain.log_size());
-        println!("eval_domain: {:?}", eval_domain.log_size());
 
         let mut component_polys = trace.polys.sub_tree(&self.trace_locations);
         component_polys[PREPROCESSED_TRACE_IDX] = self
@@ -304,8 +301,6 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
         > = if need_to_extend {
             let _span = span!(Level::INFO, "Extension").entered();
             let twiddles = SimdBackend::precompute_twiddles(eval_domain.half_coset);
-            // print twiddles size
-            println!("twiddles size: {:?}", twiddles.twiddles.len());
             component_polys
                 .as_cols_ref()
                 .map_cols(|col| Cow::Owned(col.evaluate_with_twiddles(eval_domain, &twiddles)))
@@ -315,15 +310,35 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
 
         #[cfg(not(target_family = "wasm"))]
         {
-            println!("trace domain log_size: {}", trace_domain.log_size());
             let gpu_extended_trace_results =
                 pollster::block_on(extended_trace_gpu(component_polys, eval_domain));
-            // want to compare first element of this to trace
-            println!(
-                "gpu extended trace first element: {:?}",
-                gpu_extended_trace_results.output.extended_trace[0].data[0]
-            );
-            println!("trace first element: {:?}", trace[0][0].data[0]);
+
+            let copied_trace = trace.clone();
+            let mut flattened_idx = 0;
+            for trace_idx in 0..trace.len() {
+                for col_idx in 0..trace[trace_idx].len() {
+                    let base_col = &copied_trace[trace_idx][col_idx];
+                    let gpu_col = &gpu_extended_trace_results.output.extended_trace[flattened_idx];
+
+                    for base_col_idx in 0..base_col.data.len() {
+                        let base_elem = base_col.data[base_col_idx].into_simd();
+                        let start_idx = base_col_idx * 16;
+                        let end_idx = start_idx + 16;
+                        let gpu_elem: Vec<u32> = gpu_col.data[start_idx..end_idx]
+                            .to_vec()
+                            .iter()
+                            .map(|x| x.data)
+                            .collect();
+
+                        // compare all element of gpu_elem to base_elem
+                        for i in 0..16 {
+                            assert_eq!(base_elem[i], gpu_elem[i]);
+                        }
+                    }
+
+                    flattened_idx += 1;
+                }
+            }
         }
 
         // Denom inverses.

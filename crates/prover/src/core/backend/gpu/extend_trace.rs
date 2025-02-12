@@ -119,12 +119,6 @@ impl ByteSerialize for ExtendTraceOutput {}
 impl ExtendTraceInput {
     fn as_bytes(&self) -> &[u8] {
         let total_size = std::mem::size_of::<ExtendTraceInput>();
-        println!("total_size: {}", total_size);
-        let original_trace_size =
-            N_ORIGINAL_TRACE_COLUMNS as usize * std::mem::size_of::<GpuOriginalColumn>();
-        println!("original_trace_size: {}", original_trace_size);
-        let twiddles_size = std::mem::size_of::<Twiddles>();
-        println!("twiddles_size: {}", twiddles_size);
         let mut bytes = Vec::with_capacity(total_size);
         bytes.extend_from_slice(unsafe {
             std::slice::from_raw_parts(
@@ -349,12 +343,9 @@ fn create_extend_trace_gpu_input(
         .expect("Wrong length");
 
     let twiddles = CpuBackend::precompute_twiddles(eval_domain.half_coset);
-    println!("eval domain log size: {}", eval_domain.log_size());
 
     // line twiddles
     let line_twiddles = domain_line_twiddles_from_tree(eval_domain, &twiddles.twiddles);
-    println!("line_twiddles length: {}", line_twiddles.len());
-    println!("line_twiddles[0] length: {}", line_twiddles[0].len());
 
     let mut twiddle_input = Twiddles {
         line_twiddles_layer_count: line_twiddles.len() as u32,
@@ -381,7 +372,6 @@ fn create_extend_trace_gpu_input(
     let circle_twiddles: Vec<GpuM31> = circle_twiddles_from_line_twiddles(line_twiddles[0])
         .map(|twiddle| twiddle.into())
         .collect();
-    println!("circle_twiddles length: {}", circle_twiddles.len());
     twiddle_input.circle_twiddles[..circle_twiddles.len()].copy_from_slice(&circle_twiddles);
     twiddle_input.circle_twiddles_size = circle_twiddles.len() as u32;
 
