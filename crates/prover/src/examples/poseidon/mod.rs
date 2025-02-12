@@ -494,6 +494,7 @@ mod tests {
         );
     }
 
+    #[allow(dead_code)]
     #[wasm_bindgen_test::wasm_bindgen_test]
     async fn test_gpu_poseidon_constraints_wasm() {
         use crate::core::backend::gpu::gen_trace_interpolate_columns::gen_trace_interpolate_columns;
@@ -611,6 +612,7 @@ mod tests {
         verify(&[&component], channel, commitment_scheme, proof).unwrap();
     }
 
+    #[allow(dead_code)]
     #[wasm_bindgen_test::wasm_bindgen_test]
     async fn test_poseidon_prove_wasm_gpu_cpu() {
         use crate::constraint_framework::TraceLocationAllocator;
@@ -620,7 +622,7 @@ mod tests {
         };
 
         let log_n_instances = env::var("LOG_N_INSTANCES")
-            .unwrap_or_else(|_| "15".to_string())
+            .unwrap_or_else(|_| "14".to_string())
             .parse::<u32>()
             .unwrap();
         let config = PcsConfig {

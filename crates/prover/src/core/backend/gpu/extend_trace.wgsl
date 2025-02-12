@@ -76,7 +76,6 @@ struct Twiddles {
 
 struct ExtendTraceOutput {
     extended_trace: array<Extended1DColumn, N_ORIGINAL_TRACE_COLUMNS>,
-    input_trace: array<BaseColumn, N_ORIGINAL_TRACE_COLUMNS>,
 }
 
 @group(0) @binding(0)
@@ -143,22 +142,9 @@ fn evaluate_line_twiddle(@builtin(global_invocation_id) global_id: vec3<u32>) {
             workgroupBarrier();
         }
 
-        // // store values to debug buffer
-        // if (polynomial_id == 0u && thread_id == 0u) {
-        //     for (var i = 0u; i < size; i = i + 1u) {
-        //         store_debug_value(i, output.evals[polynomial_id].evals[i]);
-        //     }
-        // }
-
         if (layer == 0u) { break; }  
         layer = layer - 1u;
     }
-}
-
-fn storeValueToBaseColumn(polynomial_id: u32, idx: u32, value: M31) {
-    let row: u32 = idx / N_LANES;
-    let lane: u32 = idx % N_LANES;
-    trace_output.input_trace[polynomial_id].data[row][lane] = value;
 }
 
 @compute @workgroup_size(256)
@@ -190,15 +176,6 @@ fn evaluate_circle_twiddle(@builtin(global_invocation_id) global_id: vec3<u32>) 
 
             trace_output.extended_trace[polynomial_id].data[idx0] = val0;
             trace_output.extended_trace[polynomial_id].data[idx1] = val1;
-
-            storeValueToBaseColumn(polynomial_id, idx0, val0);
-            storeValueToBaseColumn(polynomial_id, idx1, val1);
         }
     }
-
-    // if (thread_id == 0u && polynomial_id == 1u) {
-    //     for (var i = 0u; i < size; i = i + 1u) {
-    //         store_debug_value(i, output.evals[polynomial_id].evals[i]);
-    //     }
-    // }
 }

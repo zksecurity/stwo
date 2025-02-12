@@ -99,7 +99,6 @@ struct RelationEntry {
 
 struct ExtendTraceOutput {
     extended_trace: array<Extended1DColumn, N_ORIGINAL_TRACE_COLUMNS>,
-    input_trace: array<BaseColumn, N_ORIGINAL_TRACE_COLUMNS>,
 }
 
 @group(0) @binding(0)
@@ -212,6 +211,10 @@ fn compute_composition_polynomial(
     output.poly[vec_index][inner_vec_index] = qm31_mul(output.poly[vec_index][inner_vec_index], QM31(CM31(denom_inv, M31(0u)), CM31(M31(0u), M31(0u))));
 }
 
+fn flatten_idx(vec_index: u32, inner_vec_index: u32) -> u32 {
+    return vec_index * N_LANES + inner_vec_index;
+}
+
 fn add_constraint(constraint: M31, vec_index: u32, inner_vec_index: u32) {
     add_constraint_qm31(QM31(CM31(constraint, M31(0u)), CM31(M31(0u), M31(0u))), vec_index, inner_vec_index);
 }
@@ -247,9 +250,7 @@ fn write_logup_frac(frac: Fraction, vec_index: u32, inner_vec_index: u32, rep_i:
         var constraint = qm31_sub(qm31_mul(diff, cur_frac.denominator), cur_frac.numerator);
         add_constraint_qm31(constraint, vec_index, inner_vec_index);
     } else {
-        // extended_preprocessed_trace
-        // is_first = input.extended_preprocessed_trace.data[vec_index][inner_vec_index];
-        is_first = extend_trace_output.input_trace[N_PREPROCESSED_TRACE_OFFSET].data[vec_index][inner_vec_index];
+        is_first = extend_trace_output.extended_trace[N_PREPROCESSED_TRACE_OFFSET].data[flatten_idx(vec_index, inner_vec_index)];
         is_finalized = false;
     }
     cur_frac = frac;
@@ -277,24 +278,19 @@ fn finalize_logup(vec_index: u32, inner_vec_index: u32) {
 }
 
 fn next_trace_mask(col_index: u32, vec_index: u32, inner_vec_index: u32) -> M31 {
-    //return input.extended_trace[col_index].data[vec_index][inner_vec_index];
-    return extend_trace_output.input_trace[col_index + N_EXTENDED_TRACE_OFFSET].data[vec_index][inner_vec_index];
+    return extend_trace_output.extended_trace[col_index + N_EXTENDED_TRACE_OFFSET].data[flatten_idx(vec_index, inner_vec_index)];
 }
 
 fn next_interaction_trace_mask(col_index: u32, vec_index: u32, inner_vec_index: u32) -> QM31 {
     // get the next 4 values in the interaction trace columns
     return QM31(
         CM31(
-            // input.extended_interaction_trace[col_index].data[vec_index][inner_vec_index], 
-            // input.extended_interaction_trace[col_index + 1].data[vec_index][inner_vec_index]
-            extend_trace_output.input_trace[col_index + N_INTERACTION_TRACE_OFFSET].data[vec_index][inner_vec_index], 
-            extend_trace_output.input_trace[col_index + N_INTERACTION_TRACE_OFFSET + 1].data[vec_index][inner_vec_index]
+            extend_trace_output.extended_trace[col_index + N_INTERACTION_TRACE_OFFSET].data[flatten_idx(vec_index, inner_vec_index)],
+            extend_trace_output.extended_trace[col_index + N_INTERACTION_TRACE_OFFSET + 1].data[flatten_idx(vec_index, inner_vec_index)]
         ),
         CM31(
-            // input.extended_interaction_trace[col_index + 2].data[vec_index][inner_vec_index],
-            // input.extended_interaction_trace[col_index + 3].data[vec_index][inner_vec_index]
-            extend_trace_output.input_trace[col_index + N_INTERACTION_TRACE_OFFSET + 2].data[vec_index][inner_vec_index],
-            extend_trace_output.input_trace[col_index + N_INTERACTION_TRACE_OFFSET + 3].data[vec_index][inner_vec_index]
+            extend_trace_output.extended_trace[col_index + N_INTERACTION_TRACE_OFFSET + 2].data[flatten_idx(vec_index, inner_vec_index)],
+            extend_trace_output.extended_trace[col_index + N_INTERACTION_TRACE_OFFSET + 3].data[flatten_idx(vec_index, inner_vec_index)]
         )
     );
 }
@@ -308,16 +304,12 @@ fn next_interaction_trace_mask_offset(col_index: u32, vec_index: u32, inner_vec_
     var new_inner_vec_index = row % N_LANES;
     return QM31(
         CM31(
-            // input.extended_interaction_trace[col_index].data[new_vec_index][new_inner_vec_index],
-            // input.extended_interaction_trace[col_index + 1].data[new_vec_index][new_inner_vec_index]
-            extend_trace_output.input_trace[col_index + N_INTERACTION_TRACE_OFFSET].data[new_vec_index][new_inner_vec_index],
-            extend_trace_output.input_trace[col_index + N_INTERACTION_TRACE_OFFSET + 1].data[new_vec_index][new_inner_vec_index]
+            extend_trace_output.extended_trace[col_index + N_INTERACTION_TRACE_OFFSET].data[flatten_idx(new_vec_index, new_inner_vec_index)],
+            extend_trace_output.extended_trace[col_index + N_INTERACTION_TRACE_OFFSET + 1].data[flatten_idx(new_vec_index, new_inner_vec_index)]
         ),
         CM31(
-            // input.extended_interaction_trace[col_index + 2].data[new_vec_index][new_inner_vec_index],
-            // input.extended_interaction_trace[col_index + 3].data[new_vec_index][new_inner_vec_index]
-            extend_trace_output.input_trace[col_index + N_INTERACTION_TRACE_OFFSET + 2].data[new_vec_index][new_inner_vec_index],
-            extend_trace_output.input_trace[col_index + N_INTERACTION_TRACE_OFFSET + 3].data[new_vec_index][new_inner_vec_index]
+            extend_trace_output.extended_trace[col_index + N_INTERACTION_TRACE_OFFSET + 2].data[flatten_idx(new_vec_index, new_inner_vec_index)],
+            extend_trace_output.extended_trace[col_index + N_INTERACTION_TRACE_OFFSET + 3].data[flatten_idx(new_vec_index, new_inner_vec_index)]
         )
     );
 }

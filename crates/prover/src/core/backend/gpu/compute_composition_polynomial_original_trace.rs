@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Instant;
 
 use itertools::Itertools;
 use wgpu::util::DeviceExt;
@@ -103,6 +104,7 @@ impl From<PoseidonElements> for GpuLookupElements {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[repr(C)]
 pub struct ComputeCompositionPolynomialInput {
     pub original_trace: [GpuOriginalColumn; N_ORIGINAL_TRACE_COLUMNS as usize],
     pub twiddles: Twiddles,
@@ -123,7 +125,6 @@ pub struct ComputeCompositionPolynomialOutput {
 #[derive(Debug, Clone, Copy)]
 pub struct ExtendTraceOutput {
     pub extended_trace: [GpuExtended1DColumn; N_ORIGINAL_TRACE_COLUMNS as usize],
-    pub intermediate_result: [GpuExtendedColumn; N_ORIGINAL_TRACE_COLUMNS as usize],
 }
 
 #[derive(Debug, Clone)]
@@ -151,69 +152,7 @@ impl ByteSerialize for GpuExtendedColumn {}
 impl ByteSerialize for GpuExtended1DColumn {}
 impl ByteSerialize for GpuOriginalColumn {}
 impl ByteSerialize for ComputeCompositionPolynomialOutput {}
-
-impl ComputeCompositionPolynomialInput {
-    fn as_bytes(&self) -> &[u8] {
-        let total_size = std::mem::size_of::<ComputeCompositionPolynomialInput>();
-        let mut bytes = Vec::with_capacity(total_size);
-        bytes.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                &self.original_trace as *const GpuOriginalColumn as *const u8,
-                N_ORIGINAL_TRACE_COLUMNS as usize * std::mem::size_of::<GpuOriginalColumn>(),
-            )
-        });
-        bytes.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                &self.twiddles as *const Twiddles as *const u8,
-                std::mem::size_of::<Twiddles>(),
-            )
-        });
-
-        bytes.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                &self.denom_inv as *const GpuM31 as *const u8,
-                4 * std::mem::size_of::<GpuM31>(),
-            )
-        });
-
-        bytes.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                &self.random_coeff_powers as *const GpuQM31 as *const u8,
-                N_CONSTRAINTS as usize * std::mem::size_of::<GpuQM31>(),
-            )
-        });
-
-        bytes.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                &self.lookup_elements as *const GpuLookupElements as *const u8,
-                std::mem::size_of::<GpuLookupElements>(),
-            )
-        });
-
-        bytes.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                &self.trace_domain_log_size as *const u32 as *const u8,
-                std::mem::size_of::<u32>(),
-            )
-        });
-
-        bytes.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                &self.eval_domain_log_size as *const u32 as *const u8,
-                std::mem::size_of::<u32>(),
-            )
-        });
-
-        bytes.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                &self.total_sum as *const GpuQM31 as *const u8,
-                std::mem::size_of::<GpuQM31>(),
-            )
-        });
-
-        Box::leak(bytes.into_boxed_slice())
-    }
-}
+impl ByteSerialize for ComputeCompositionPolynomialInput {}
 
 impl ComputeCompositionPolynomialOutput {
     fn from_bytes(bytes: &[u8]) -> Self {
@@ -494,6 +433,7 @@ fn create_composition_polynomial_gpu_input(
     total_sum: QM31,
 ) -> ComputeCompositionPolynomialInput {
     // flatten original trace
+    let start = Instant::now();
     let original_trace_gpu: [GpuOriginalColumn; N_ORIGINAL_TRACE_COLUMNS as usize] = original_trace
         .iter()
         .flatten()
@@ -501,6 +441,7 @@ fn create_composition_polynomial_gpu_input(
         .collect_vec()
         .try_into()
         .expect("Wrong length");
+    println!("Time taken: {:?}", start.elapsed());
 
     // flatten twiddles
     let twiddles = CpuBackend::precompute_twiddles(eval_domain.half_coset);

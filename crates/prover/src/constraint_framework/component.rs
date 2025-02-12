@@ -486,9 +486,7 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
         //         for col_idx in 0..trace[trace_idx].len() {
         //             let base_col = &copied_trace[trace_idx][col_idx];
         //             let gpu_col =
-        // &gpu_extended_trace_results.output.extended_trace[flattened_idx];             let
-        // gpu_ir_col =
-        // &gpu_extended_trace_results.output.intermediate_result[flattened_idx];
+        // &gpu_extended_trace_results.output.extended_trace[flattened_idx];
 
         //             for base_col_idx in 0..base_col.data.len() {
         //                 let base_elem = base_col.data[base_col_idx].into_simd();
@@ -502,7 +500,6 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
 
         //                 for i in 0..base_elem.len() {
         //                     assert_eq!(base_elem[i], gpu_elem[i]);
-        //                     assert_eq!(base_elem[i], gpu_ir_col.data[base_col_idx][i].data);
         //                 }
         //             }
 
