@@ -7,7 +7,8 @@ use tracing::{span, Level};
 use crate::constraint_framework::{FrameworkComponent, FrameworkEval, PREPROCESSED_TRACE_IDX};
 use crate::core::air::accumulation::DomainEvaluationAccumulator;
 use crate::core::air::{Component, Trace};
-use crate::core::backend::gpu::compute_composition_polynomial::compute_composition_polynomial_gpu as compute_composition_polynomial_gpu_poseidon;
+// use crate::core::backend::gpu::compute_composition_polynomial::compute_composition_polynomial_gpu as compute_composition_polynomial_gpu_poseidon;
+use crate::core::backend::gpu::compute_composition_polynomial_original_trace::compute_composition_polynomial_original_trace_gpu;
 use crate::core::backend::simd::SimdBackend;
 use crate::core::backend::BackendForChannel;
 use crate::core::channel::{Channel, MerkleChannel};
@@ -116,6 +117,8 @@ async fn evaluate_constraint_quotients_on_domain_gpu<'a, E: FrameworkEval + Any 
         .iter()
         .flatten()
         .any(|c| c.domain != eval_domain);
+    #[cfg(target_family = "wasm")]
+    let cpu_trace_extend_start = web_sys::window().unwrap().performance().unwrap().now();
     let trace: TreeVec<Vec<Cow<'_, CircleEvaluation<SimdBackend, BaseField, BitReversedOrder>>>> =
         if need_to_extend {
             let _span = span!(Level::INFO, "Extension").entered();
@@ -126,6 +129,16 @@ async fn evaluate_constraint_quotients_on_domain_gpu<'a, E: FrameworkEval + Any 
         } else {
             component_evals.clone().map_cols(|c| Cow::Borrowed(*c))
         };
+    #[cfg(target_family = "wasm")]
+    let cpu_trace_extend_end = web_sys::window().unwrap().performance().unwrap().now();
+    #[cfg(target_family = "wasm")]
+    web_sys::console::log_1(
+        &format!(
+            "Time spent on CPU trace extend: {:?}ms",
+            cpu_trace_extend_end - cpu_trace_extend_start
+        )
+        .into(),
+    );
 
     // Denom inverses.
     let log_expand = eval_domain.log_size() - trace_domain.log_size();
@@ -145,9 +158,23 @@ async fn evaluate_constraint_quotients_on_domain_gpu<'a, E: FrameworkEval + Any 
     #[cfg(target_family = "wasm")]
     let gpu_start = web_sys::window().unwrap().performance().unwrap().now();
 
+    // if let Some(poseidon_component) = (component as &dyn Any).downcast_ref::<PoseidonComponent>()
+    // {     let gpu_results = compute_composition_polynomial_gpu_poseidon(
+    //         trace_cols,
+    //         denom_inv.clone(),
+    //         accum.random_coeff_powers.clone(),
+    //         poseidon_component.eval().lookup_elements.clone(),
+    //         trace_domain.log_size(),
+    //         eval_domain.log_size(),
+    //         poseidon_component.eval().total_sum,
+    //     )
+    //     .await;
+    // }
+
     if let Some(poseidon_component) = (component as &dyn Any).downcast_ref::<PoseidonComponent>() {
-        let gpu_results = compute_composition_polynomial_gpu_poseidon(
-            trace_cols,
+        let gpu_results = compute_composition_polynomial_original_trace_gpu(
+            component_polys,
+            eval_domain,
             denom_inv.clone(),
             accum.random_coeff_powers.clone(),
             poseidon_component.eval().lookup_elements.clone(),

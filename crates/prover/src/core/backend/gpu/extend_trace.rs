@@ -41,9 +41,7 @@ pub const N_ORIGINAL_TRACE_COLUMNS: u32 = 1 + N_COLUMNS + N_INTERACTION_COLUMNS;
 #[repr(C)]
 pub struct GpuExtendedColumn {
     pub data: [[GpuM31; N_LANES as usize]; N_EXTENDED_ROWS as usize],
-    pub length: u32,
 }
-
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct Twiddles {
@@ -59,14 +57,12 @@ pub struct Twiddles {
 #[repr(C)]
 pub struct GpuOriginalColumn {
     pub coeffs: [GpuM31; N_ORIGINAL_COLUMN_SIZE as usize],
-    pub length: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct GpuExtended1DColumn {
     pub data: [GpuM31; N_EXTENDED_COLUMN_SIZE as usize],
-    pub length: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -114,10 +110,7 @@ impl From<&&&CirclePoly<SimdBackend>> for GpuOriginalColumn {
             coeffs[i] = coeff.into();
         }
 
-        GpuOriginalColumn {
-            coeffs,
-            length: N_ORIGINAL_COLUMN_SIZE,
-        }
+        GpuOriginalColumn { coeffs }
     }
 }
 

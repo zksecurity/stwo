@@ -23,7 +23,7 @@ use crate::core::air::{Component, ComponentProver, Trace};
 // use crate::core::backend::gpu::compute_composition_polynomial::compute_composition_polynomial_gpu;
 #[cfg(not(target_family = "wasm"))]
 use crate::core::backend::gpu::compute_composition_polynomial_original_trace::compute_composition_polynomial_original_trace_gpu;
-use crate::core::backend::gpu::extend_trace::extended_trace_gpu;
+// use crate::core::backend::gpu::extend_trace::extended_trace_gpu;
 use crate::core::backend::simd::column::VeryPackedSecureColumnByCoords;
 use crate::core::backend::simd::m31::LOG_N_LANES;
 use crate::core::backend::simd::very_packed_m31::{VeryPackedBaseField, LOG_N_VERY_PACKED_ELEMS};
@@ -291,24 +291,21 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
             .flatten()
             .any(|c| c.domain != eval_domain);
 
+        #[cfg(not(target_family = "wasm"))]
+        let cpu_trace_extend_start = Instant::now();
         let trace: TreeVec<
             Vec<Cow<'_, CircleEvaluation<SimdBackend, BaseField, BitReversedOrder>>>,
         > = if need_to_extend {
             let _span = span!(Level::INFO, "Extension").entered();
             let twiddles = SimdBackend::precompute_twiddles(eval_domain.half_coset);
-            #[cfg(not(target_family = "wasm"))]
-            let start = Instant::now();
-            let ret = component_polys
+            component_polys
                 .as_cols_ref()
-                .map_cols(|col| Cow::Owned(col.evaluate_with_twiddles(eval_domain, &twiddles)));
-            #[cfg(not(target_family = "wasm"))]
-            let end = Instant::now();
-            #[cfg(not(target_family = "wasm"))]
-            println!("CPU trace extend time: {:?}", end - start);
-            ret
+                .map_cols(|col| Cow::Owned(col.evaluate_with_twiddles(eval_domain, &twiddles)))
         } else {
             component_evals.clone().map_cols(|c| Cow::Borrowed(*c))
         };
+        #[cfg(not(target_family = "wasm"))]
+        let cpu_trace_extend_end = Instant::now();
 
         // Denom inverses.
         let log_expand = eval_domain.log_size() - trace_domain.log_size();
@@ -466,51 +463,53 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
             res
         });
 
-        #[cfg(not(target_family = "wasm"))]
-        {
-            let start = Instant::now();
-            let gpu_extended_trace_results = pollster::block_on(extended_trace_gpu(
-                component_polys.clone(),
-                eval_domain,
-                denom_inv.clone(),
-                accum.random_coeff_powers.clone(),
-                lookup_elements.clone(),
-                trace_domain.log_size(),
-                eval_domain.log_size(),
-                self.logup_sums.0,
-            ));
-            let end = Instant::now();
-            println!("GPU trace extend time: {:?}", end - start);
+        // XXX : If you want to test the gpu extended trace, uncomment the following code
+        // #[cfg(not(target_family = "wasm"))]
+        // {
+        //     let start = Instant::now();
+        //     let gpu_extended_trace_results = pollster::block_on(extended_trace_gpu(
+        //         component_polys.clone(),
+        //         eval_domain,
+        //         denom_inv.clone(),
+        //         accum.random_coeff_powers.clone(),
+        //         lookup_elements.clone(),
+        //         trace_domain.log_size(),
+        //         eval_domain.log_size(),
+        //         self.logup_sums.0,
+        //     ));
+        //     let end = Instant::now();
+        //     println!("GPU trace extend time: {:?}", end - start);
 
-            let copied_trace = trace.clone();
-            let mut flattened_idx = 0;
-            for trace_idx in 0..trace.len() {
-                for col_idx in 0..trace[trace_idx].len() {
-                    let base_col = &copied_trace[trace_idx][col_idx];
-                    let gpu_col = &gpu_extended_trace_results.output.extended_trace[flattened_idx];
-                    let gpu_ir_col =
-                        &gpu_extended_trace_results.output.intermediate_result[flattened_idx];
+        //     let copied_trace = trace.clone();
+        //     let mut flattened_idx = 0;
+        //     for trace_idx in 0..trace.len() {
+        //         for col_idx in 0..trace[trace_idx].len() {
+        //             let base_col = &copied_trace[trace_idx][col_idx];
+        //             let gpu_col =
+        // &gpu_extended_trace_results.output.extended_trace[flattened_idx];             let
+        // gpu_ir_col =
+        // &gpu_extended_trace_results.output.intermediate_result[flattened_idx];
 
-                    for base_col_idx in 0..base_col.data.len() {
-                        let base_elem = base_col.data[base_col_idx].into_simd();
-                        let start_idx = base_col_idx * 16;
-                        let end_idx = start_idx + 16;
-                        let gpu_elem: Vec<u32> = gpu_col.data[start_idx..end_idx]
-                            .to_vec()
-                            .iter()
-                            .map(|x| x.data)
-                            .collect();
+        //             for base_col_idx in 0..base_col.data.len() {
+        //                 let base_elem = base_col.data[base_col_idx].into_simd();
+        //                 let start_idx = base_col_idx * 16;
+        //                 let end_idx = start_idx + 16;
+        //                 let gpu_elem: Vec<u32> = gpu_col.data[start_idx..end_idx]
+        //                     .to_vec()
+        //                     .iter()
+        //                     .map(|x| x.data)
+        //                     .collect();
 
-                        for i in 0..base_elem.len() {
-                            assert_eq!(base_elem[i], gpu_elem[i]);
-                            assert_eq!(base_elem[i], gpu_ir_col.data[base_col_idx][i].data);
-                        }
-                    }
+        //                 for i in 0..base_elem.len() {
+        //                     assert_eq!(base_elem[i], gpu_elem[i]);
+        //                     assert_eq!(base_elem[i], gpu_ir_col.data[base_col_idx][i].data);
+        //                 }
+        //             }
 
-                    flattened_idx += 1;
-                }
-            }
-        }
+        //             flattened_idx += 1;
+        //         }
+        //     }
+        // }
 
         #[cfg(not(target_family = "wasm"))]
         let gpu_start = Instant::now();
@@ -603,7 +602,17 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
         #[cfg(not(target_family = "wasm"))]
         let cpu_end = Instant::now();
         #[cfg(not(target_family = "wasm"))]
-        println!("CPU time: {:?}", cpu_end - cpu_start);
+        {
+            println!(
+                "CPU time: {:?}",
+                cpu_end - cpu_start + (cpu_trace_extend_end - cpu_trace_extend_start)
+            );
+            println!("CPU compute comp_poly time: {:?}", cpu_end - cpu_start);
+            println!(
+                "CPU extend trace_cols time: {:?}",
+                cpu_trace_extend_end - cpu_trace_extend_start
+            );
+        }
         #[cfg(target_family = "wasm")]
         let cpu_end = web_sys::window().unwrap().performance().unwrap().now();
         #[cfg(target_family = "wasm")]

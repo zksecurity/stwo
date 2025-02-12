@@ -34,17 +34,14 @@ fn butterfly(v0: ptr<function, M31>, v1: ptr<function, M31>, twid: M31) {
 
 struct BaseColumn {
     data: array<array<M31, N_LANES>, N_EXTENDED_ROWS>,
-    length: u32,
 }
 
 struct OriginalColumn {
     data: array<M31, N_ORIGINAL_COLUMN_SIZE>,
-    length: u32,
 }
 
 struct Extended1DColumn {
     data: array<M31, N_EXTENDED_COLUMN_SIZE>,
-    length: u32,
 }
 
 struct LookupElements {

@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::time::Instant;
 
 use itertools::Itertools;
 use wgpu::util::DeviceExt;
@@ -41,21 +40,18 @@ pub const N_ORIGINAL_TRACE_COLUMNS: u32 = 1 + N_COLUMNS + N_INTERACTION_COLUMNS;
 #[repr(C)]
 pub struct GpuExtendedColumn {
     pub data: [[GpuM31; N_LANES as usize]; N_EXTENDED_ROWS as usize],
-    pub length: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct GpuOriginalColumn {
     pub coeffs: [GpuM31; (N_LANES * N_ORIGINAL_ROWS) as usize],
-    pub length: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct GpuExtended1DColumn {
     pub data: [GpuM31; (N_LANES * N_EXTENDED_ROWS) as usize],
-    pub length: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -77,10 +73,7 @@ impl From<&&&CirclePoly<SimdBackend>> for GpuOriginalColumn {
             coeffs[i] = coeff.into();
         }
 
-        GpuOriginalColumn {
-            coeffs,
-            length: N_LANES * N_ORIGINAL_ROWS,
-        }
+        GpuOriginalColumn { coeffs }
     }
 }
 
@@ -271,7 +264,6 @@ async fn init(
         .await
         .unwrap();
 
-    let start = Instant::now();
     let input_data = create_composition_polynomial_gpu_input(
         original_trace,
         eval_domain,
@@ -282,8 +274,6 @@ async fn init(
         eval_domain_log_size,
         total_sum,
     );
-    let end = Instant::now();
-    println!("Input data creation time: {:?}", end - start);
 
     // Create buffers
     let input_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -503,7 +493,7 @@ fn create_composition_polynomial_gpu_input(
     eval_domain_log_size: u32,
     total_sum: QM31,
 ) -> ComputeCompositionPolynomialInput {
-    let check0 = Instant::now();
+    // flatten original trace
     let original_trace_gpu: [GpuOriginalColumn; N_ORIGINAL_TRACE_COLUMNS as usize] = original_trace
         .iter()
         .flatten()
@@ -511,8 +501,6 @@ fn create_composition_polynomial_gpu_input(
         .collect_vec()
         .try_into()
         .expect("Wrong length");
-    let check1 = Instant::now();
-    println!("Original trace flattening time: {:?}", check1 - check0);
 
     // flatten twiddles
     let twiddles = CpuBackend::precompute_twiddles(eval_domain.half_coset);
