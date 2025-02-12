@@ -315,6 +315,7 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
 
         #[cfg(not(target_family = "wasm"))]
         {
+            println!("trace domain log_size: {}", trace_domain.log_size());
             let gpu_extended_trace_results =
                 pollster::block_on(extended_trace_gpu(component_polys, eval_domain));
             // want to compare first element of this to trace
