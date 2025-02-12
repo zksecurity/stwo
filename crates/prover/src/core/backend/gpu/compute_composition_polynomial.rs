@@ -16,7 +16,7 @@ use crate::core::poly::circle::CircleEvaluation;
 use crate::core::poly::BitReversedOrder;
 use crate::examples::poseidon::PoseidonElements;
 
-pub const N_ROWS: u32 = 32;
+pub const N_ROWS: u32 = 128;
 pub const N_STATE: u32 = 16;
 pub const N_LOG_INSTANCES_PER_ROW: u32 = 3;
 pub const N_INSTANCES_PER_ROW: u32 = 1 << N_LOG_INSTANCES_PER_ROW;

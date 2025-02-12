@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Instant;
 
 use itertools::Itertools;
 use wgpu::util::DeviceExt;
@@ -15,7 +16,7 @@ use crate::core::poly::circle::{CircleDomain, CirclePoly, PolyOps};
 use crate::core::poly::utils::domain_line_twiddles_from_tree;
 use crate::examples::poseidon::PoseidonElements;
 
-pub const N_ROWS: u32 = 32;
+pub const N_ROWS: u32 = 256;
 pub const N_STATE: u32 = 16;
 pub const N_LOG_INSTANCES_PER_ROW: u32 = 3;
 pub const N_INSTANCES_PER_ROW: u32 = 1 << N_LOG_INSTANCES_PER_ROW;
@@ -255,12 +256,14 @@ async fn init(
         })
         .await
         .unwrap();
+    let mut limit = wgpu::Limits::default();
+    limit.max_storage_buffer_binding_size = 128 << 22; // (512 MiB)
     let (device, queue) = adapter
         .request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("Device"),
                 required_features: wgpu::Features::SHADER_INT64,
-                required_limits: wgpu::Limits::default(),
+                required_limits: limit,
                 memory_hints: wgpu::MemoryHints::Performance,
             },
             None,
@@ -268,6 +271,7 @@ async fn init(
         .await
         .unwrap();
 
+    let start = Instant::now();
     let input_data = create_composition_polynomial_gpu_input(
         original_trace,
         eval_domain,
@@ -278,6 +282,8 @@ async fn init(
         eval_domain_log_size,
         total_sum,
     );
+    let end = Instant::now();
+    println!("Input data creation time: {:?}", end - start);
 
     // Create buffers
     let input_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -497,7 +503,7 @@ fn create_composition_polynomial_gpu_input(
     eval_domain_log_size: u32,
     total_sum: QM31,
 ) -> ComputeCompositionPolynomialInput {
-    // flatten original trace
+    let check0 = Instant::now();
     let original_trace_gpu: [GpuOriginalColumn; N_ORIGINAL_TRACE_COLUMNS as usize] = original_trace
         .iter()
         .flatten()
@@ -505,6 +511,8 @@ fn create_composition_polynomial_gpu_input(
         .collect_vec()
         .try_into()
         .expect("Wrong length");
+    let check1 = Instant::now();
+    println!("Original trace flattening time: {:?}", check1 - check0);
 
     // flatten twiddles
     let twiddles = CpuBackend::precompute_twiddles(eval_domain.half_coset);

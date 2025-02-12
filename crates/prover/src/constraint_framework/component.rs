@@ -516,6 +516,8 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
         let gpu_start = Instant::now();
 
         // #[cfg(not(target_family = "wasm"))]
+        // println!("Running non_trace_extend_gpu");
+        // #[cfg(not(target_family = "wasm"))]
         // let gpu_results = pollster::block_on(compute_composition_polynomial_gpu(
         //     trace_cols,
         //     denom_inv.clone(),
@@ -526,6 +528,8 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
         //     self.logup_sums.0,
         // ));
 
+        #[cfg(not(target_family = "wasm"))]
+        println!("Running TRACE_EXTEND_GPU");
         #[cfg(not(target_family = "wasm"))]
         let gpu_results = pollster::block_on(compute_composition_polynomial_original_trace_gpu(
             component_polys,

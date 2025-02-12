@@ -15,7 +15,7 @@ use crate::core::poly::circle::{CircleDomain, CirclePoly, PolyOps};
 use crate::core::poly::utils::domain_line_twiddles_from_tree;
 use crate::examples::poseidon::PoseidonElements;
 
-pub const N_ROWS: u32 = 64;
+pub const N_ROWS: u32 = 256;
 pub const N_STATE: u32 = 16;
 pub const N_LOG_INSTANCES_PER_ROW: u32 = 3;
 pub const N_INSTANCES_PER_ROW: u32 = 1 << N_LOG_INSTANCES_PER_ROW;
@@ -29,6 +29,8 @@ pub const N_WORKGROUPS: u32 = N_EXTENDED_ROWS * N_LANES / THREADS_PER_WORKGROUP;
 pub const THREADS_PER_WORKGROUP: u32 = 256;
 pub const N_HALF_FULL_ROUNDS: u32 = 4;
 pub const N_PARTIAL_ROUNDS: u32 = 14;
+pub const N_ORIGINAL_COLUMN_SIZE: u32 = N_LANES * N_ROWS;
+pub const N_EXTENDED_COLUMN_SIZE: u32 = N_LANES * N_EXTENDED_ROWS;
 
 pub const N_LINE_TWIDDLES_SIZE: u32 = N_EXTENDED_ROWS * N_LANES;
 pub const N_LINE_TWIDDLES_FLAT_SIZE: u32 = N_LINE_TWIDDLES_SIZE * 2;
@@ -56,14 +58,14 @@ pub struct Twiddles {
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct GpuOriginalColumn {
-    pub coeffs: [GpuM31; (N_LANES * N_ORIGINAL_ROWS) as usize],
+    pub coeffs: [GpuM31; N_ORIGINAL_COLUMN_SIZE as usize],
     pub length: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct GpuExtended1DColumn {
-    pub data: [GpuM31; (N_LANES * N_EXTENDED_ROWS) as usize],
+    pub data: [GpuM31; N_EXTENDED_COLUMN_SIZE as usize],
     pub length: u32,
 }
 
@@ -106,7 +108,7 @@ impl From<PoseidonElements> for GpuLookupElements {
 
 impl From<&&&CirclePoly<SimdBackend>> for GpuOriginalColumn {
     fn from(value: &&&CirclePoly<SimdBackend>) -> Self {
-        let mut coeffs = [GpuM31 { data: 0 }; (N_LANES * N_ORIGINAL_ROWS) as usize];
+        let mut coeffs = [GpuM31 { data: 0 }; N_ORIGINAL_COLUMN_SIZE as usize];
         let coeffs_vec = value.coeffs.to_cpu();
         for (i, &coeff) in coeffs_vec.iter().enumerate() {
             coeffs[i] = coeff.into();
@@ -114,7 +116,7 @@ impl From<&&&CirclePoly<SimdBackend>> for GpuOriginalColumn {
 
         GpuOriginalColumn {
             coeffs,
-            length: N_LANES * N_ORIGINAL_ROWS,
+            length: N_ORIGINAL_COLUMN_SIZE,
         }
     }
 }
@@ -255,12 +257,15 @@ async fn init(
         })
         .await
         .unwrap();
+
+    let mut limit = wgpu::Limits::default();
+    limit.max_storage_buffer_binding_size = 128 << 22; // (512 MiB)
     let (device, queue) = adapter
         .request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("Device"),
                 required_features: wgpu::Features::SHADER_INT64,
-                required_limits: wgpu::Limits::default(),
+                required_limits: limit,
                 memory_hints: wgpu::MemoryHints::Performance,
             },
             None,

@@ -1,6 +1,6 @@
 // Note: depends on qm31.wgsl, fraction.wgsl, utils.wgsl
 // Define constants
-const N_ROWS: u32 = 64;
+const N_ROWS: u32 = 256;
 const N_EXTENDED_ROWS: u32 = N_ROWS * 4;
 const N_STATE: u32 = 16;
 const N_INSTANCES_PER_ROW: u32 = 8;
@@ -168,7 +168,7 @@ fn storeValueToBaseColumn(polynomial_id: u32, idx: u32, value: M31) {
 fn evaluate_circle_twiddle(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let workgroup_size = 256u;
     let y_dim_size = 256u;
-    let size = N_EXTENDED_COLUMN_SIZE;
+    let size = N_EXTENDED_COLUMN_SIZE / 2;
 
     let thread_id_x = global_id.x;
     let chunk_size = (size + workgroup_size - 1u) / workgroup_size;
