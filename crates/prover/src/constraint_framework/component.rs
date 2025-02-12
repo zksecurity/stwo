@@ -19,8 +19,10 @@ use super::{
 };
 use crate::core::air::accumulation::{DomainEvaluationAccumulator, PointEvaluationAccumulator};
 use crate::core::air::{Component, ComponentProver, Trace};
+// #[cfg(not(target_family = "wasm"))]
+// use crate::core::backend::gpu::compute_composition_polynomial::compute_composition_polynomial_gpu;
 #[cfg(not(target_family = "wasm"))]
-use crate::core::backend::gpu::compute_composition_polynomial::compute_composition_polynomial_gpu;
+use crate::core::backend::gpu::compute_composition_polynomial_original_trace::compute_composition_polynomial_original_trace_gpu;
 use crate::core::backend::gpu::extend_trace::extended_trace_gpu;
 use crate::core::backend::simd::column::VeryPackedSecureColumnByCoords;
 use crate::core::backend::simd::m31::LOG_N_LANES;
@@ -468,7 +470,7 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
         {
             let start = Instant::now();
             let gpu_extended_trace_results = pollster::block_on(extended_trace_gpu(
-                component_polys,
+                component_polys.clone(),
                 eval_domain,
                 denom_inv.clone(),
                 accum.random_coeff_powers.clone(),
@@ -513,9 +515,21 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
         #[cfg(not(target_family = "wasm"))]
         let gpu_start = Instant::now();
 
+        // #[cfg(not(target_family = "wasm"))]
+        // let gpu_results = pollster::block_on(compute_composition_polynomial_gpu(
+        //     trace_cols,
+        //     denom_inv.clone(),
+        //     accum.random_coeff_powers.clone(),
+        //     lookup_elements,
+        //     trace_domain.log_size(),
+        //     eval_domain.log_size(),
+        //     self.logup_sums.0,
+        // ));
+
         #[cfg(not(target_family = "wasm"))]
-        let gpu_results = pollster::block_on(compute_composition_polynomial_gpu(
-            trace_cols,
+        let gpu_results = pollster::block_on(compute_composition_polynomial_original_trace_gpu(
+            component_polys,
+            eval_domain,
             denom_inv.clone(),
             accum.random_coeff_powers.clone(),
             lookup_elements,

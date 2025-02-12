@@ -55,6 +55,16 @@ struct BaseColumn {
     length: u32,
 }
 
+struct OriginalColumn {
+    data: array<M31, N_ORIGINAL_COLUMN_SIZE>,
+    length: u32,
+}
+
+struct Extended1DColumn {
+    data: array<M31, N_EXTENDED_COLUMN_SIZE>,
+    length: u32,
+}
+
 struct LookupElements {
     z: QM31,
     alpha: QM31,
@@ -90,11 +100,6 @@ struct RelationEntry {
     values: array<M31, N_STATE>,
 }
 
-struct Extended1DColumn {
-    data: array<M31, N_EXTENDED_COLUMN_SIZE>,
-    length: u32,
-}
-
 struct ExtendTraceOutput {
     extended_trace: array<Extended1DColumn, N_ORIGINAL_TRACE_COLUMNS>,
     input_trace: array<BaseColumn, N_ORIGINAL_TRACE_COLUMNS>,
@@ -107,7 +112,7 @@ var<storage, read> input: ComputeCompositionPolynomialInput;
 var<storage, read_write> output: ComputeCompositionPolynomialOutput;
 
 @group(0) @binding(2)
-var<storage, read> extend_trace_output: ExtendTraceOutput;
+var<storage, read_write> extend_trace_output: ExtendTraceOutput;
 
 var<private> constraint_index: u32 = 0u;
 

@@ -4,16 +4,15 @@ use itertools::Itertools;
 use wgpu::util::DeviceExt;
 
 use super::qm31::GpuQM31;
-use crate::constraint_framework::{
-    INTERACTION_TRACE_IDX, ORIGINAL_TRACE_IDX, PREPROCESSED_TRACE_IDX,
-};
+use crate::core::backend::cpu::circle::circle_twiddles_from_line_twiddles;
 use crate::core::backend::gpu::qm31::GpuM31;
-use crate::core::backend::CpuBackend;
+use crate::core::backend::simd::SimdBackend;
+use crate::core::backend::{Column, CpuBackend};
 use crate::core::fields::m31::M31;
 use crate::core::fields::qm31::QM31;
 use crate::core::pcs::TreeVec;
-use crate::core::poly::circle::CircleEvaluation;
-use crate::core::poly::BitReversedOrder;
+use crate::core::poly::circle::{CircleDomain, CirclePoly, PolyOps};
+use crate::core::poly::utils::domain_line_twiddles_from_tree;
 use crate::examples::poseidon::PoseidonElements;
 
 pub const N_ROWS: u32 = 32;
@@ -22,13 +21,20 @@ pub const N_LOG_INSTANCES_PER_ROW: u32 = 3;
 pub const N_INSTANCES_PER_ROW: u32 = 1 << N_LOG_INSTANCES_PER_ROW;
 pub const N_LANES: u32 = 16;
 pub const N_EXTENDED_ROWS: u32 = N_ROWS * 4;
+pub const N_ORIGINAL_ROWS: u32 = N_ROWS;
 pub const N_CONSTRAINTS: u32 = 1144;
 pub const N_COLUMNS: u32 = 1264;
 pub const N_INTERACTION_COLUMNS: u32 = N_INSTANCES_PER_ROW * 4;
 pub const N_WORKGROUPS: u32 = N_EXTENDED_ROWS * N_LANES / THREADS_PER_WORKGROUP;
+pub const N_EXTEND_TRACE_WORKGROUPS: u32 = 256;
 pub const THREADS_PER_WORKGROUP: u32 = 256;
 pub const N_HALF_FULL_ROUNDS: u32 = 4;
 pub const N_PARTIAL_ROUNDS: u32 = 14;
+
+pub const N_LINE_TWIDDLES_SIZE: u32 = N_EXTENDED_ROWS * N_LANES;
+pub const N_LINE_TWIDDLES_FLAT_SIZE: u32 = N_LINE_TWIDDLES_SIZE * 2;
+pub const N_CIRCLE_TWIDDLES_SIZE: u32 = N_LINE_TWIDDLES_SIZE * 2;
+pub const N_ORIGINAL_TRACE_COLUMNS: u32 = 1 + N_COLUMNS + N_INTERACTION_COLUMNS;
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
@@ -37,19 +43,42 @@ pub struct GpuExtendedColumn {
     pub length: u32,
 }
 
-impl From<&CircleEvaluation<CpuBackend, M31, BitReversedOrder>> for GpuExtendedColumn {
-    fn from(value: &CircleEvaluation<CpuBackend, M31, BitReversedOrder>) -> Self {
-        let mut data = [[GpuM31 { data: 0 }; N_LANES as usize]; N_EXTENDED_ROWS as usize];
-        for (i, chunk) in value.values.chunks(N_LANES as usize).enumerate() {
-            let mut row = [GpuM31 { data: 0 }; N_LANES as usize];
-            for (j, &val) in chunk.iter().enumerate() {
-                row[j] = val.into();
-            }
-            data[i] = row;
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct GpuOriginalColumn {
+    pub coeffs: [GpuM31; (N_LANES * N_ORIGINAL_ROWS) as usize],
+    pub length: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct GpuExtended1DColumn {
+    pub data: [GpuM31; (N_LANES * N_EXTENDED_ROWS) as usize],
+    pub length: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct Twiddles {
+    pub circle_twiddles: [GpuM31; N_CIRCLE_TWIDDLES_SIZE as usize],
+    pub circle_twiddles_size: u32,
+    pub line_twiddles_flat: [GpuM31; N_LINE_TWIDDLES_FLAT_SIZE as usize],
+    pub line_twiddles_layer_count: u32,
+    pub line_twiddles_sizes: [u32; N_LINE_TWIDDLES_SIZE as usize],
+    pub line_twiddles_offsets: [u32; N_LINE_TWIDDLES_SIZE as usize],
+}
+
+impl From<&&&CirclePoly<SimdBackend>> for GpuOriginalColumn {
+    fn from(value: &&&CirclePoly<SimdBackend>) -> Self {
+        let mut coeffs = [GpuM31 { data: 0 }; (N_LANES * N_ORIGINAL_ROWS) as usize];
+        let coeffs_vec = value.coeffs.to_cpu();
+        for (i, &coeff) in coeffs_vec.iter().enumerate() {
+            coeffs[i] = coeff.into();
         }
-        GpuExtendedColumn {
-            data,
-            length: N_EXTENDED_ROWS,
+
+        GpuOriginalColumn {
+            coeffs,
+            length: N_LANES * N_ORIGINAL_ROWS,
         }
     }
 }
@@ -81,20 +110,26 @@ impl From<PoseidonElements> for GpuLookupElements {
 
 #[derive(Debug, Clone, Copy)]
 pub struct ComputeCompositionPolynomialInput {
-    extended_preprocessed_trace: GpuExtendedColumn,
-    extended_trace: [GpuExtendedColumn; N_COLUMNS as usize],
-    extended_interaction_trace: [GpuExtendedColumn; N_INTERACTION_COLUMNS as usize],
-    denom_inv: [GpuM31; 4],
-    random_coeff_powers: [GpuQM31; N_CONSTRAINTS as usize],
-    lookup_elements: GpuLookupElements,
-    trace_domain_log_size: u32,
-    eval_domain_log_size: u32,
-    total_sum: GpuQM31,
+    pub original_trace: [GpuOriginalColumn; N_ORIGINAL_TRACE_COLUMNS as usize],
+    pub twiddles: Twiddles,
+    pub denom_inv: [GpuM31; 4],
+    pub random_coeff_powers: [GpuQM31; N_CONSTRAINTS as usize],
+    pub lookup_elements: GpuLookupElements,
+    pub trace_domain_log_size: u32,
+    pub eval_domain_log_size: u32,
+    pub total_sum: GpuQM31,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct ComputeCompositionPolynomialOutput {
     pub poly: [[GpuQM31; N_LANES as usize]; N_EXTENDED_ROWS as usize],
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+pub struct ExtendTraceOutput {
+    pub extended_trace: [GpuExtended1DColumn; N_ORIGINAL_TRACE_COLUMNS as usize],
+    pub intermediate_result: [GpuExtendedColumn; N_ORIGINAL_TRACE_COLUMNS as usize],
 }
 
 #[derive(Debug, Clone)]
@@ -119,6 +154,8 @@ pub trait ByteSerialize: Sized {
 }
 
 impl ByteSerialize for GpuExtendedColumn {}
+impl ByteSerialize for GpuExtended1DColumn {}
+impl ByteSerialize for GpuOriginalColumn {}
 impl ByteSerialize for ComputeCompositionPolynomialOutput {}
 
 impl ComputeCompositionPolynomialInput {
@@ -127,21 +164,14 @@ impl ComputeCompositionPolynomialInput {
         let mut bytes = Vec::with_capacity(total_size);
         bytes.extend_from_slice(unsafe {
             std::slice::from_raw_parts(
-                &self.extended_preprocessed_trace as *const GpuExtendedColumn as *const u8,
-                std::mem::size_of::<GpuExtendedColumn>(),
+                &self.original_trace as *const GpuOriginalColumn as *const u8,
+                N_ORIGINAL_TRACE_COLUMNS as usize * std::mem::size_of::<GpuOriginalColumn>(),
             )
         });
         bytes.extend_from_slice(unsafe {
             std::slice::from_raw_parts(
-                &self.extended_trace as *const GpuExtendedColumn as *const u8,
-                N_COLUMNS as usize * std::mem::size_of::<GpuExtendedColumn>(),
-            )
-        });
-
-        bytes.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                &self.extended_interaction_trace as *const GpuExtendedColumn as *const u8,
-                N_INTERACTION_COLUMNS as usize * std::mem::size_of::<GpuExtendedColumn>(),
+                &self.twiddles as *const Twiddles as *const u8,
+                std::mem::size_of::<Twiddles>(),
             )
         });
 
@@ -207,7 +237,8 @@ pub struct WgpuInstance {
 }
 
 async fn init(
-    trace: TreeVec<Vec<&CircleEvaluation<CpuBackend, M31, BitReversedOrder>>>,
+    original_trace: TreeVec<Vec<&&CirclePoly<SimdBackend>>>,
+    eval_domain: CircleDomain,
     denom_inv: Vec<M31>,
     random_coeff_powers: Vec<QM31>,
     lookup_elements: PoseidonElements,
@@ -237,8 +268,9 @@ async fn init(
         .await
         .unwrap();
 
-    let input_data = create_gpu_input(
-        trace,
+    let input_data = create_composition_polynomial_gpu_input(
+        original_trace,
+        eval_domain,
         denom_inv,
         random_coeff_powers,
         lookup_elements,
@@ -262,22 +294,48 @@ async fn init(
         mapped_at_creation: false,
     });
 
+    let extend_trace_buffer_size = std::mem::size_of::<ExtendTraceOutput>();
+    let extend_trace_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Extend Trace Buffer"),
+        size: extend_trace_buffer_size as wgpu::BufferAddress,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+
     // Load shader
     let qm31_shader = include_str!("qm31.wgsl");
     let fraction_shader = include_str!("fraction.wgsl");
     let utils_shader = include_str!("utils.wgsl");
+    let extend_trace_shader = include_str!("extend_trace.wgsl");
     let composition_shader = include_str!("compute_composition_polynomial_original_trace.wgsl");
-    let combined_shader = format!(
+
+    // Load extend trace shader
+    let extend_trace_combined_shader = format!(
+        "{}\n
+        {}\n
+        {}\n
+        {}",
+        qm31_shader, fraction_shader, utils_shader, extend_trace_shader
+    );
+    let extend_trace_shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Extend Trace Shader"),
+        source: wgpu::ShaderSource::Wgsl(extend_trace_combined_shader.into()),
+    });
+
+    // Load composition polynomial shader
+    let composition_polynomial_combined_shader = format!(
         "{}\n
         {}\n
         {}\n
         {}",
         qm31_shader, fraction_shader, utils_shader, composition_shader
     );
-    let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("Compute Composition Polynomial Shader"),
-        source: wgpu::ShaderSource::Wgsl(combined_shader.into()),
-    });
+
+    let composition_polynomial_shader_module =
+        device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Compute Composition Polynomial Shader"),
+            source: wgpu::ShaderSource::Wgsl(composition_polynomial_combined_shader.into()),
+        });
 
     // Bind group layout
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -304,6 +362,17 @@ async fn init(
                 },
                 count: None,
             },
+            // Binding 2: Extend trace buffer
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
         label: Some("Compute Composition Polynomial Bind Group Layout"),
     });
@@ -320,6 +389,10 @@ async fn init(
                 binding: 1,
                 resource: output_buffer.as_entire_binding(),
             },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: extend_trace_buffer.as_entire_binding(),
+            },
         ],
         label: Some("Compute Composition Polynomial Bind Group"),
     });
@@ -332,17 +405,44 @@ async fn init(
     });
 
     // Compute pipeline
-    let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("Compute Composition Polynomial Compute Pipeline"),
-        layout: Some(&pipeline_layout),
-        module: &shader_module,
-        entry_point: Some("compute_composition_polynomial"),
-        cache: None,
-        compilation_options: wgpu::PipelineCompilationOptions {
-            constants: &HashMap::from([]),
-            zero_initialize_workgroup_memory: true,
-        },
-    });
+    let evaluate_line_twiddle_pipeline =
+        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Extend Trace Line Twiddle Pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &extend_trace_shader_module,
+            entry_point: Some("evaluate_line_twiddle"),
+            cache: None,
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: &HashMap::from([]),
+                zero_initialize_workgroup_memory: true,
+            },
+        });
+
+    let evaluate_circle_twiddle_pipeline =
+        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Extend Trace Circle Twiddle Pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &extend_trace_shader_module,
+            entry_point: Some("evaluate_circle_twiddle"),
+            cache: None,
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: &HashMap::from([]),
+                zero_initialize_workgroup_memory: true,
+            },
+        });
+
+    let composition_polynomial_compute_pipeline =
+        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Compute Composition Polynomial Compute Pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &composition_polynomial_shader_module,
+            entry_point: Some("compute_composition_polynomial"),
+            cache: None,
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: &HashMap::from([]),
+                zero_initialize_workgroup_memory: true,
+            },
+        });
 
     // Create encoder
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -355,8 +455,16 @@ async fn init(
             label: Some("Compute Composition Polynomial Compute Pass"),
             timestamp_writes: None,
         });
-        compute_pass.set_pipeline(&compute_pipeline);
+
         compute_pass.set_bind_group(0, &bind_group, &[]);
+
+        compute_pass.set_pipeline(&evaluate_line_twiddle_pipeline);
+        compute_pass.dispatch_workgroups(1, N_EXTEND_TRACE_WORKGROUPS, 1);
+
+        compute_pass.set_pipeline(&evaluate_circle_twiddle_pipeline);
+        compute_pass.dispatch_workgroups(1, N_EXTEND_TRACE_WORKGROUPS, 1);
+
+        compute_pass.set_pipeline(&composition_polynomial_compute_pipeline);
         compute_pass.dispatch_workgroups(N_WORKGROUPS, 1, 1);
     }
 
@@ -379,8 +487,9 @@ async fn init(
     }
 }
 
-fn create_gpu_input(
-    trace: TreeVec<Vec<&CircleEvaluation<CpuBackend, M31, BitReversedOrder>>>,
+fn create_composition_polynomial_gpu_input(
+    original_trace: TreeVec<Vec<&&CirclePoly<SimdBackend>>>,
+    eval_domain: CircleDomain,
     denom_inv: Vec<M31>,
     random_coeff_powers: Vec<QM31>,
     lookup_elements: PoseidonElements,
@@ -388,23 +497,45 @@ fn create_gpu_input(
     eval_domain_log_size: u32,
     total_sum: QM31,
 ) -> ComputeCompositionPolynomialInput {
-    let extended_preprocessed_trace_gpu =
-        GpuExtendedColumn::from(trace.0[PREPROCESSED_TRACE_IDX][0]);
-
-    let extended_trace_gpu: [GpuExtendedColumn; N_COLUMNS as usize] = trace.0[ORIGINAL_TRACE_IDX]
+    // flatten original trace
+    let original_trace_gpu: [GpuOriginalColumn; N_ORIGINAL_TRACE_COLUMNS as usize] = original_trace
         .iter()
-        .map(|eval| GpuExtendedColumn::from(*eval))
+        .flatten()
+        .map(|eval| GpuOriginalColumn::from(eval))
         .collect_vec()
         .try_into()
         .expect("Wrong length");
 
-    let extended_interaction_trace_gpu: [GpuExtendedColumn; N_INTERACTION_COLUMNS as usize] = trace
-        .0[INTERACTION_TRACE_IDX]
-        .iter()
-        .map(|eval| GpuExtendedColumn::from(*eval))
-        .collect_vec()
-        .try_into()
-        .expect("Wrong length");
+    // flatten twiddles
+    let twiddles = CpuBackend::precompute_twiddles(eval_domain.half_coset);
+    let line_twiddles = domain_line_twiddles_from_tree(eval_domain, &twiddles.twiddles);
+    let mut twiddle_input = Twiddles {
+        line_twiddles_layer_count: line_twiddles.len() as u32,
+        line_twiddles_sizes: [0; N_LINE_TWIDDLES_SIZE as usize],
+        line_twiddles_offsets: [0; N_LINE_TWIDDLES_SIZE as usize],
+        line_twiddles_flat: [GpuM31 { data: 0 }; N_LINE_TWIDDLES_FLAT_SIZE as usize],
+        circle_twiddles: [GpuM31 { data: 0 }; N_CIRCLE_TWIDDLES_SIZE as usize],
+        circle_twiddles_size: 0,
+    };
+    for (i, twiddle) in line_twiddles.iter().enumerate() {
+        twiddle_input.line_twiddles_sizes[i] = twiddle.len() as u32;
+        twiddle_input.line_twiddles_offsets[i] = if i == 0 {
+            0
+        } else {
+            twiddle_input.line_twiddles_offsets[i - 1] + twiddle_input.line_twiddles_sizes[i - 1]
+        };
+        for (j, &twiddle) in twiddle.iter().enumerate() {
+            twiddle_input.line_twiddles_flat[twiddle_input.line_twiddles_offsets[i] as usize + j] =
+                twiddle.into();
+        }
+    }
+
+    // circle twiddles
+    let circle_twiddles: Vec<GpuM31> = circle_twiddles_from_line_twiddles(line_twiddles[0])
+        .map(|twiddle| twiddle.into())
+        .collect();
+    twiddle_input.circle_twiddles[..circle_twiddles.len()].copy_from_slice(&circle_twiddles);
+    twiddle_input.circle_twiddles_size = circle_twiddles.len() as u32;
 
     let denom_inv_gpu: [GpuM31; 4] = denom_inv
         .into_iter()
@@ -423,9 +554,8 @@ fn create_gpu_input(
     let lookup_elements_gpu = GpuLookupElements::from(lookup_elements);
 
     ComputeCompositionPolynomialInput {
-        extended_preprocessed_trace: extended_preprocessed_trace_gpu,
-        extended_trace: extended_trace_gpu,
-        extended_interaction_trace: extended_interaction_trace_gpu,
+        original_trace: original_trace_gpu,
+        twiddles: twiddle_input,
         denom_inv: denom_inv_gpu,
         random_coeff_powers: random_coeff_powers_gpu,
         lookup_elements: lookup_elements_gpu,
@@ -435,8 +565,9 @@ fn create_gpu_input(
     }
 }
 
-pub async fn compute_composition_polynomial_gpu<'a>(
-    trace: TreeVec<Vec<&CircleEvaluation<CpuBackend, M31, BitReversedOrder>>>,
+pub async fn compute_composition_polynomial_original_trace_gpu<'a>(
+    original_trace: TreeVec<Vec<&&CirclePoly<SimdBackend>>>,
+    eval_domain: CircleDomain,
     denom_inv: Vec<M31>,
     random_coeff_powers: Vec<QM31>,
     lookup_elements: PoseidonElements,
@@ -445,7 +576,8 @@ pub async fn compute_composition_polynomial_gpu<'a>(
     total_sum: QM31,
 ) -> ComputationResults {
     let instance = init(
-        trace,
+        original_trace,
+        eval_domain,
         denom_inv,
         random_coeff_powers,
         lookup_elements,
