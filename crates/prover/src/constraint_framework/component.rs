@@ -293,13 +293,15 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
             Vec<Cow<'_, CircleEvaluation<SimdBackend, BaseField, BitReversedOrder>>>,
         > = if need_to_extend {
             let _span = span!(Level::INFO, "Extension").entered();
-            let twiddles: crate::core::poly::twiddles::TwiddleTree<SimdBackend> =
-                SimdBackend::precompute_twiddles(eval_domain.half_coset);
+            let twiddles = SimdBackend::precompute_twiddles(eval_domain.half_coset);
+            #[cfg(not(target_family = "wasm"))]
             let start = Instant::now();
             let ret = component_polys
                 .as_cols_ref()
                 .map_cols(|col| Cow::Owned(col.evaluate_with_twiddles(eval_domain, &twiddles)));
+            #[cfg(not(target_family = "wasm"))]
             let end = Instant::now();
+            #[cfg(not(target_family = "wasm"))]
             println!("CPU trace extend time: {:?}", end - start);
             ret
         } else {
@@ -386,11 +388,6 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
         }
         let trace_cols = trace.as_cols_ref().map_cols(|c| c.to_cpu());
         let trace_cols = trace_cols.as_cols_ref();
-
-        // // print first element of trace_cols
-        // for i in 0..16 {
-        //     println!("gpu trace_cols: {:?}", trace_cols[2][0].values[i]);
-        // }
 
         let mut lookup_elements: PoseidonElements = PoseidonElements::dummy();
 
@@ -546,11 +543,6 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
 
         iter.for_each(|(chunk_idx, mut chunk)| {
             let trace_cols = trace.as_cols_ref().map_cols(|c| c.as_ref());
-
-            // // print first element of trace_cols
-            // if chunk_idx == 0 {
-            //     println!("cpu trace_cols: {:?}", trace_cols[2][0].data[0]);
-            // }
 
             for idx_in_chunk in 0..CHUNK_SIZE {
                 let vec_row = chunk_idx * CHUNK_SIZE + idx_in_chunk;

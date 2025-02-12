@@ -578,7 +578,7 @@ mod tests {
 
         // Get from environment variable:
         let log_n_instances = env::var("LOG_N_INSTANCES")
-            .unwrap_or_else(|_| "13".to_string())
+            .unwrap_or_else(|_| "12".to_string())
             .parse::<u32>()
             .unwrap();
         let config = PcsConfig {
