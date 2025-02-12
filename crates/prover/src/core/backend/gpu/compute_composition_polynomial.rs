@@ -16,12 +16,14 @@ use crate::core::poly::circle::CircleEvaluation;
 use crate::core::poly::BitReversedOrder;
 use crate::examples::poseidon::PoseidonElements;
 
-pub const N_ROWS: u32 = 32;
+pub const N_ROWS: u32 = 64;
 pub const N_STATE: u32 = 16;
 pub const N_LOG_INSTANCES_PER_ROW: u32 = 3;
 pub const N_INSTANCES_PER_ROW: u32 = 1 << N_LOG_INSTANCES_PER_ROW;
 pub const N_LANES: u32 = 16;
 pub const N_EXTENDED_ROWS: u32 = N_ROWS * 4;
+// XXX : why ??
+pub const N_ORIGINAL_ROWS: u32 = N_ROWS * 2;
 pub const N_CONSTRAINTS: u32 = 1144;
 pub const N_COLUMNS: u32 = 1264;
 pub const N_INTERACTION_COLUMNS: u32 = N_INSTANCES_PER_ROW * 4;
@@ -30,10 +32,32 @@ pub const THREADS_PER_WORKGROUP: u32 = 256;
 pub const N_HALF_FULL_ROUNDS: u32 = 4;
 pub const N_PARTIAL_ROUNDS: u32 = 14;
 
+pub const N_LINE_TWIDDLES_SIZE: u32 = 2048;
+pub const N_CIRCLE_TWIDDLES_SIZE: u32 = N_LINE_TWIDDLES_SIZE * 2;
+
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct GpuExtendedColumn {
     pub data: [[GpuM31; N_LANES as usize]; N_EXTENDED_ROWS as usize],
+    pub length: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct Twiddles {
+    circle_twiddles: [u32; N_CIRCLE_TWIDDLES_SIZE as usize],
+    circle_twiddles_size: u32,
+    line_twiddles_flat: [u32; N_LINE_TWIDDLES_SIZE as usize],
+    line_twiddles_layer_count: u32,
+    line_twiddles_sizes: [u32; N_LINE_TWIDDLES_SIZE as usize],
+    line_twiddles_offsets: [u32; N_LINE_TWIDDLES_SIZE as usize],
+    mod_inv: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct GpuOriginalColumn {
+    pub data: [[GpuM31; N_LANES as usize]; N_ORIGINAL_ROWS as usize],
     pub length: u32,
 }
 
@@ -50,6 +74,23 @@ impl From<&CircleEvaluation<CpuBackend, M31, BitReversedOrder>> for GpuExtendedC
         GpuExtendedColumn {
             data,
             length: N_EXTENDED_ROWS,
+        }
+    }
+}
+
+impl From<&CircleEvaluation<CpuBackend, M31, BitReversedOrder>> for GpuOriginalColumn {
+    fn from(value: &CircleEvaluation<CpuBackend, M31, BitReversedOrder>) -> Self {
+        let mut data = [[GpuM31 { data: 0 }; N_LANES as usize]; N_ORIGINAL_ROWS as usize];
+        for (i, chunk) in value.values.chunks(N_LANES as usize).enumerate() {
+            let mut row = [GpuM31 { data: 0 }; N_LANES as usize];
+            for (j, &val) in chunk.iter().enumerate() {
+                row[j] = val.into();
+            }
+            data[i] = row;
+        }
+        GpuOriginalColumn {
+            data,
+            length: N_ORIGINAL_ROWS,
         }
     }
 }
@@ -207,6 +248,7 @@ pub struct WgpuInstance {
 }
 
 async fn init(
+    original_trace: TreeVec<Vec<&CircleEvaluation<CpuBackend, M31, BitReversedOrder>>>,
     trace: TreeVec<Vec<&CircleEvaluation<CpuBackend, M31, BitReversedOrder>>>,
     denom_inv: Vec<M31>,
     random_coeff_powers: Vec<QM31>,
@@ -238,6 +280,7 @@ async fn init(
         .unwrap();
 
     let input_data = create_gpu_input(
+        original_trace,
         trace,
         denom_inv,
         random_coeff_powers,
@@ -380,6 +423,7 @@ async fn init(
 }
 
 fn create_gpu_input(
+    _original_trace: TreeVec<Vec<&CircleEvaluation<CpuBackend, M31, BitReversedOrder>>>,
     trace: TreeVec<Vec<&CircleEvaluation<CpuBackend, M31, BitReversedOrder>>>,
     denom_inv: Vec<M31>,
     random_coeff_powers: Vec<QM31>,
@@ -436,6 +480,7 @@ fn create_gpu_input(
 }
 
 pub async fn compute_composition_polynomial_gpu<'a>(
+    original_trace: TreeVec<Vec<&CircleEvaluation<CpuBackend, M31, BitReversedOrder>>>,
     trace: TreeVec<Vec<&CircleEvaluation<CpuBackend, M31, BitReversedOrder>>>,
     denom_inv: Vec<M31>,
     random_coeff_powers: Vec<QM31>,
@@ -445,6 +490,7 @@ pub async fn compute_composition_polynomial_gpu<'a>(
     total_sum: QM31,
 ) -> ComputationResults {
     let instance = init(
+        original_trace,
         trace,
         denom_inv,
         random_coeff_powers,

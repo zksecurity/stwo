@@ -1,4 +1,5 @@
 pub mod compute_composition_polynomial;
+pub mod extend_trace;
 pub mod fraction;
 pub mod gen_trace;
 pub mod gen_trace_interpolate_columns;

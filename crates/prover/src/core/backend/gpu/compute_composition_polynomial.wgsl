@@ -1,6 +1,6 @@
 // Note: depends on qm31.wgsl, fraction.wgsl, utils.wgsl
 // Define constants
-const N_ROWS: u32 = 32;
+const N_ROWS: u32 = 64;
 const N_EXTENDED_ROWS: u32 = N_ROWS * 4;
 const N_STATE: u32 = 16;
 const N_INSTANCES_PER_ROW: u32 = 8;
@@ -19,6 +19,7 @@ const MAX_ARRAY_SIZE: u32 = 1u << MAX_ARRAY_LOG_SIZE;
 const N_CONSTRAINTS: u32 = 1144;
 const R: CM31 = CM31(M31(2u), M31(1u));
 const ONE = QM31(CM31(M31(1u), M31(0u)), CM31(M31(0u), M31(0u)));
+const DUMMY: u32 = 1004;
 
 // Initialize EXTERNAL_ROUND_CONSTS with explicit values
 const EXTERNAL_ROUND_CONSTS: array<array<u32, N_STATE>, FULL_ROUNDS> = array<array<u32, N_STATE>, FULL_ROUNDS>(

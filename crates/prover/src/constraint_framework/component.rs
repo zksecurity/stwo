@@ -21,6 +21,7 @@ use crate::core::air::accumulation::{DomainEvaluationAccumulator, PointEvaluatio
 use crate::core::air::{Component, ComponentProver, Trace};
 #[cfg(not(target_family = "wasm"))]
 use crate::core::backend::gpu::compute_composition_polynomial::compute_composition_polynomial_gpu;
+use crate::core::backend::gpu::extend_trace::extended_trace_gpu;
 use crate::core::backend::simd::column::VeryPackedSecureColumnByCoords;
 use crate::core::backend::simd::m31::LOG_N_LANES;
 use crate::core::backend::simd::very_packed_m31::{VeryPackedBaseField, LOG_N_VERY_PACKED_ELEMS};
@@ -265,6 +266,9 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
 
         let eval_domain = CanonicCoset::new(self.max_constraint_log_degree_bound()).circle_domain();
         let trace_domain = CanonicCoset::new(self.eval.log_size());
+        // print trace_domain and eval_domain
+        println!("trace_domain: {:?}", trace_domain.log_size());
+        println!("eval_domain: {:?}", eval_domain.log_size());
 
         let mut component_polys = trace.polys.sub_tree(&self.trace_locations);
         component_polys[PREPROCESSED_TRACE_IDX] = self
@@ -287,17 +291,39 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
             .iter()
             .flatten()
             .any(|c| c.domain != eval_domain);
+        // snapshot original trace
+        let original_trace_cols = component_evals
+            .clone()
+            .map_cols(|c| Cow::Borrowed(*c))
+            .as_cols_ref()
+            .map_cols(|c| c.to_cpu());
+        let original_trace_cols = original_trace_cols.as_cols_ref();
+
         let trace: TreeVec<
             Vec<Cow<'_, CircleEvaluation<SimdBackend, BaseField, BitReversedOrder>>>,
         > = if need_to_extend {
             let _span = span!(Level::INFO, "Extension").entered();
             let twiddles = SimdBackend::precompute_twiddles(eval_domain.half_coset);
+            // print twiddles size
+            println!("twiddles size: {:?}", twiddles.twiddles.len());
             component_polys
                 .as_cols_ref()
                 .map_cols(|col| Cow::Owned(col.evaluate_with_twiddles(eval_domain, &twiddles)))
         } else {
             component_evals.clone().map_cols(|c| Cow::Borrowed(*c))
         };
+
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let gpu_extended_trace_results =
+                pollster::block_on(extended_trace_gpu(component_polys, eval_domain));
+            // want to compare first element of this to trace
+            println!(
+                "gpu extended trace first element: {:?}",
+                gpu_extended_trace_results.output.extended_trace[0].data[0]
+            );
+            println!("trace first element: {:?}", trace[0][0].data[0]);
+        }
 
         // Denom inverses.
         let log_expand = eval_domain.log_size() - trace_domain.log_size();
@@ -344,7 +370,13 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
         let trace_cols = trace.as_cols_ref().map_cols(|c| c.to_cpu());
         let trace_cols = trace_cols.as_cols_ref();
 
+        // // print first element of trace_cols
+        // for i in 0..16 {
+        //     println!("gpu trace_cols: {:?}", trace_cols[2][0].values[i]);
+        // }
+
         let mut lookup_elements: PoseidonElements = PoseidonElements::dummy();
+
         // // 2^9 instances
         // lookup_elements.0.z = QM31::from_m31_array([
         //     M31::from(1620680704),
@@ -388,60 +420,65 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
         // ]);
 
         // 2^12 instances
-        lookup_elements.0.z = QM31::from_m31_array([
-            M31::from(589075703),
-            M31::from(149359250),
-            M31::from(1907284710),
-            M31::from(729671227),
-        ]);
-        lookup_elements.0.alpha = QM31::from_m31_array([
-            M31::from(318198925),
-            M31::from(1203679427),
-            M31::from(870875217),
-            M31::from(1185640677),
-        ]);
-
+        if eval_domain.log_size() == 11 {
+            lookup_elements.0.z = QM31::from_m31_array([
+                M31::from(589075703),
+                M31::from(149359250),
+                M31::from(1907284710),
+                M31::from(729671227),
+            ]);
+            lookup_elements.0.alpha = QM31::from_m31_array([
+                M31::from(318198925),
+                M31::from(1203679427),
+                M31::from(870875217),
+                M31::from(1185640677),
+            ]);
+        }
         // // 2^13 instances
-        // lookup_elements.0.z = QM31::from_m31_array([
-        //     M31::from(1628655791),
-        //     M31::from(1055381932),
-        //     M31::from(980792236),
-        //     M31::from(1563574579),
-        // ]);
-        // lookup_elements.0.alpha = QM31::from_m31_array([
-        //     M31::from(758947366),
-        //     M31::from(782855802),
-        //     M31::from(792359994),
-        //     M31::from(1161959256),
-        // ]);
-
+        else if eval_domain.log_size() == 12 {
+            lookup_elements.0.z = QM31::from_m31_array([
+                M31::from(1628655791),
+                M31::from(1055381932),
+                M31::from(980792236),
+                M31::from(1563574579),
+            ]);
+            lookup_elements.0.alpha = QM31::from_m31_array([
+                M31::from(758947366),
+                M31::from(782855802),
+                M31::from(792359994),
+                M31::from(1161959256),
+            ]);
+        }
         // // 2^14 instances
-        // lookup_elements.0.z = QM31::from_m31_array([
-        //     M31::from(668979421),
-        //     M31::from(2097978502),
-        //     M31::from(428317414),
-        //     M31::from(1503540921),
-        // ]);
-        // lookup_elements.0.alpha = QM31::from_m31_array([
-        //     M31::from(962480916),
-        //     M31::from(462545530),
-        //     M31::from(118859601),
-        //     M31::from(1868751663),
-        // ]);
-
+        else if eval_domain.log_size() == 13 {
+            lookup_elements.0.z = QM31::from_m31_array([
+                M31::from(668979421),
+                M31::from(2097978502),
+                M31::from(428317414),
+                M31::from(1503540921),
+            ]);
+            lookup_elements.0.alpha = QM31::from_m31_array([
+                M31::from(962480916),
+                M31::from(462545530),
+                M31::from(118859601),
+                M31::from(1868751663),
+            ]);
+        }
         // // 2^15 instances
-        // lookup_elements.0.z = QM31::from_m31_array([
-        //     M31::from(1185288908),
-        //     M31::from(1548569092),
-        //     M31::from(792634712),
-        //     M31::from(779398798),
-        // ]);
-        // lookup_elements.alpha = QM31::from_m31_array([
-        //     M31::from(138774446),
-        //     M31::from(799972521),
-        //     M31::from(2070047733),
-        //     M31::from(2053058841),
-        // ]);
+        else if eval_domain.log_size() == 14 {
+            lookup_elements.0.z = QM31::from_m31_array([
+                M31::from(1185288908),
+                M31::from(1548569092),
+                M31::from(792634712),
+                M31::from(779398798),
+            ]);
+            lookup_elements.0.alpha = QM31::from_m31_array([
+                M31::from(138774446),
+                M31::from(799972521),
+                M31::from(2070047733),
+                M31::from(2053058841),
+            ]);
+        }
         let mut cur = QM31::from(1);
         lookup_elements.0.alpha_powers = std::array::from_fn(|_| {
             let res = cur;
@@ -454,6 +491,7 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
 
         #[cfg(not(target_family = "wasm"))]
         let gpu_results = pollster::block_on(compute_composition_polynomial_gpu(
+            original_trace_cols,
             trace_cols,
             denom_inv.clone(),
             accum.random_coeff_powers.clone(),
@@ -492,6 +530,11 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
 
         iter.for_each(|(chunk_idx, mut chunk)| {
             let trace_cols = trace.as_cols_ref().map_cols(|c| c.as_ref());
+
+            // // print first element of trace_cols
+            // if chunk_idx == 0 {
+            //     println!("cpu trace_cols: {:?}", trace_cols[2][0].data[0]);
+            // }
 
             for idx_in_chunk in 0..CHUNK_SIZE {
                 let vec_row = chunk_idx * CHUNK_SIZE + idx_in_chunk;
