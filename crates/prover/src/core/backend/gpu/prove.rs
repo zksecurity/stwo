@@ -95,9 +95,6 @@ async fn evaluate_constraint_quotients_on_domain_gpu<'a, E: FrameworkEval + Any 
         CanonicCoset::new(component.max_constraint_log_degree_bound()).circle_domain();
     let trace_domain = CanonicCoset::new(component.eval().log_size());
 
-    println!("trace_domain: {:?}", trace_domain.log_size());
-    println!("eval_domain: {:?}", eval_domain.log_size());
-
     let mut component_polys = trace.polys.sub_tree(&component.trace_locations());
     component_polys[PREPROCESSED_TRACE_IDX] = component
         .preproccessed_column_indices()
@@ -119,13 +116,6 @@ async fn evaluate_constraint_quotients_on_domain_gpu<'a, E: FrameworkEval + Any 
         .iter()
         .flatten()
         .any(|c| c.domain != eval_domain);
-
-    let original_trace = component_evals
-        .clone()
-        .map_cols(|c| Cow::Borrowed(*c))
-        .as_cols_ref()
-        .map_cols(|c| c.to_cpu());
-    let original_trace_cols = original_trace.as_cols_ref();
     let trace: TreeVec<Vec<Cow<'_, CircleEvaluation<SimdBackend, BaseField, BitReversedOrder>>>> =
         if need_to_extend {
             let _span = span!(Level::INFO, "Extension").entered();
@@ -136,14 +126,6 @@ async fn evaluate_constraint_quotients_on_domain_gpu<'a, E: FrameworkEval + Any 
         } else {
             component_evals.clone().map_cols(|c| Cow::Borrowed(*c))
         };
-
-    // // for test purpose
-    // let gpu_trace = extend_trace_gpu(
-    //     original_trace,
-    //     trace_domain.log_size(),
-    //     eval_domain.log_size(),
-    // )
-    // .await;
 
     // Denom inverses.
     let log_expand = eval_domain.log_size() - trace_domain.log_size();
