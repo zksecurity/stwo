@@ -288,30 +288,31 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
             .iter()
             .flatten()
             .any(|c| c.domain != eval_domain);
-        // snapshot original trace
-        let original_trace_cols = component_evals
-            .clone()
-            .map_cols(|c| Cow::Borrowed(*c))
-            .as_cols_ref()
-            .map_cols(|c| c.to_cpu());
-        let original_trace_cols = original_trace_cols.as_cols_ref();
 
         let trace: TreeVec<
             Vec<Cow<'_, CircleEvaluation<SimdBackend, BaseField, BitReversedOrder>>>,
         > = if need_to_extend {
             let _span = span!(Level::INFO, "Extension").entered();
-            let twiddles = SimdBackend::precompute_twiddles(eval_domain.half_coset);
-            component_polys
+            let twiddles: crate::core::poly::twiddles::TwiddleTree<SimdBackend> =
+                SimdBackend::precompute_twiddles(eval_domain.half_coset);
+            let start = Instant::now();
+            let ret = component_polys
                 .as_cols_ref()
-                .map_cols(|col| Cow::Owned(col.evaluate_with_twiddles(eval_domain, &twiddles)))
+                .map_cols(|col| Cow::Owned(col.evaluate_with_twiddles(eval_domain, &twiddles)));
+            let end = Instant::now();
+            println!("CPU trace extend time: {:?}", end - start);
+            ret
         } else {
             component_evals.clone().map_cols(|c| Cow::Borrowed(*c))
         };
 
         #[cfg(not(target_family = "wasm"))]
         {
+            let start = Instant::now();
             let gpu_extended_trace_results =
                 pollster::block_on(extended_trace_gpu(component_polys, eval_domain));
+            let end = Instant::now();
+            println!("GPU trace extend time: {:?}", end - start);
 
             let copied_trace = trace.clone();
             let mut flattened_idx = 0;
@@ -507,7 +508,6 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
 
         #[cfg(not(target_family = "wasm"))]
         let gpu_results = pollster::block_on(compute_composition_polynomial_gpu(
-            original_trace_cols,
             trace_cols,
             denom_inv.clone(),
             accum.random_coeff_powers.clone(),

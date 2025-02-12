@@ -113,7 +113,7 @@ fn evaluate_line_twiddle(@builtin(global_invocation_id) global_id: vec3<u32>) {
         }
     }
 
-    storageBarrier();
+    workgroupBarrier();
 
     // Process line_twiddles
     var layer = trace_input.twiddles.line_twiddles_layer_count - 1u;
@@ -141,7 +141,7 @@ fn evaluate_line_twiddle(@builtin(global_invocation_id) global_id: vec3<u32>) {
                 }
             }
 
-            storageBarrier();
+            workgroupBarrier();
         }
 
         // // store values to debug buffer

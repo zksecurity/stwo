@@ -165,7 +165,6 @@ async fn evaluate_constraint_quotients_on_domain_gpu<'a, E: FrameworkEval + Any 
 
     if let Some(poseidon_component) = (component as &dyn Any).downcast_ref::<PoseidonComponent>() {
         let gpu_results = compute_composition_polynomial_gpu_poseidon(
-            original_trace_cols,
             trace_cols,
             denom_inv.clone(),
             accum.random_coeff_powers.clone(),

@@ -248,7 +248,6 @@ pub struct WgpuInstance {
 }
 
 async fn init(
-    original_trace: TreeVec<Vec<&CircleEvaluation<CpuBackend, M31, BitReversedOrder>>>,
     trace: TreeVec<Vec<&CircleEvaluation<CpuBackend, M31, BitReversedOrder>>>,
     denom_inv: Vec<M31>,
     random_coeff_powers: Vec<QM31>,
@@ -280,7 +279,6 @@ async fn init(
         .unwrap();
 
     let input_data = create_gpu_input(
-        original_trace,
         trace,
         denom_inv,
         random_coeff_powers,
@@ -423,7 +421,6 @@ async fn init(
 }
 
 fn create_gpu_input(
-    _original_trace: TreeVec<Vec<&CircleEvaluation<CpuBackend, M31, BitReversedOrder>>>,
     trace: TreeVec<Vec<&CircleEvaluation<CpuBackend, M31, BitReversedOrder>>>,
     denom_inv: Vec<M31>,
     random_coeff_powers: Vec<QM31>,
@@ -480,7 +477,6 @@ fn create_gpu_input(
 }
 
 pub async fn compute_composition_polynomial_gpu<'a>(
-    original_trace: TreeVec<Vec<&CircleEvaluation<CpuBackend, M31, BitReversedOrder>>>,
     trace: TreeVec<Vec<&CircleEvaluation<CpuBackend, M31, BitReversedOrder>>>,
     denom_inv: Vec<M31>,
     random_coeff_powers: Vec<QM31>,
@@ -490,7 +486,6 @@ pub async fn compute_composition_polynomial_gpu<'a>(
     total_sum: QM31,
 ) -> ComputationResults {
     let instance = init(
-        original_trace,
         trace,
         denom_inv,
         random_coeff_powers,
