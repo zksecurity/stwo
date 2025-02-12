@@ -47,17 +47,26 @@ struct Extended1DColumn {
     length: u32,
 }
 
-// struct ComputeCompositionPolynomialInput {
-//     extended_preprocessed_trace: BaseColumn,
-//     extended_trace: array<BaseColumn, N_COLUMNS>,
-//     extended_interaction_trace: array<BaseColumn, N_INTERACTION_COLUMNS>,
-//     denom_inv: array<M31, 4>,
-//     random_coeff_powers: array<QM31, N_CONSTRAINTS>,
-//     lookup_elements: LookupElements,
-//     trace_domain_log_size: u32,
-//     eval_domain_log_size: u32,
-//     total_sum: QM31,
-// }
+struct LookupElements {
+    z: QM31,
+    alpha: QM31,
+    alpha_powers: array<QM31, N_STATE>,
+}
+
+struct ComputeCompositionPolynomialInput {
+    original_trace: array<OriginalColumn, N_ORIGINAL_TRACE_COLUMNS>,
+    twiddles: Twiddles,
+    denom_inv: array<M31, 4>,
+    random_coeff_powers: array<QM31, N_CONSTRAINTS>,
+    lookup_elements: LookupElements,
+    trace_domain_log_size: u32,
+    eval_domain_log_size: u32,
+    total_sum: QM31,
+}
+
+struct ComputeCompositionPolynomialOutput {
+    poly: array<array<QM31, N_LANES>, N_EXTENDED_ROWS>,
+}
 
 struct Twiddles {
     circle_twiddles: array<M31, N_CIRCLE_TWIDDLES_SIZE>,
@@ -68,25 +77,18 @@ struct Twiddles {
     line_twiddles_offsets: array<u32, N_LINE_TWIDDLES_SIZE>,
 }
 
-struct ExtendTraceInput {
-    original_trace: array<OriginalColumn, N_ORIGINAL_TRACE_COLUMNS>,
-    twiddles: Twiddles,
-}
-
 struct ExtendTraceOutput {
     extended_trace: array<Extended1DColumn, N_ORIGINAL_TRACE_COLUMNS>,
+    input_trace: array<BaseColumn, N_ORIGINAL_TRACE_COLUMNS>,
 }
 
-// @group(0) @binding(0)
-// var<storage, read> input: ComputeCompositionPolynomialInput;
-
-// @group(0) @binding(1)
-// var<storage, read_write> output: ComputeCompositionPolynomialOutput;
-
 @group(0) @binding(0)
-var<storage, read> trace_input: ExtendTraceInput;
+var<storage, read> trace_input: ComputeCompositionPolynomialInput;
 
 @group(0) @binding(1)
+var<storage, read_write> composition_polynomial_output: ComputeCompositionPolynomialOutput;
+
+@group(0) @binding(2)
 var<storage, read_write> trace_output: ExtendTraceOutput;
 
 @compute @workgroup_size(256)
@@ -156,6 +158,12 @@ fn evaluate_line_twiddle(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
 }
 
+fn storeValueToBaseColumn(polynomial_id: u32, idx: u32, value: M31) {
+    let row: u32 = idx / N_LANES;
+    let lane: u32 = idx % N_LANES;
+    trace_output.input_trace[polynomial_id].data[row][lane] = value;
+}
+
 @compute @workgroup_size(256)
 fn evaluate_circle_twiddle(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let workgroup_size = 256u;
@@ -185,6 +193,9 @@ fn evaluate_circle_twiddle(@builtin(global_invocation_id) global_id: vec3<u32>) 
 
             trace_output.extended_trace[polynomial_id].data[idx0] = val0;
             trace_output.extended_trace[polynomial_id].data[idx1] = val1;
+
+            storeValueToBaseColumn(polynomial_id, idx0, val0);
+            storeValueToBaseColumn(polynomial_id, idx1, val1);
         }
     }
 

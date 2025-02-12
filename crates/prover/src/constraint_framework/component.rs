@@ -308,42 +308,6 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
             component_evals.clone().map_cols(|c| Cow::Borrowed(*c))
         };
 
-        #[cfg(not(target_family = "wasm"))]
-        {
-            let start = Instant::now();
-            let gpu_extended_trace_results =
-                pollster::block_on(extended_trace_gpu(component_polys, eval_domain));
-            let end = Instant::now();
-            println!("GPU trace extend time: {:?}", end - start);
-
-            let copied_trace = trace.clone();
-            let mut flattened_idx = 0;
-            for trace_idx in 0..trace.len() {
-                for col_idx in 0..trace[trace_idx].len() {
-                    let base_col = &copied_trace[trace_idx][col_idx];
-                    let gpu_col = &gpu_extended_trace_results.output.extended_trace[flattened_idx];
-
-                    for base_col_idx in 0..base_col.data.len() {
-                        let base_elem = base_col.data[base_col_idx].into_simd();
-                        let start_idx = base_col_idx * 16;
-                        let end_idx = start_idx + 16;
-                        let gpu_elem: Vec<u32> = gpu_col.data[start_idx..end_idx]
-                            .to_vec()
-                            .iter()
-                            .map(|x| x.data)
-                            .collect();
-
-                        // compare all element of gpu_elem to base_elem
-                        for i in 0..16 {
-                            assert_eq!(base_elem[i], gpu_elem[i]);
-                        }
-                    }
-
-                    flattened_idx += 1;
-                }
-            }
-        }
-
         // Denom inverses.
         let log_expand = eval_domain.log_size() - trace_domain.log_size();
         let mut denom_inv = (0..1 << log_expand)
@@ -499,6 +463,52 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
             cur *= lookup_elements.0.alpha;
             res
         });
+
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let start = Instant::now();
+            let gpu_extended_trace_results = pollster::block_on(extended_trace_gpu(
+                component_polys,
+                eval_domain,
+                denom_inv.clone(),
+                accum.random_coeff_powers.clone(),
+                lookup_elements.clone(),
+                trace_domain.log_size(),
+                eval_domain.log_size(),
+                self.logup_sums.0,
+            ));
+            let end = Instant::now();
+            println!("GPU trace extend time: {:?}", end - start);
+
+            let copied_trace = trace.clone();
+            let mut flattened_idx = 0;
+            for trace_idx in 0..trace.len() {
+                for col_idx in 0..trace[trace_idx].len() {
+                    let base_col = &copied_trace[trace_idx][col_idx];
+                    let gpu_col = &gpu_extended_trace_results.output.extended_trace[flattened_idx];
+                    let gpu_ir_col =
+                        &gpu_extended_trace_results.output.intermediate_result[flattened_idx];
+
+                    for base_col_idx in 0..base_col.data.len() {
+                        let base_elem = base_col.data[base_col_idx].into_simd();
+                        let start_idx = base_col_idx * 16;
+                        let end_idx = start_idx + 16;
+                        let gpu_elem: Vec<u32> = gpu_col.data[start_idx..end_idx]
+                            .to_vec()
+                            .iter()
+                            .map(|x| x.data)
+                            .collect();
+
+                        for i in 0..base_elem.len() {
+                            assert_eq!(base_elem[i], gpu_elem[i]);
+                            assert_eq!(base_elem[i], gpu_ir_col.data[base_col_idx][i].data);
+                        }
+                    }
+
+                    flattened_idx += 1;
+                }
+            }
+        }
 
         #[cfg(not(target_family = "wasm"))]
         let gpu_start = Instant::now();
