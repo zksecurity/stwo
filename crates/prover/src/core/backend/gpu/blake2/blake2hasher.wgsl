@@ -152,17 +152,3 @@ fn hash_node(
   }
   return state;
 }
-
-// TODO : update function
-// in update
-// buffer.digest_blocks <- ref fn update_blocks
-
-//     fn update_blocks(&mut self, blocks: &[Block<Self>]) {
-//     for block in blocks {
-//         self.t += block.len() as u64;
-//         self.compress(block, 0, 0);
-//     }
-// }
-
-
-// TODO : finalize function

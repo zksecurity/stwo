@@ -4,5 +4,5 @@ rustflags = ["-Dwarnings"]
 
 [target.wasm32-unknown-unknown]
 rustflags = [
-  "-C", "link-args=-z stack-size=268435456",
+  "-C", "link-args=-z stack-size=2073741824",
 ]

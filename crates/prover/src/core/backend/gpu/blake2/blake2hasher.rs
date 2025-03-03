@@ -198,16 +198,21 @@ mod tests {
         1541459225,
     ];
 
+    fn blake2s_hash_to_u32_array(hash: Blake2sHash) -> [u32; 8] {
+        hash.0
+            .chunks(4)
+            .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap()
+    }
+
     #[test]
     fn test_blake2s_ref_compress() {
         let mut blake2s = Blake2sHasher::new();
         blake2s.update(b"a");
         let cpu_hash = blake2s.finalize();
-        let cpu_hash_u32 = cpu_hash
-            .0
-            .chunks(4)
-            .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
-            .collect::<Vec<_>>();
+        let cpu_hash_u32 = blake2s_hash_to_u32_array(cpu_hash);
 
         // initial state of blake2s
         let h = BLAKE2S_INITIAL_STATE;
@@ -227,11 +232,7 @@ mod tests {
         let mut blake2s = Blake2sHasher::new();
         blake2s.update(b"a");
         let cpu_hash = blake2s.finalize();
-        let cpu_hash_u32 = cpu_hash
-            .0
-            .chunks(4)
-            .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
-            .collect::<Vec<_>>();
+        let cpu_hash_u32 = blake2s_hash_to_u32_array(cpu_hash);
 
         let h = BLAKE2S_INITIAL_STATE;
         let mut msg = [0u32; 16];
@@ -260,11 +261,7 @@ mod tests {
         let column_values: Vec<BaseField> =
             (0..10).map(|x| BaseField::from_u32_unchecked(x)).collect();
         let cpu_hash = Blake2sMerkleHasher::hash_node(None, &column_values);
-        let cpu_hash_u32 = cpu_hash
-            .0
-            .chunks(4)
-            .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
-            .collect::<Vec<_>>();
+        let cpu_hash_u32 = blake2s_hash_to_u32_array(cpu_hash);
 
         let mut column_values_u32: [u32; MAX_COLUMN_VALUES as usize] =
             [0; MAX_COLUMN_VALUES as usize];
@@ -297,7 +294,6 @@ mod tests {
             .chunks(4)
             .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
             .collect::<Vec<_>>();
-        println!("CPU hash: {:?}", cpu_hash_u32);
 
         let mut column_values_u32: [u32; MAX_COLUMN_VALUES as usize] =
             [0; MAX_COLUMN_VALUES as usize];
@@ -308,25 +304,12 @@ mod tests {
         let gpu_result = pollster::block_on(compute_hash_node_operation(
             Blake2sHashNodeOperation,
             1,
-            child_hash1
-                .as_ref()
-                .chunks(4)
-                .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
-                .collect::<Vec<u32>>()
-                .try_into()
-                .unwrap(),
-            child_hash2
-                .as_ref()
-                .chunks(4)
-                .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
-                .collect::<Vec<u32>>()
-                .try_into()
-                .unwrap(),
+            blake2s_hash_to_u32_array(child_hash1),
+            blake2s_hash_to_u32_array(child_hash2),
             column_values_u32,
             10,
         ));
 
-        println!("GPU hash: {:?}", gpu_result.state);
-        // assert_eq!(cpu_hash_u32, gpu_result.state);
+        assert_eq!(cpu_hash_u32, gpu_result.state);
     }
 }
