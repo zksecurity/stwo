@@ -49,7 +49,7 @@ pub async fn prove_gpu<MC: MerkleChannel, E: FrameworkEval + 'static>(
 
     // let mut tree_builder = commitment_scheme.tree_builder();
     // tree_builder.extend_polys(composition_poly.into_coordinate_polys());
-    // tree_builder.commit(channel);
+    // tree_builder.commit(channel)
     // span.exit();
 }
 

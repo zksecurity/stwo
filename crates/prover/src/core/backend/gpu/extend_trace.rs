@@ -105,11 +105,14 @@ impl From<PoseidonElements> for GpuLookupElements {
 
 impl From<&&&CirclePoly<SimdBackend>> for GpuOriginalColumn {
     fn from(value: &&&CirclePoly<SimdBackend>) -> Self {
-        let mut coeffs = [GpuM31 { data: 0 }; N_ORIGINAL_COLUMN_SIZE as usize];
-        let coeffs_vec = value.coeffs.to_cpu();
-        for (i, &coeff) in coeffs_vec.iter().enumerate() {
-            coeffs[i] = coeff.into();
-        }
+        let coeffs: [GpuM31; N_ORIGINAL_COLUMN_SIZE as usize] = value
+            .coeffs
+            .to_cpu()
+            .into_iter()
+            .map(GpuM31::from)
+            .collect::<Vec<_>>()
+            .try_into()
+            .expect("Wrong length");
 
         GpuOriginalColumn { coeffs }
     }

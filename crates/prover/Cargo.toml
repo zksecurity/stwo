@@ -56,7 +56,7 @@ version = "0.5.1"
 
 [target.wasm32-unknown-unknown]
 rustflags = [
-  "-C", "link-args=-z stack-size=1500000",
+  "-C", "link-args=-z stack-size=2073741824",
 ]
 
 [lib]

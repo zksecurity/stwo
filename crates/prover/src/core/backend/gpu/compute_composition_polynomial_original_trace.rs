@@ -68,11 +68,14 @@ pub struct Twiddles {
 
 impl From<&&&CirclePoly<SimdBackend>> for GpuOriginalColumn {
     fn from(value: &&&CirclePoly<SimdBackend>) -> Self {
-        let mut coeffs = [GpuM31 { data: 0 }; (N_LANES * N_ORIGINAL_ROWS) as usize];
-        let coeffs_vec = value.coeffs.to_cpu();
-        for (i, &coeff) in coeffs_vec.iter().enumerate() {
-            coeffs[i] = coeff.into();
-        }
+        let coeffs: [GpuM31; (N_LANES * N_ORIGINAL_ROWS) as usize] = value
+            .coeffs
+            .to_cpu()
+            .into_iter()
+            .map(GpuM31::from)
+            .collect::<Vec<_>>()
+            .try_into()
+            .expect("Wrong length");
 
         GpuOriginalColumn { coeffs }
     }
@@ -188,8 +191,12 @@ async fn init(
         })
         .await
         .unwrap();
+
+    // print adapter limits
+    println!("Adapter limits: {:?}", adapter.limits());
     let mut limit = wgpu::Limits::default();
-    limit.max_storage_buffer_binding_size = 128 << 22; // (512 MiB)
+    limit.max_buffer_size = 128 << 24; // (2 GiB)
+    limit.max_storage_buffer_binding_size = 128 << 24; // (2 GiB)
     let (device, queue) = adapter
         .request_device(
             &wgpu::DeviceDescriptor {
@@ -441,7 +448,8 @@ fn create_composition_polynomial_gpu_input(
         .collect_vec()
         .try_into()
         .expect("Wrong length");
-    println!("Time taken: {:?}", start.elapsed());
+    let end = Instant::now();
+    println!("Original trace: {:?}", end - start);
 
     // flatten twiddles
     let twiddles = CpuBackend::precompute_twiddles(eval_domain.half_coset);
