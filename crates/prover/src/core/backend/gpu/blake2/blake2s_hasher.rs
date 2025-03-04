@@ -6,8 +6,14 @@ const MAX_COLUMN_VALUES: u32 = 256;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq)]
+pub struct GpuBlake2sHash {
+    pub h: [u32; 8],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct HashInput {
-    pub state: [u32; 8],
+    pub state: GpuBlake2sHash,
     pub block: [u32; 16],
     pub t0: u32,
     pub t1: u32,
@@ -18,15 +24,15 @@ pub struct HashInput {
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct HashOutput {
-    pub state: [u32; 8],
+    pub state: GpuBlake2sHash,
 }
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct HashNodeInput {
     pub children_hashes_present: u32,
-    pub left: [u32; 8],
-    pub right: [u32; 8],
+    pub left: GpuBlake2sHash,
+    pub right: GpuBlake2sHash,
     pub column_values: [u32; MAX_COLUMN_VALUES as usize],
     pub column_values_len: u32,
 }
@@ -34,9 +40,10 @@ pub struct HashNodeInput {
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct HashNodeOutput {
-    pub state: [u32; 8],
+    pub state: GpuBlake2sHash,
 }
 
+impl ByteSerialize for GpuBlake2sHash {}
 impl ByteSerialize for HashInput {}
 impl ByteSerialize for HashOutput {}
 impl ByteSerialize for HashNodeInput {}
@@ -47,11 +54,12 @@ pub struct Blake2sHashNodeOperation;
 
 impl GpuOperation for Blake2sHashOperation {
     fn shader_source(&self) -> Cow<'static, str> {
+        let common_source = include_str!("blake2s_common.wgsl");
         let base_source = include_str!("blake2s_hasher.wgsl");
 
         let inputs = r#"
             struct HashInput {
-                state: array<u32, 8>,
+                state: Blake2sHash,
                 block: array<u32, 16>,
                 t0: u32,
                 t1: u32,
@@ -64,7 +72,7 @@ impl GpuOperation for Blake2sHashOperation {
 
         let output = r#"
             struct HashOutput {
-                state: array<u32, 8>,
+                state: Blake2sHash,
             }
 
             @group(0) @binding(1) var<storage, read_write> output: HashOutput;
@@ -77,19 +85,20 @@ impl GpuOperation for Blake2sHashOperation {
             }
         "#;
 
-        format!("{base_source}\n{inputs}\n{output}\n{operation}").into()
+        format!("{common_source}\n{base_source}\n{inputs}\n{output}\n{operation}").into()
     }
 }
 
 impl GpuOperation for Blake2sHashNodeOperation {
     fn shader_source(&self) -> Cow<'static, str> {
+        let common_source = include_str!("blake2s_common.wgsl");
         let base_source = include_str!("blake2s_hasher.wgsl");
 
         let inputs = r#"
             struct HashNodeInput {
                 children_hashes_present: u32,
-                left: array<u32, 8>,
-                right: array<u32, 8>,
+                left: Blake2sHash,
+                right: Blake2sHash,
                 column_values: array<u32, MAX_COLUMN_VALUES>,
                 column_values_len: u32,
             }
@@ -99,7 +108,7 @@ impl GpuOperation for Blake2sHashNodeOperation {
 
         let output = r#"
             struct HashNodeOutput {
-                state: array<u32, 8>,
+                state: Blake2sHash,
             }
 
             @group(0) @binding(1) var<storage, read_write> output: HashNodeOutput;
@@ -123,7 +132,7 @@ impl GpuOperation for Blake2sHashNodeOperation {
             }
         "#;
 
-        format!("{base_source}\n{inputs}\n{output}\n{operation}").into()
+        format!("{common_source}\n{base_source}\n{inputs}\n{output}\n{operation}").into()
     }
 }
 
@@ -137,7 +146,7 @@ pub async fn compute_hash_operation(
     f1: u32,
 ) -> HashOutput {
     let input = HashInput {
-        state,
+        state: GpuBlake2sHash { h: state },
         block,
         t0,
         t1,
@@ -166,8 +175,8 @@ pub async fn compute_hash_node_operation(
 ) -> HashNodeOutput {
     let input = HashNodeInput {
         children_hashes_present,
-        left,
-        right,
+        left: GpuBlake2sHash { h: left },
+        right: GpuBlake2sHash { h: right },
         column_values,
         column_values_len,
     };
@@ -253,7 +262,7 @@ mod tests {
             lastnode,
         ));
 
-        assert_eq!(cpu_hash_u32, gpu_result.state);
+        assert_eq!(cpu_hash_u32, gpu_result.state.h);
     }
 
     #[test]
@@ -277,11 +286,11 @@ mod tests {
             10,
         ));
 
-        assert_eq!(cpu_hash_u32, gpu_result.state);
+        assert_eq!(cpu_hash_u32, gpu_result.state.h);
     }
 
     #[test]
-    fn test_hash_node_wit_children() {
+    fn test_hash_node_with_children() {
         let column_values: Vec<BaseField> =
             (10..20).map(|x| BaseField::from_u32_unchecked(x)).collect();
         let child_hash1 = Blake2sHash::from(&[1u8; 32][..]);
@@ -310,6 +319,6 @@ mod tests {
             10,
         ));
 
-        assert_eq!(cpu_hash_u32, gpu_result.state);
+        assert_eq!(cpu_hash_u32, gpu_result.state.h);
     }
 }

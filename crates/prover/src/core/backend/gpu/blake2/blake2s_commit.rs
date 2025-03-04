@@ -2,8 +2,14 @@ use std::borrow::Cow;
 
 use crate::core::backend::gpu::gpu_common::{ByteSerialize, GpuComputeInstance, GpuOperation};
 
+const MAX_COLUMN_VALUES: u32 = 256;
 const MAX_PREV_LAYER_WORDS: u32 = 1024;
-const MAX_COLUMNS_WORDS: u32 = 1024;
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct GpuBlake2sHash {
+    pub h: [u32; 8],
+}
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -13,13 +19,13 @@ pub struct CommitInput {
     pub node_count: u32,
     pub prev_layer_present: u32,
     pub prev_layer: [u32; MAX_PREV_LAYER_WORDS as usize],
-    pub columns: [u32; MAX_COLUMNS_WORDS as usize],
+    pub columns: [u32; MAX_COLUMN_VALUES as usize],
 }
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct CommitOutput {
-    pub state: [u32; MAX_COLUMNS_WORDS as usize],
+    pub state: [u32; MAX_COLUMN_VALUES as usize],
 }
 
 impl ByteSerialize for CommitInput {}
@@ -29,10 +35,11 @@ pub struct Blake2sCommitOperation;
 
 impl GpuOperation for Blake2sCommitOperation {
     fn shader_source(&self) -> Cow<'static, str> {
+        let common_source = include_str!("blake2s_common.wgsl");
         let base_source = include_str!("blake2s_hasher.wgsl");
         let commit_source = include_str!("blake2s_commit.wgsl");
 
-        format!("{base_source}\n{commit_source}").into()
+        format!("{common_source}\n{base_source}\n{commit_source}").into()
     }
 }
 
@@ -43,7 +50,7 @@ pub async fn compute_commit_operation(
     node_count: u32,
     prev_layer_present: u32,
     prev_layer: [u32; MAX_PREV_LAYER_WORDS as usize],
-    columns: [u32; MAX_COLUMNS_WORDS as usize],
+    columns: [u32; MAX_COLUMN_VALUES as usize],
 ) -> CommitOutput {
     let input = CommitInput {
         log_size,
@@ -116,8 +123,8 @@ mod tests {
             .iter()
             .flat_map(|column| column.iter().map(|x| x.0))
             .collect::<Vec<_>>();
-        let mut gpu_flatten_columns: [u32; MAX_COLUMNS_WORDS as usize] =
-            [0u32; MAX_COLUMNS_WORDS as usize];
+        let mut gpu_flatten_columns: [u32; MAX_COLUMN_VALUES as usize] =
+            [0u32; MAX_COLUMN_VALUES as usize];
         for i in 0..flatten_col_vec.len() {
             gpu_flatten_columns[i] = flatten_col_vec[i];
         }
@@ -175,7 +182,7 @@ mod tests {
             gpu_flatten_prev_layer[index + 7] = blake2s_hash_to_u32_array(prev_layer[i])[7];
         }
 
-        let mut gpu_flatten_columns = [0u32; MAX_COLUMNS_WORDS as usize];
+        let mut gpu_flatten_columns = [0u32; MAX_COLUMN_VALUES as usize];
         gpu_flatten_columns[..flatten_col_vec.len()].copy_from_slice(&flatten_col_vec);
 
         let gpu_result = pollster::block_on(compute_commit_operation(

@@ -54,15 +54,15 @@ fn G(v: ptr<function, array<u32, 16>>, a: u32, b: u32, c: u32, d: u32, x: u32, y
 // block: message block of 16 u32 words (64 bytes)
 // t0, t1: counter values; f0, f1: flags (set to 0 in our usage)
 fn compress(
-  state: array<u32, 8>,
+  state: Blake2sHash,
   block: array<u32, 16>,
   t0: u32, t1: u32,
   f0: u32, f1: u32
-) -> array<u32, 8> {
+) -> Blake2sHash {
   var v: array<u32, 16>;
   // Initialize v[0..7] with the state and v[8..15] with the IV constants.
   for (var i = 0u; i < 8u; i = i + 1u) {
-    v[i] = state[i];
+    v[i] = state.h[i];
     v[i + 8u] = BLAKE2S_IV[i];
   }
   // Apply counter and flag (both are 0 in our case)
@@ -86,16 +86,13 @@ fn compress(
     G(&v, 3u, 4u, 9u, 14u, block[SIGMA[s + 14u]], block[SIGMA[s + 15u]]);
   }
 
-  var newState: array<u32, 8>;
+  var newState: Blake2sHash;
   // Finalize by XORing the original state with parts of v
   for (var i = 0u; i < 8u; i = i + 1u) {
-    newState[i] = state[i] ^ v[i] ^ v[i + 8u];
+    newState.h[i] = state.h[i] ^ v[i] ^ v[i + 8u];
   }
   return newState;
 }
-
-// Maximum input length (adjust as needed)
-const MAX_COLUMN_VALUES: u32 = 256;
 
 // hash_node function
 // - children_hashes_present: 1 if child nodes are provided, 0 otherwise
@@ -109,23 +106,23 @@ const MAX_COLUMN_VALUES: u32 = 256;
 // 3. Pad column_values to a multiple of 16 words and process each 16-word block using compress.
 fn hash_node(
   children_hashes_present: u32,
-  left: array<u32, 8>,
-  right: array<u32, 8>,
+  left: Blake2sHash,
+  right: Blake2sHash,
   column_values: ptr<function, array<u32, MAX_COLUMN_VALUES>>,
   column_values_len: u32
-) -> array<u32, 8> {
-  var state: array<u32, 8>;
+) -> Blake2sHash {
+  var state: Blake2sHash;
   // Initialize state to 0
   for (var i = 0u; i < 8u; i = i + 1u) {
-    state[i] = 0u;
+    state.h[i] = 0u;
   }
 
   // If child hashes exist, perform an initial compress with them
   if (children_hashes_present != 0u) {
     var children: array<u32, 16>;
     for (var i = 0u; i < 8u; i = i + 1u) {
-      children[i] = left[i];
-      children[i + 8u] = right[i];
+      children[i] = left.h[i];
+      children[i + 8u] = right.h[i];
     }
     state = compress(state, children, 0u, 0u, 0u, 0u);
   }

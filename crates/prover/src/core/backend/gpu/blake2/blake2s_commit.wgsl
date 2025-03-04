@@ -1,11 +1,5 @@
 // Define maximum sizes for the fixed-size arrays.
 // Adjust these values to match your application's expected maximum sizes.
-const MAX_PREV_LAYER_WORDS: u32 = 1024; // Maximum number of u32 words for previous layer data.
-const MAX_COLUMNS_WORDS: u32 = 1024;      // Maximum number of u32 words for column data.
-
-struct Blake2sHash {
-    h: array<u32, 8>,
-}
 
 // Combined input storage struct containing layer parameters,
 // previous layer hash data, and column data.
@@ -19,7 +13,7 @@ struct Input {
     prevLayer: array<u32, MAX_PREV_LAYER_WORDS>,
     // Column data:
     // Each column is stored as an array of length node_count, stored consecutively per column.
-    columns: array<u32, MAX_COLUMNS_WORDS>,
+    columns: array<u32, MAX_COLUMN_VALUES>,
 };
 
 @group(0) @binding(0)
@@ -27,30 +21,30 @@ var<storage, read> input: Input;
 
 // Output layer buffer: stores the hash result for each node (each hash consists of 8 u32).
 @group(0) @binding(1)
-var<storage, read_write> outLayer: array<u32, MAX_COLUMNS_WORDS>;
+var<storage, read_write> outLayer: array<u32, MAX_COLUMN_VALUES>;
 
 @compute @workgroup_size(1)
 fn main() {
     // Process all nodes sequentially.
     for (var i: u32 = 0u; i < input.node_count; i = i + 1u) {
 
-        // Local arrays to store left and right child hash values.
-        var left: array<u32, 8>;
-        var right: array<u32, 8>;
+        // Local Blake2sHash structs to store left and right child hash values.
+        var left: Blake2sHash;
+        var right: Blake2sHash;
 
         if (input.prevLayerPresent != 0u) {
             // If the previous layer exists, two child hashes (each 8 words) are stored consecutively.
             let left_index = 8u * (2u * i);
             let right_index = left_index + 8u;
             for (var j: u32 = 0u; j < 8u; j = j + 1u) {
-                left[j] = input.prevLayer[left_index + j];
-                right[j] = input.prevLayer[right_index + j];
+                left.h[j] = input.prevLayer[left_index + j];
+                right.h[j] = input.prevLayer[right_index + j];
             }
         } else {
             // If the previous layer does not exist, fill with 0.
             for (var j: u32 = 0u; j < 8u; j = j + 1u) {
-                left[j] = 0u;
-                right[j] = 0u;
+                left.h[j] = 0u;
+                right.h[j] = 0u;
             }
         }
 
@@ -62,14 +56,14 @@ fn main() {
             local_column_values[c] = input.columns[idx];
         }
 
-        // Call hash_node: pass the child hash flag, left/right hashes, column values array, and number of columns.
-        let result: array<u32, 8> =
+        // Call hash_node: 이 함수는 이전 코드와 같이 입력받지만, 결과를 Blake2sHash struct로 반환하도록 구현되어야 합니다.
+        let result: Blake2sHash =
             hash_node(input.prevLayerPresent, left, right, &local_column_values, input.num_columns);
 
         // Write the resulting hash into the output buffer (each node hash is 8 words).
         let out_offset = 8u * i;
         for (var j: u32 = 0u; j < 8u; j = j + 1u) {
-            outLayer[out_offset + j] = result[j];
+            outLayer[out_offset + j] = result.h[j];
         }
     }
 }
