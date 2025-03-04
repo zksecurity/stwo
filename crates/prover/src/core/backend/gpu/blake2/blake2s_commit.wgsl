@@ -10,7 +10,7 @@ struct Input {
     prevLayerPresent: u32, // Flag indicating whether the previous layer exists (0 or 1).
     // Previous layer hash data:
     // Each hash consists of 8 u32, and two child hashes (16 words) per node are stored consecutively.
-    prevLayer: array<u32, MAX_PREV_LAYER_WORDS>,
+    prevLayer: array<Blake2sHash, MAX_PREV_LAYER_WORDS>,
     // Column data:
     // Each column is stored as an array of length node_count, stored consecutively per column.
     columns: array<u32, MAX_COLUMN_VALUES>,
@@ -21,31 +21,21 @@ var<storage, read> input: Input;
 
 // Output layer buffer: stores the hash result for each node (each hash consists of 8 u32).
 @group(0) @binding(1)
-var<storage, read_write> outLayer: array<u32, MAX_COLUMN_VALUES>;
+var<storage, read_write> outLayer: array<Blake2sHash, MAX_COLUMN_VALUES>;
 
 @compute @workgroup_size(1)
 fn main() {
-    // Process all nodes sequentially.
     for (var i: u32 = 0u; i < input.node_count; i = i + 1u) {
-
         // Local Blake2sHash structs to store left and right child hash values.
         var left: Blake2sHash;
         var right: Blake2sHash;
 
         if (input.prevLayerPresent != 0u) {
             // If the previous layer exists, two child hashes (each 8 words) are stored consecutively.
-            let left_index = 8u * (2u * i);
-            let right_index = left_index + 8u;
-            for (var j: u32 = 0u; j < 8u; j = j + 1u) {
-                left.h[j] = input.prevLayer[left_index + j];
-                right.h[j] = input.prevLayer[right_index + j];
-            }
-        } else {
-            // If the previous layer does not exist, fill with 0.
-            for (var j: u32 = 0u; j < 8u; j = j + 1u) {
-                left.h[j] = 0u;
-                right.h[j] = 0u;
-            }
+            let left_index = 2u * i;
+            let right_index = left_index + 1u;
+            left = input.prevLayer[left_index];
+            right = input.prevLayer[right_index];
         }
 
         // For each column, store the value corresponding to the current node (i) into a local array.
@@ -60,10 +50,6 @@ fn main() {
         let result: Blake2sHash =
             hash_node(input.prevLayerPresent, left, right, &local_column_values, input.num_columns);
 
-        // Write the resulting hash into the output buffer (each node hash is 8 words).
-        let out_offset = 8u * i;
-        for (var j: u32 = 0u; j < 8u; j = j + 1u) {
-            outLayer[out_offset + j] = result.h[j];
-        }
+        outLayer[i] = result;
     }
 }

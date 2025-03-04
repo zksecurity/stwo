@@ -18,14 +18,14 @@ pub struct CommitInput {
     pub num_columns: u32,
     pub node_count: u32,
     pub prev_layer_present: u32,
-    pub prev_layer: [u32; MAX_PREV_LAYER_WORDS as usize],
+    pub prev_layer: [GpuBlake2sHash; MAX_PREV_LAYER_WORDS as usize],
     pub columns: [u32; MAX_COLUMN_VALUES as usize],
 }
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct CommitOutput {
-    pub state: [u32; MAX_COLUMN_VALUES as usize],
+    pub state: [GpuBlake2sHash; MAX_COLUMN_VALUES as usize],
 }
 
 impl ByteSerialize for CommitInput {}
@@ -49,7 +49,7 @@ pub async fn compute_commit_operation(
     num_columns: u32,
     node_count: u32,
     prev_layer_present: u32,
-    prev_layer: [u32; MAX_PREV_LAYER_WORDS as usize],
+    prev_layer: [GpuBlake2sHash; MAX_PREV_LAYER_WORDS as usize],
     columns: [u32; MAX_COLUMN_VALUES as usize],
 ) -> CommitOutput {
     let input = CommitInput {
@@ -113,12 +113,6 @@ mod tests {
             log_size, None, &columns,
         );
 
-        // concat every blake2s_hash_to_u32_array(hash)
-        let flatten_result = result
-            .iter()
-            .flat_map(|hash| blake2s_hash_to_u32_array(*hash))
-            .collect::<Vec<_>>();
-
         let flatten_col_vec = columns
             .iter()
             .flat_map(|column| column.iter().map(|x| x.0))
@@ -135,12 +129,12 @@ mod tests {
             columns.len() as u32,
             1u32 << log_size,
             0,
-            [0; MAX_PREV_LAYER_WORDS as usize],
+            [GpuBlake2sHash { h: [0u32; 8] }; MAX_PREV_LAYER_WORDS as usize],
             gpu_flatten_columns,
         ));
 
-        for i in 0..flatten_result.len() {
-            assert_eq!(flatten_result[i], gpu_result.state[i]);
+        for i in 0..result.len() {
+            assert_eq!(blake2s_hash_to_u32_array(result[i]), gpu_result.state[i].h);
         }
     }
 
@@ -158,28 +152,16 @@ mod tests {
             &columns,
         );
 
-        // concat every blake2s_hash_to_u32_array(hash)
-        let flatten_result = result
-            .iter()
-            .flat_map(|hash| blake2s_hash_to_u32_array(*hash))
-            .collect::<Vec<_>>();
-
         let flatten_col_vec: Vec<u32> = columns
             .iter()
             .flat_map(|col| col.iter().map(|x| x.0))
             .collect();
 
-        let mut gpu_flatten_prev_layer = [0u32; MAX_PREV_LAYER_WORDS as usize];
+        let mut gpu_prev_layer = [GpuBlake2sHash { h: [0u32; 8] }; MAX_PREV_LAYER_WORDS as usize];
         for i in 0..prev_layer.len() {
-            let index = i * 8;
-            gpu_flatten_prev_layer[index] = blake2s_hash_to_u32_array(prev_layer[i])[0];
-            gpu_flatten_prev_layer[index + 1] = blake2s_hash_to_u32_array(prev_layer[i])[1];
-            gpu_flatten_prev_layer[index + 2] = blake2s_hash_to_u32_array(prev_layer[i])[2];
-            gpu_flatten_prev_layer[index + 3] = blake2s_hash_to_u32_array(prev_layer[i])[3];
-            gpu_flatten_prev_layer[index + 4] = blake2s_hash_to_u32_array(prev_layer[i])[4];
-            gpu_flatten_prev_layer[index + 5] = blake2s_hash_to_u32_array(prev_layer[i])[5];
-            gpu_flatten_prev_layer[index + 6] = blake2s_hash_to_u32_array(prev_layer[i])[6];
-            gpu_flatten_prev_layer[index + 7] = blake2s_hash_to_u32_array(prev_layer[i])[7];
+            gpu_prev_layer[i] = GpuBlake2sHash {
+                h: blake2s_hash_to_u32_array(prev_layer[i]),
+            };
         }
 
         let mut gpu_flatten_columns = [0u32; MAX_COLUMN_VALUES as usize];
@@ -191,12 +173,12 @@ mod tests {
             columns.len() as u32,
             1u32 << log_size,
             1,
-            gpu_flatten_prev_layer,
+            gpu_prev_layer,
             gpu_flatten_columns,
         ));
 
-        for i in 0..flatten_result.len() {
-            assert_eq!(flatten_result[i], gpu_result.state[i]);
+        for i in 0..result.len() {
+            assert_eq!(blake2s_hash_to_u32_array(result[i]), gpu_result.state[i].h);
         }
     }
 }
