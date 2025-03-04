@@ -12,8 +12,8 @@ struct Input {
     // Each hash consists of 8 u32, and two child hashes (16 words) per node are stored consecutively.
     prevLayer: array<Blake2sHash, MAX_PREV_LAYER_WORDS>,
     // Column data:
-    // Each column is stored as an array of length node_count, stored consecutively per column.
-    columns: array<u32, MAX_COLUMN_VALUES>,
+    // Each column is stored as an array of length node_count.
+    columns: array<Columns, MAX_COLUMNS>,
 };
 
 @group(0) @binding(0)
@@ -21,7 +21,7 @@ var<storage, read> input: Input;
 
 // Output layer buffer: stores the hash result for each node (each hash consists of 8 u32).
 @group(0) @binding(1)
-var<storage, read_write> outLayer: array<Blake2sHash, MAX_COLUMN_VALUES>;
+var<storage, read_write> outLayer: array<Blake2sHash, MAX_COLUMNS>;
 
 @compute @workgroup_size(1)
 fn main() {
@@ -39,14 +39,14 @@ fn main() {
         }
 
         // For each column, store the value corresponding to the current node (i) into a local array.
-        var local_column_values: array<u32, MAX_COLUMN_VALUES>;
+        var local_column_values: array<u32, MAX_COLUMNS>;
         for (var c: u32 = 0u; c < input.num_columns; c = c + 1u) {
-            // Assumes each column is stored as an array of length node_count.
-            let idx = c * input.node_count + i;
-            local_column_values[c] = input.columns[idx];
+            // Each column is stored as an array of length node_count.
+            local_column_values[c] = input.columns[c].columns[i];
         }
 
-        // Call hash_node: 이 함수는 이전 코드와 같이 입력받지만, 결과를 Blake2sHash struct로 반환하도록 구현되어야 합니다.
+        // Call hash_node: This function should take the input parameters as before,
+        // but return the result as a Blake2sHash struct.
         let result: Blake2sHash =
             hash_node(input.prevLayerPresent, left, right, &local_column_values, input.num_columns);
 

@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use crate::core::backend::gpu::gpu_common::{ByteSerialize, GpuComputeInstance, GpuOperation};
 
-const MAX_COLUMN_VALUES: u32 = 256;
+const MAX_COLUMNS: u32 = 256;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -33,7 +33,7 @@ pub struct HashNodeInput {
     pub children_hashes_present: u32,
     pub left: GpuBlake2sHash,
     pub right: GpuBlake2sHash,
-    pub column_values: [u32; MAX_COLUMN_VALUES as usize],
+    pub column_values: [u32; MAX_COLUMNS as usize],
     pub column_values_len: u32,
 }
 
@@ -99,7 +99,7 @@ impl GpuOperation for Blake2sHashNodeOperation {
                 children_hashes_present: u32,
                 left: Blake2sHash,
                 right: Blake2sHash,
-                column_values: array<u32, MAX_COLUMN_VALUES>,
+                column_values: array<u32, MAX_COLUMNS>,
                 column_values_len: u32,
             }
 
@@ -117,8 +117,8 @@ impl GpuOperation for Blake2sHashNodeOperation {
         let operation = r#"
             @compute @workgroup_size(1)
             fn main() {
-                var local_columns: array<u32, MAX_COLUMN_VALUES>;
-                for (var i = 0u; i < MAX_COLUMN_VALUES; i = i + 1u) {
+                var local_columns: array<u32, MAX_COLUMNS>;
+                for (var i = 0u; i < MAX_COLUMNS; i = i + 1u) {
                     local_columns[i] = input.column_values[i];
                 }
                 output.state = hash_node(
@@ -170,7 +170,7 @@ pub async fn compute_hash_node_operation(
     children_hashes_present: u32,
     left: [u32; 8],
     right: [u32; 8],
-    column_values: [u32; MAX_COLUMN_VALUES as usize],
+    column_values: [u32; MAX_COLUMNS as usize],
     column_values_len: u32,
 ) -> HashNodeOutput {
     let input = HashNodeInput {
@@ -272,8 +272,7 @@ mod tests {
         let cpu_hash = Blake2sMerkleHasher::hash_node(None, &column_values);
         let cpu_hash_u32 = blake2s_hash_to_u32_array(cpu_hash);
 
-        let mut column_values_u32: [u32; MAX_COLUMN_VALUES as usize] =
-            [0; MAX_COLUMN_VALUES as usize];
+        let mut column_values_u32: [u32; MAX_COLUMNS as usize] = [0; MAX_COLUMNS as usize];
         for i in 0..10 {
             column_values_u32[i] = column_values[i].into();
         }
@@ -304,8 +303,7 @@ mod tests {
             .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
             .collect::<Vec<_>>();
 
-        let mut column_values_u32: [u32; MAX_COLUMN_VALUES as usize] =
-            [0; MAX_COLUMN_VALUES as usize];
+        let mut column_values_u32: [u32; MAX_COLUMNS as usize] = [0; MAX_COLUMNS as usize];
         for i in 0..10 {
             column_values_u32[i] = column_values[i].into();
         }

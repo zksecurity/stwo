@@ -108,7 +108,7 @@ fn hash_node(
   children_hashes_present: u32,
   left: Blake2sHash,
   right: Blake2sHash,
-  column_values: ptr<function, array<u32, MAX_COLUMN_VALUES>>,
+  column_values: ptr<function, array<u32, MAX_COLUMNS>>,
   column_values_len: u32
 ) -> Blake2sHash {
   var state: Blake2sHash;
