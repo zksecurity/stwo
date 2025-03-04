@@ -47,7 +47,7 @@ pub struct Blake2sHashNodeOperation;
 
 impl GpuOperation for Blake2sHashOperation {
     fn shader_source(&self) -> Cow<'static, str> {
-        let base_source = include_str!("blake2hasher.wgsl");
+        let base_source = include_str!("blake2s_hasher.wgsl");
 
         let inputs = r#"
             struct HashInput {
@@ -83,7 +83,7 @@ impl GpuOperation for Blake2sHashOperation {
 
 impl GpuOperation for Blake2sHashNodeOperation {
     fn shader_source(&self) -> Cow<'static, str> {
-        let base_source = include_str!("blake2hasher.wgsl");
+        let base_source = include_str!("blake2s_hasher.wgsl");
 
         let inputs = r#"
             struct HashNodeInput {

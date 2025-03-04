@@ -29,10 +29,10 @@ pub struct Blake2sCommitOperation;
 
 impl GpuOperation for Blake2sCommitOperation {
     fn shader_source(&self) -> Cow<'static, str> {
-        let base_source = include_str!("blake2hasher.wgsl");
-        let merkle_source = include_str!("blake2s_merkle.wgsl");
+        let base_source = include_str!("blake2s_hasher.wgsl");
+        let commit_source = include_str!("blake2s_commit.wgsl");
 
-        format!("{base_source}\n{merkle_source}").into()
+        format!("{base_source}\n{commit_source}").into()
     }
 }
 

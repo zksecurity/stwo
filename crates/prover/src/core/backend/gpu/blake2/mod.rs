@@ -1,2 +1,2 @@
-pub mod blake2hasher;
-pub mod blake2s_merkle;
+pub mod blake2s_commit;
+pub mod blake2s_hasher;

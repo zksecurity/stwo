@@ -3,6 +3,10 @@
 const MAX_PREV_LAYER_WORDS: u32 = 1024; // Maximum number of u32 words for previous layer data.
 const MAX_COLUMNS_WORDS: u32 = 1024;      // Maximum number of u32 words for column data.
 
+struct Blake2sHash {
+    h: array<u32, 8>,
+}
+
 // Combined input storage struct containing layer parameters,
 // previous layer hash data, and column data.
 struct Input {
