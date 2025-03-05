@@ -8,6 +8,6 @@ struct Blake2sHash {
     h: array<u32, 8>,
 };
 
-struct Columns {
-    columns: array<u32, MAX_COLUMN_LENGTH>,
+struct Column {
+    column: array<u32, MAX_COLUMN_LENGTH>,
 }

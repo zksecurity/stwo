@@ -26,6 +26,8 @@ pub struct GpuComputeInstance {
     pub input_buffer: wgpu::Buffer,
     pub output_buffer: wgpu::Buffer,
     pub staging_buffer: wgpu::Buffer,
+    pub debug_buffer: wgpu::Buffer,
+    pub staging_buffer_debug: wgpu::Buffer,
 }
 
 impl GpuComputeInstance {
@@ -76,12 +78,30 @@ impl GpuComputeInstance {
             mapped_at_creation: false,
         });
 
+        // Create debug buffer
+        let debug_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Field Debug Buffer"),
+            size: output_size as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        // Create staging buffer for debug buffer
+        let staging_buffer_debug = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Field Staging Buffer Debug"),
+            size: output_size as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         Self {
             device,
             queue,
             input_buffer,
             output_buffer,
             staging_buffer,
+            debug_buffer,
+            staging_buffer_debug,
         }
     }
 
@@ -162,6 +182,97 @@ impl GpuComputeInstance {
         (pipeline, bind_group)
     }
 
+    pub fn create_pipeline_debug(
+        &self,
+        shader_source: &str,
+        entry_point: &str,
+    ) -> (wgpu::ComputePipeline, wgpu::BindGroup) {
+        let shader = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("Field Operations Shader"),
+                source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+            });
+
+        let bind_group_layout =
+            self.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 2,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                    ],
+                    label: Some("Field Operations Bind Group Layout"),
+                });
+
+        let pipeline_layout = self
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Field Operations Pipeline Layout"),
+                bind_group_layouts: &[&bind_group_layout],
+                push_constant_ranges: &[],
+            });
+
+        let pipeline = self
+            .device
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("Field Operations Pipeline"),
+                layout: Some(&pipeline_layout),
+                module: &shader,
+                entry_point: Some(entry_point),
+                cache: None,
+                compilation_options: Default::default(),
+            });
+
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.input_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.output_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.debug_buffer.as_entire_binding(),
+                },
+            ],
+            label: Some("Field Operations Bind Group"),
+        });
+
+        (pipeline, bind_group)
+    }
+
     pub async fn run_computation<T: ByteSerialize>(
         &self,
         pipeline: &wgpu::ComputePipeline,
@@ -217,6 +328,87 @@ impl GpuComputeInstance {
         let result = result.await;
 
         result
+    }
+
+    pub async fn run_computation_debug<T: ByteSerialize, D: ByteSerialize>(
+        &self,
+        pipeline: &wgpu::ComputePipeline,
+        bind_group: &wgpu::BindGroup,
+        workgroup_count: (u32, u32, u32),
+    ) -> (T, D) {
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Field Operations Encoder"),
+            });
+
+        {
+            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Field Operations Compute Pass"),
+                timestamp_writes: None,
+            });
+            compute_pass.set_pipeline(pipeline);
+            compute_pass.set_bind_group(0, bind_group, &[]);
+            compute_pass.dispatch_workgroups(
+                workgroup_count.0,
+                workgroup_count.1,
+                workgroup_count.2,
+            );
+        }
+
+        encoder.copy_buffer_to_buffer(
+            &self.output_buffer,
+            0,
+            &self.staging_buffer,
+            0,
+            self.staging_buffer.size(),
+        );
+
+        encoder.copy_buffer_to_buffer(
+            &self.debug_buffer,
+            0,
+            &self.staging_buffer_debug,
+            0,
+            self.staging_buffer_debug.size(),
+        );
+
+        self.queue.submit(Some(encoder.finish()));
+
+        let buffer_slice = self.staging_buffer.slice(..);
+        let (tx, rx) = flume::bounded(1);
+        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+            tx.send(result).unwrap();
+        });
+
+        let buffer_slice_debug = self.staging_buffer_debug.slice(..);
+        let (tx_debug, rx_debug) = flume::bounded(1);
+        buffer_slice_debug.map_async(wgpu::MapMode::Read, move |result| {
+            tx_debug.send(result).unwrap();
+        });
+
+        self.device.poll(wgpu::Maintain::wait());
+
+        let debug_result = async {
+            rx_debug.recv_async().await.unwrap().unwrap();
+            let data = buffer_slice_debug.get_mapped_range();
+            let result = D::from_bytes(&data);
+            drop(data);
+            self.staging_buffer_debug.unmap();
+            result
+        };
+        let debug_result = debug_result.await;
+
+        let result = async {
+            rx.recv_async().await.unwrap().unwrap();
+            let data = buffer_slice.get_mapped_range();
+            let result = T::from_bytes(&data);
+            drop(data);
+            self.staging_buffer.unmap();
+            result
+        };
+        let result = result.await;
+
+        (result, debug_result)
     }
 }
 
