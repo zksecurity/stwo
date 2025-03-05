@@ -401,15 +401,16 @@ mod tests {
     use std::time::Instant;
 
     use itertools::Itertools;
-    use num_traits::One;
+    use num_traits::{One, Zero};
 
     use crate::constraint_framework::assert_constraints;
     use crate::constraint_framework::preprocessed_columns::gen_is_first;
     use crate::core::air::Component;
     use crate::core::backend::gpu::prove::prove_gpu;
+    use crate::core::backend::simd::m31::PackedM31;
     use crate::core::backend::CpuBackend;
     use crate::core::channel::Blake2sChannel;
-    use crate::core::fields::m31::BaseField;
+    use crate::core::fields::m31::{BaseField, M31};
     use crate::core::fri::FriConfig;
     use crate::core::pcs::{CommitmentSchemeVerifier, PcsConfig, TreeVec};
     use crate::core::poly::circle::{CanonicCoset, PolyOps};
@@ -561,6 +562,54 @@ mod tests {
         let _cpu_trace = _trace.into_iter().map(|c| c.values.clone()).collect_vec();
         // assert_eq!(_cpu_trace, _gpu_trace);
         // assert_eq!(_lookup_data, _gpu_lookup_data);
+        for i in 0..N_COLUMNS {
+            assert_eq!(_cpu_trace_polys[i].coeffs, _gpu_trace_polys[i].coeffs);
+            assert_eq!(
+                _cpu_trace_polys[i].log_size(),
+                _gpu_trace_polys[i].log_size()
+            );
+        }
+    }
+
+    #[test]
+    fn test_gpu_multiple_traces() {
+        // use crate::core::backend::gpu::gen_trace::gen_trace as gen_trace_gpu;
+        // use crate::core::backend::gpu::gen_trace_parallel::gen_trace_parallel as gen_trace_gpu;
+        // use crate::core::backend::gpu::gen_trace_parallel_no_packed::gen_trace_parallel_no_packed
+        // as gen_trace_gpu;
+        // use crate::core::backend::gpu::gen_trace_parallel_no_packed_parallel_columns::gen_trace_parallel_no_packed_parallel_columns as gen_trace_gpu;
+        use crate::core::backend::gpu::gen_multiple_traces::gen_multiple_traces as gen_trace_gpu;
+        use crate::examples::poseidon::N_COLUMNS;
+
+        let log_n_instances = 12;
+        let log_n_instances_per_row = 3;
+        let log_n_rows = log_n_instances - log_n_instances_per_row;
+        let (_gpu_preprocessed_trace, _gpu_trace, _gpu_lookup_data, _gpu_trace_polys) =
+            pollster::block_on(gen_trace_gpu(log_n_rows));
+
+        let cpu_start = Instant::now();
+        let (_trace, _lookup_data) = gen_trace(log_n_rows);
+        let twiddles = CpuBackend::precompute_twiddles(
+            CanonicCoset::new(log_n_rows).circle_domain().half_coset,
+        );
+        let circle_evals: Vec<_> = _trace.iter().map(|eval| eval.to_cpu()).collect();
+        let _cpu_trace_polys = CpuBackend::interpolate_columns(circle_evals, &twiddles);
+        let cpu_end = Instant::now();
+        println!("CPU time: {:?}", cpu_end - cpu_start);
+
+        let _cpu_trace = _trace.into_iter().map(|c| c.values.clone()).collect_vec();
+        // check first value of preprocessed trace is 1, and all other values are 0
+        assert_eq!(
+            _gpu_preprocessed_trace[0].data[0],
+            PackedM31::from_array({
+                let mut arr = [M31::zero(); 16];
+                arr[0] = M31::from_u32_unchecked(1);
+                arr
+            })
+        );
+
+        assert_eq!(_cpu_trace, _gpu_trace);
+        assert_eq!(_lookup_data, _gpu_lookup_data);
         for i in 0..N_COLUMNS {
             assert_eq!(_cpu_trace_polys[i].coeffs, _gpu_trace_polys[i].coeffs);
             assert_eq!(

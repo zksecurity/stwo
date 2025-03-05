@@ -180,6 +180,7 @@ impl<'a, 'b, B: BackendForChannel<MC>, MC: MerkleChannel> TreeBuilder<'a, 'b, B,
     ) -> TreeSubspan {
         let col_start = self.polys.len();
         self.polys.extend(columns);
+
         let col_end = self.polys.len();
         TreeSubspan {
             tree_index: self.tree_index,

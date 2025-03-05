@@ -20,6 +20,7 @@ const WORKGROUP_SIZE: u32 = 8;
 const THREADS_PER_WORKGROUP: u32 = 256;
 const MAX_ARRAY_LOG_SIZE: u32 = 20;
 const MAX_ARRAY_SIZE: usize = 1 << MAX_ARRAY_LOG_SIZE;
+const N_PREPROCESSED_COLUMNS: u32 = 1;
 
 use crate::core::backend::cpu::circle::circle_twiddles_from_line_twiddles;
 use crate::core::backend::simd::column::BaseColumn;
@@ -46,7 +47,7 @@ struct Complex {
 
 #[derive(Debug, Clone)]
 #[repr(C)]
-struct GenTraceInput<F> {
+struct GenMultipleTracesInput<F> {
     pub initial_x: F,
     pub initial_y: F,
     pub log_size: u32,
@@ -60,12 +61,12 @@ struct GenTraceInput<F> {
     pub current_layer: u32,
 }
 
-impl<F> GenTraceInput<F>
+impl<F> GenMultipleTracesInput<F>
 where
     F: Into<u32> + From<u32> + Copy,
 {
     fn as_bytes(&self) -> &[u8] {
-        let total_size = std::mem::size_of::<GenTraceInput<F>>();
+        let total_size = std::mem::size_of::<GenMultipleTracesInput<F>>();
         let mut bytes = Vec::with_capacity(total_size);
 
         // initial_x, initial_y
@@ -221,9 +222,10 @@ impl From<GpuBaseColumn> for BaseColumn {
 
 #[derive(Clone, Debug, Copy)]
 #[repr(C)]
-pub struct GenTraceOutput {
+pub struct GenMultipleTracesOutput {
     trace: [GpuBaseColumn; N_COLUMNS as usize],
     lookup_data: GpuLookupData,
+    preprocessed_trace: [GpuBaseColumn; N_PREPROCESSED_COLUMNS as usize],
 }
 
 #[allow(dead_code)]
@@ -233,9 +235,10 @@ pub struct InterpolateOutput {
 
 #[derive(Clone, Debug)]
 #[repr(C)]
-struct GenTraceOutputVec {
+struct GenMultipleTracesOutputVec {
     trace: Vec<BaseColumn>,
     lookup_data: LookupData,
+    preprocessed_trace: Vec<BaseColumn>,
 }
 
 #[allow(dead_code)]
@@ -271,11 +274,21 @@ impl InterpolateOutputVec {
 }
 
 #[allow(dead_code)]
-impl GenTraceOutputVec {
+impl GenMultipleTracesOutputVec {
     fn from_bytes(bytes: &[u8]) -> Self {
         let base_column_size = std::mem::size_of::<GpuBaseColumn>();
         let lookup_data_size = std::mem::size_of::<GpuLookupData>();
-        assert!(bytes.len() >= base_column_size * N_COLUMNS as usize + lookup_data_size);
+        assert!(
+            bytes.len()
+                >= base_column_size * (N_COLUMNS + N_PREPROCESSED_COLUMNS) as usize
+                    + lookup_data_size
+        );
+
+        println!("bytes_len: {}", bytes.len());
+        println!(
+            "calculated_len: {}",
+            base_column_size * (N_COLUMNS + N_PREPROCESSED_COLUMNS) as usize + lookup_data_size
+        );
         let base_column_slice = bytes
             .chunks(base_column_size)
             .take(N_COLUMNS as usize)
@@ -284,65 +297,17 @@ impl GenTraceOutputVec {
         let lookup_data_start = base_column_size * N_COLUMNS as usize;
         let lookup_data =
             LookupData::from_bytes(&bytes[lookup_data_start..lookup_data_start + lookup_data_size]);
+        let preprocessed_trace_start = lookup_data_start + lookup_data_size;
+        let preprocessed_column_slice = bytes[preprocessed_trace_start..]
+            .chunks(base_column_size)
+            .take(N_PREPROCESSED_COLUMNS as usize)
+            .map(|chunk| BaseColumn::from_bytes(chunk))
+            .collect::<Vec<_>>();
+
         Self {
             trace: base_column_slice,
             lookup_data,
-        }
-    }
-}
-
-#[allow(dead_code)]
-impl BaseColumn {
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        assert!(bytes.len() >= std::mem::size_of::<Self>());
-        let slice = unsafe { &*(bytes.as_ptr() as *const GpuBaseColumn) };
-        (*slice).into()
-    }
-}
-
-#[allow(dead_code)]
-impl LookupData {
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        let base_column_size = std::mem::size_of::<GpuBaseColumn>();
-        let base_column_vec_size = base_column_size * N_STATE as usize;
-        let state_size = base_column_vec_size * N_INSTANCES_PER_ROW as usize;
-        let lookup_data_size = state_size * 2;
-        assert!(bytes.len() >= lookup_data_size);
-        let initial_state_slice: [[BaseColumn; N_STATE as usize]; N_INSTANCES_PER_ROW as usize] =
-            bytes
-                .chunks(base_column_vec_size)
-                .take(N_INSTANCES_PER_ROW as usize)
-                .map(|chunk| {
-                    chunk
-                        .chunks(base_column_size)
-                        .take(N_STATE as usize)
-                        .map(|chunk| BaseColumn::from_bytes(chunk))
-                        .collect::<Vec<_>>()
-                        .try_into()
-                        .unwrap()
-                })
-                .collect::<Vec<_>>()
-                .try_into()
-                .unwrap();
-        let final_state_slice: [[BaseColumn; N_STATE as usize]; N_INSTANCES_PER_ROW as usize] =
-            bytes[state_size..]
-                .chunks(base_column_vec_size)
-                .take(N_INSTANCES_PER_ROW as usize)
-                .map(|chunk| {
-                    chunk
-                        .chunks(base_column_size)
-                        .take(N_STATE as usize)
-                        .map(|chunk| BaseColumn::from_bytes(chunk))
-                        .collect::<Vec<_>>()
-                        .try_into()
-                        .unwrap()
-                })
-                .collect::<Vec<_>>()
-                .try_into()
-                .unwrap();
-        Self {
-            initial_state: initial_state_slice,
-            final_state: final_state_slice,
+            preprocessed_trace: preprocessed_column_slice,
         }
     }
 }
@@ -384,7 +349,7 @@ pub trait ByteSerialize: Sized {
 }
 
 impl ByteSerialize for BaseColumn {}
-impl ByteSerialize for GenTraceOutput {}
+impl ByteSerialize for GenMultipleTracesOutput {}
 
 #[allow(dead_code)]
 struct WgpuInstance {
@@ -397,8 +362,8 @@ struct WgpuInstance {
     encoder: wgpu::CommandEncoder,
 }
 
-fn create_gpu_input(log_size: u32) -> GenTraceInput<BaseField> {
-    let mut input = GenTraceInput::zero();
+fn create_gpu_input(log_size: u32) -> GenMultipleTracesInput<BaseField> {
+    let mut input = GenMultipleTracesInput::zero();
     input.log_size = log_size;
 
     let domain = CanonicCoset::new(log_size + 3).circle_domain();
@@ -465,10 +430,10 @@ async fn init(log_n_rows: u32) -> WgpuInstance {
     });
 
     println!(
-        "std::mem::size_of::<GenTraceOutput>: {}",
-        std::mem::size_of::<GenTraceOutput>()
+        "std::mem::size_of::<GenMultipleTracesOutput>: {}",
+        std::mem::size_of::<GenMultipleTracesOutput>()
     );
-    let buffer_size = std::mem::size_of::<GenTraceOutput>();
+    let buffer_size = std::mem::size_of::<GenMultipleTracesOutput>();
     let output_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Output Buffer"),
         size: buffer_size as wgpu::BufferAddress,
@@ -484,14 +449,14 @@ async fn init(log_n_rows: u32) -> WgpuInstance {
     });
 
     // Load shader
-    let shader_source = include_str!("gen_trace_interpolate_columns.wgsl");
+    let shader_source = include_str!("gen_multiple_traces.wgsl");
     let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Gen Trace Shader"),
         source: wgpu::ShaderSource::Wgsl(shader_source.into()),
     });
 
     // Load interpolate shader
-    let interpolate_shader_source = include_str!("interpolate.wgsl");
+    let interpolate_shader_source = include_str!("multiple_interpolate.wgsl");
     let interpolate_shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Interpolate Shader"),
         source: wgpu::ShaderSource::Wgsl(interpolate_shader_source.into()),
@@ -650,9 +615,14 @@ async fn init(log_n_rows: u32) -> WgpuInstance {
     }
 }
 
-pub async fn gen_trace_interpolate_columns(
+pub async fn gen_multiple_traces(
     log_n_rows: u32,
-) -> (Vec<BaseColumn>, LookupData, Vec<CirclePoly<CpuBackend>>) {
+) -> (
+    Vec<BaseColumn>,
+    Vec<BaseColumn>,
+    LookupData,
+    Vec<CirclePoly<CpuBackend>>,
+) {
     let instance = init(log_n_rows).await;
 
     #[cfg(not(target_family = "wasm"))]
@@ -663,26 +633,24 @@ pub async fn gen_trace_interpolate_columns(
     // Submit the commands
     instance.queue.submit(Some(instance.encoder.finish()));
 
-    // // Wait for the GPU to finish and map the staging buffer
-    // let buffer_slice = instance.staging_buffer.slice(..);
-    // let (sender, receiver) = flume::bounded(1);
-    // buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
-    // instance
-    //     .device
-    //     .poll(wgpu::Maintain::wait())
-    //     .panic_on_timeout();
-    // let result = async {
-    //     receiver.recv_async().await.unwrap().unwrap();
-    //     let data = buffer_slice.get_mapped_range();
+    // Wait for the GPU to finish and map the staging buffer
+    let buffer_slice = instance.staging_buffer.slice(..);
+    let (sender, receiver) = flume::bounded(1);
+    buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
+    instance
+        .device
+        .poll(wgpu::Maintain::wait())
+        .panic_on_timeout();
+    let result = async {
+        receiver.recv_async().await.unwrap().unwrap();
+        let data = buffer_slice.get_mapped_range();
 
-    //     let output = GenTraceOutputVec::from_bytes(&data);
-    //     drop(data);
-    //     instance.staging_buffer.unmap();
+        let output = GenMultipleTracesOutputVec::from_bytes(&data);
+        drop(data);
+        instance.staging_buffer.unmap();
 
-    //     let output_trace: Vec<BaseColumn> =
-    //         output.trace.clone().into_iter().map(|c| c.into()).collect();
-    //     (output_trace, output.lookup_data.into())
-    // };
+        output
+    };
 
     let interpolate_output_slice = instance.interpolate_staging_buffer.slice(..);
     let (sender, receiver) = flume::bounded(1);
@@ -700,7 +668,7 @@ pub async fn gen_trace_interpolate_columns(
         output
     };
 
-    // let (trace, lookup_data) = result.await;
+    let result = result.await;
     let _interpolate_output = interpolate_result.await;
 
     #[cfg(not(target_family = "wasm"))]
@@ -720,10 +688,15 @@ pub async fn gen_trace_interpolate_columns(
         .into(),
     );
 
-    let lookup_data = LookupData {
-        initial_state: std::array::from_fn(|_| std::array::from_fn(|_| BaseColumn::zeros(1))),
-        final_state: std::array::from_fn(|_| std::array::from_fn(|_| BaseColumn::zeros(1))),
-    };
-    (Vec::new(), lookup_data, _interpolate_output.results)
-    // (trace, lookup_data, _interpolate_output.results)
+    // let lookup_data = LookupData {
+    //     initial_state: std::array::from_fn(|_| std::array::from_fn(|_| BaseColumn::zeros(1))),
+    //     final_state: std::array::from_fn(|_| std::array::from_fn(|_| BaseColumn::zeros(1))),
+    // };
+    //(Vec::new(), lookup_data, _interpolate_output.results)
+    (
+        result.preprocessed_trace,
+        result.trace,
+        result.lookup_data,
+        _interpolate_output.results,
+    )
 }
