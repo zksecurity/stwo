@@ -201,6 +201,14 @@ pub struct LookupData {
     pub initial_state: [[BaseColumn; N_STATE]; N_INSTANCES_PER_ROW],
     pub final_state: [[BaseColumn; N_STATE]; N_INSTANCES_PER_ROW],
 }
+pub fn gen_preprocessed_trace(
+    log_size: u32,
+) -> ColumnVec<CircleEvaluation<SimdBackend, BaseField, BitReversedOrder>> {
+    let constant_trace: Vec<CircleEvaluation<SimdBackend, BaseField, BitReversedOrder>> =
+        vec![gen_is_first(log_size)];
+
+    return constant_trace;
+}
 pub fn gen_trace(
     log_size: u32,
 ) -> (
@@ -401,16 +409,15 @@ mod tests {
     use std::time::Instant;
 
     use itertools::Itertools;
-    use num_traits::{One, Zero};
+    use num_traits::One;
 
     use crate::constraint_framework::assert_constraints;
     use crate::constraint_framework::preprocessed_columns::gen_is_first;
     use crate::core::air::Component;
     use crate::core::backend::gpu::prove::prove_gpu;
-    use crate::core::backend::simd::m31::PackedM31;
     use crate::core::backend::CpuBackend;
     use crate::core::channel::Blake2sChannel;
-    use crate::core::fields::m31::{BaseField, M31};
+    use crate::core::fields::m31::BaseField;
     use crate::core::fri::FriConfig;
     use crate::core::pcs::{CommitmentSchemeVerifier, PcsConfig, TreeVec};
     use crate::core::poly::circle::{CanonicCoset, PolyOps};
@@ -418,7 +425,7 @@ mod tests {
     use crate::core::vcs::blake2_merkle::Blake2sMerkleChannel;
     use crate::examples::poseidon::{
         apply_internal_round_matrix, apply_m4, eval_poseidon_constraints, gen_interaction_trace,
-        gen_trace, prove_poseidon, PoseidonElements,
+        gen_preprocessed_trace, gen_trace, prove_poseidon, PoseidonElements,
     };
     use crate::math::matrix::{RowMajorMatrix, SquareMatrix};
 
@@ -584,30 +591,39 @@ mod tests {
         let log_n_instances = 12;
         let log_n_instances_per_row = 3;
         let log_n_rows = log_n_instances - log_n_instances_per_row;
-        let (_gpu_preprocessed_trace, _gpu_trace, _gpu_lookup_data, _gpu_trace_polys) =
-            pollster::block_on(gen_trace_gpu(log_n_rows));
+        let (
+            _gpu_preprocessed_trace,
+            _gpu_trace,
+            _gpu_lookup_data,
+            _gpu_trace_polys,
+            _gpu_preprocessed_polys,
+        ) = pollster::block_on(gen_trace_gpu(log_n_rows));
 
         let cpu_start = Instant::now();
+        let _preprocessed_trace = gen_preprocessed_trace(log_n_rows);
         let (_trace, _lookup_data) = gen_trace(log_n_rows);
         let twiddles = CpuBackend::precompute_twiddles(
             CanonicCoset::new(log_n_rows).circle_domain().half_coset,
         );
+        let preprocessed_circle_evals: Vec<_> = _preprocessed_trace
+            .iter()
+            .map(|eval| eval.to_cpu())
+            .collect();
+        let _cpu_preprocessed_polys =
+            CpuBackend::interpolate_columns(preprocessed_circle_evals, &twiddles);
+
         let circle_evals: Vec<_> = _trace.iter().map(|eval| eval.to_cpu()).collect();
         let _cpu_trace_polys = CpuBackend::interpolate_columns(circle_evals, &twiddles);
         let cpu_end = Instant::now();
         println!("CPU time: {:?}", cpu_end - cpu_start);
 
+        let _cpu_preprocessed_trace = _preprocessed_trace
+            .into_iter()
+            .map(|c| c.values.clone())
+            .collect_vec();
         let _cpu_trace = _trace.into_iter().map(|c| c.values.clone()).collect_vec();
-        // check first value of preprocessed trace is 1, and all other values are 0
-        assert_eq!(
-            _gpu_preprocessed_trace[0].data[0],
-            PackedM31::from_array({
-                let mut arr = [M31::zero(); 16];
-                arr[0] = M31::from_u32_unchecked(1);
-                arr
-            })
-        );
 
+        assert_eq!(_cpu_preprocessed_trace, _gpu_preprocessed_trace);
         assert_eq!(_cpu_trace, _gpu_trace);
         assert_eq!(_lookup_data, _gpu_lookup_data);
         for i in 0..N_COLUMNS {
@@ -617,6 +633,14 @@ mod tests {
                 _gpu_trace_polys[i].log_size()
             );
         }
+        assert_eq!(
+            _cpu_preprocessed_polys[0].coeffs,
+            _gpu_preprocessed_polys[0].coeffs
+        );
+        assert_eq!(
+            _cpu_preprocessed_polys[0].log_size(),
+            _gpu_preprocessed_polys[0].log_size()
+        );
     }
 
     #[test_log::test]

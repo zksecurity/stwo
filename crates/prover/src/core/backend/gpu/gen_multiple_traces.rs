@@ -21,6 +21,7 @@ const THREADS_PER_WORKGROUP: u32 = 256;
 const MAX_ARRAY_LOG_SIZE: u32 = 20;
 const MAX_ARRAY_SIZE: usize = 1 << MAX_ARRAY_LOG_SIZE;
 const N_PREPROCESSED_COLUMNS: u32 = 1;
+const N_INTERACTION_COLUMNS: u32 = N_INSTANCES_PER_ROW * 4;
 
 use crate::core::backend::cpu::circle::circle_twiddles_from_line_twiddles;
 use crate::core::backend::simd::column::BaseColumn;
@@ -231,6 +232,8 @@ pub struct GenMultipleTracesOutput {
 #[allow(dead_code)]
 pub struct InterpolateOutput {
     results: [u32; MAX_ARRAY_SIZE],
+    preprocessed_values: [u32; MAX_ARRAY_SIZE],
+    interaction_values: [u32; MAX_ARRAY_SIZE],
 }
 
 #[derive(Clone, Debug)]
@@ -244,6 +247,8 @@ struct GenMultipleTracesOutputVec {
 #[allow(dead_code)]
 struct InterpolateOutputVec {
     results: Vec<CirclePoly<CpuBackend>>,
+    preprocessed_results: Vec<CirclePoly<CpuBackend>>,
+    interaction_results: Vec<CirclePoly<CpuBackend>>,
 }
 
 impl InterpolateOutputVec {
@@ -269,7 +274,51 @@ impl InterpolateOutputVec {
             ));
         }
 
-        Self { results: polys }
+        let preprocessed_values_slice = unsafe {
+            std::slice::from_raw_parts(
+                bytes
+                    .as_ptr()
+                    .add(std::mem::size_of::<[u32; MAX_ARRAY_SIZE]>())
+                    as *const u32,
+                N_PREPROCESSED_COLUMNS as usize * (1 << log_n_rows) as usize,
+            )
+        };
+        let mut preprocessed_polys = Vec::new();
+        for i in 0..N_PREPROCESSED_COLUMNS {
+            preprocessed_polys.push(CirclePoly::new(
+                preprocessed_values_slice[i as usize * (1 << log_n_rows) as usize
+                    ..(i as usize + 1) * (1 << log_n_rows) as usize]
+                    .iter()
+                    .map(|&x| M31(x))
+                    .collect(),
+            ));
+        }
+
+        let interaction_values_slice = unsafe {
+            std::slice::from_raw_parts(
+                bytes
+                    .as_ptr()
+                    .add(std::mem::size_of::<[u32; MAX_ARRAY_SIZE]>() * 2)
+                    as *const u32,
+                N_INTERACTION_COLUMNS as usize * (1 << log_n_rows) as usize,
+            )
+        };
+        let mut interaction_polys = Vec::new();
+        for i in 0..N_INTERACTION_COLUMNS {
+            interaction_polys.push(CirclePoly::new(
+                interaction_values_slice[i as usize * (1 << log_n_rows) as usize
+                    ..(i as usize + 1) * (1 << log_n_rows) as usize]
+                    .iter()
+                    .map(|&x| M31(x))
+                    .collect(),
+            ));
+        }
+
+        Self {
+            results: polys,
+            preprocessed_results: preprocessed_polys,
+            interaction_results: interaction_polys,
+        }
     }
 }
 
@@ -284,11 +333,6 @@ impl GenMultipleTracesOutputVec {
                     + lookup_data_size
         );
 
-        println!("bytes_len: {}", bytes.len());
-        println!(
-            "calculated_len: {}",
-            base_column_size * (N_COLUMNS + N_PREPROCESSED_COLUMNS) as usize + lookup_data_size
-        );
         let base_column_slice = bytes
             .chunks(base_column_size)
             .take(N_COLUMNS as usize)
@@ -622,6 +666,7 @@ pub async fn gen_multiple_traces(
     Vec<BaseColumn>,
     LookupData,
     Vec<CirclePoly<CpuBackend>>,
+    Vec<CirclePoly<CpuBackend>>,
 ) {
     let instance = init(log_n_rows).await;
 
@@ -698,5 +743,6 @@ pub async fn gen_multiple_traces(
         result.trace,
         result.lookup_data,
         _interpolate_output.results,
+        _interpolate_output.preprocessed_results,
     )
 }

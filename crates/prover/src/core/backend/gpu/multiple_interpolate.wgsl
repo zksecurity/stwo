@@ -97,6 +97,8 @@ struct GenTraceOutput {
 
 struct Results {
     values: array<u32, MAX_ARRAY_SIZE>,
+    preprocessed_values: array<u32, MAX_ARRAY_SIZE>,
+    interaction_values: array<u32, MAX_ARRAY_SIZE>,
 }
 
 @group(0) @binding(0)
@@ -121,31 +123,88 @@ fn interpolate(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let local_id = global_id.x;
 
     let column_idx = threads_per_workgroup * workgroup_id + local_id;
-    if (column_idx >= N_COLUMNS) {
-        return;
+    if (column_idx < N_PREPROCESSED_COLUMNS) {
+        for (var i = 0u; i < size; i = i + 1u) {
+            let idx0 = i << 1u;
+            let idx1 = idx0 + 1u;
+
+            let outer_idx = idx0 / N_LANES;
+            let inner_idx = idx0 % N_LANES;
+            var val0 = gen_trace_output.preprocessed_trace[column_idx].data[outer_idx][inner_idx].data;
+            var val1 = gen_trace_output.preprocessed_trace[column_idx].data[outer_idx][inner_idx + 1u].data;
+
+            ibutterfly(&val0, &val1, input.circle_twiddles[i]);
+
+            output.preprocessed_values[column_idx * (1u << input.log_size) + idx0] = val0;
+            output.preprocessed_values[column_idx * (1u << input.log_size) + idx1] = val1;
+        }
+
+        interpolate_preprocessed_compute(column_idx);
     }
 
-    let workgroup_chunk_size = (size + workgroups_size - 1u) / workgroups_size;
-    let thread_chunk_size = (workgroup_chunk_size + threads_per_workgroup - 1u) / threads_per_workgroup;
-    let start_idx = workgroup_id * workgroup_chunk_size + local_id * thread_chunk_size;
-    let end_idx = min(start_idx + thread_chunk_size, size);
+    if (column_idx < N_COLUMNS) {
+        let workgroup_chunk_size = (size + workgroups_size - 1u) / workgroups_size;
+        let thread_chunk_size = (workgroup_chunk_size + threads_per_workgroup - 1u) / threads_per_workgroup;
+        let start_idx = workgroup_id * workgroup_chunk_size + local_id * thread_chunk_size;
+        let end_idx = min(start_idx + thread_chunk_size, size);
 
-    for (var i = 0u; i < size; i = i + 1u) {
-        let idx0 = i << 1u;
-        let idx1 = idx0 + 1u;
+        for (var i = 0u; i < size; i = i + 1u) {
+            let idx0 = i << 1u;
+            let idx1 = idx0 + 1u;
 
-        let outer_idx = idx0 / N_LANES;
-        let inner_idx = idx0 % N_LANES;
-        var val0 = gen_trace_output.trace[column_idx].data[outer_idx][inner_idx].data;
-        var val1 = gen_trace_output.trace[column_idx].data[outer_idx][inner_idx + 1u].data;
+            let outer_idx = idx0 / N_LANES;
+            let inner_idx = idx0 % N_LANES;
+            var val0 = gen_trace_output.trace[column_idx].data[outer_idx][inner_idx].data;
+            var val1 = gen_trace_output.trace[column_idx].data[outer_idx][inner_idx + 1u].data;
 
-        ibutterfly(&val0, &val1, input.circle_twiddles[i]);
+            ibutterfly(&val0, &val1, input.circle_twiddles[i]);
 
-        output.values[column_idx * (1u << input.log_size) + idx0] = val0;
-        output.values[column_idx * (1u << input.log_size) + idx1] = val1;
+            output.values[column_idx * (1u << input.log_size) + idx0] = val0;
+            output.values[column_idx * (1u << input.log_size) + idx1] = val1;
+        }
+
+        interpolate_compute(column_idx);
+    }
+}
+
+fn interpolate_preprocessed_compute(column_idx: u32) {
+    // Process line_twiddles
+    var layer = 0u;
+    loop {
+        let layer_size = input.line_twiddles_sizes[layer];
+        let layer_offset = input.line_twiddles_offsets[layer];
+        let step = 1u << (layer + 1u);
+        
+        for (var h = 0u; h < layer_size; h += 1u) {
+            let t = input.line_twiddles_flat[layer_offset + h];
+            let idx0_offset = (h << (layer + 2u));
+            
+            for (var l = 0u; l < step; l += 1u) {
+                let idx0 = idx0_offset + l;
+                let idx1 = idx0 + step;
+                
+                var val0 = output.preprocessed_values[column_idx * (1u << input.log_size) + idx0];
+                var val1 = output.preprocessed_values[column_idx * (1u << input.log_size) + idx1];
+                
+                ibutterfly(&val0, &val1, t);
+                
+                output.preprocessed_values[column_idx * (1u << input.log_size) + idx0] = val0;
+                output.preprocessed_values[column_idx * (1u << input.log_size) + idx1] = val1;
+            }
+        }
+
+        layer = layer + 1u;
+        if (layer >= input.line_twiddles_layer_count) { break; }
     }
 
-    interpolate_compute(column_idx);
+    interpolate_mod_mul_compute(column_idx);
+}
+
+
+fn interpolate_mod_mul_compute(column_idx: u32) {
+    for (var i = 0u; i < (1u << input.log_size); i += 1u) {
+        output.preprocessed_values[column_idx * (1u << input.log_size) + i] = mod_mul(output.preprocessed_values[column_idx * (1u << input.log_size) + i], input.mod_inv);
+    }
 }
 
 fn interpolate_compute(column_idx: u32) {

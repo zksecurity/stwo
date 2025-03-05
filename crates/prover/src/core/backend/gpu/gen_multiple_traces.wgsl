@@ -73,6 +73,8 @@ struct GenTraceOutput {
 
 struct Results {
     values: array<u32, MAX_ARRAY_SIZE>,
+    preprocessed_values: array<u32, MAX_ARRAY_SIZE>,
+    interaction_values: array<u32, MAX_ARRAY_SIZE>,
 }
 
 @group(0) @binding(0)
