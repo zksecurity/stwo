@@ -2,6 +2,7 @@
 use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
+use itertools::Itertools;
 use wgpu::util::DeviceExt;
 
 const N_ROWS: u32 = 32;
@@ -77,7 +78,7 @@ struct GenMultipleTracesInput<F> {
     pub line_twiddles_offsets: Vec<u32>,
     pub mod_inv: u32,
     pub current_layer: u32,
-    pub interaction_trace: Vec<GpuOriginalColumn>,
+    pub interaction_trace: [GpuOriginalColumn; N_INTERACTION_COLUMNS as usize],
 }
 
 impl From<&&&CirclePoly<SimdBackend>> for GpuOriginalColumn {
@@ -219,7 +220,7 @@ where
             line_twiddles_offsets: vec![0; MAX_ARRAY_SIZE],
             mod_inv: 0,
             current_layer: 0,
-            interaction_trace: vec![GpuOriginalColumn::zero(); N_INTERACTION_COLUMNS as usize],
+            interaction_trace: [GpuOriginalColumn::zero(); N_INTERACTION_COLUMNS as usize],
         }
     }
 }
@@ -441,7 +442,10 @@ struct WgpuInstance {
     encoder: wgpu::CommandEncoder,
 }
 
-fn create_gpu_input(log_size: u32) -> GenMultipleTracesInput<BaseField> {
+fn create_gpu_input(
+    log_size: u32,
+    interaction_trace: Vec<&&CirclePoly<SimdBackend>>,
+) -> GenMultipleTracesInput<BaseField> {
     let mut input = GenMultipleTracesInput::zero();
     input.log_size = log_size;
 
@@ -472,10 +476,17 @@ fn create_gpu_input(log_size: u32) -> GenMultipleTracesInput<BaseField> {
     let inv = BaseField::from_u32_unchecked(domain.size() as u32).inverse();
     input.mod_inv = inv.into();
 
+    input.interaction_trace = interaction_trace
+        .iter()
+        .map(|eval| GpuOriginalColumn::from(eval))
+        .collect_vec()
+        .try_into()
+        .expect("Wrong length");
+
     input
 }
 
-async fn init(log_n_rows: u32) -> WgpuInstance {
+async fn init(log_n_rows: u32, interaction_trace: Vec<&&CirclePoly<SimdBackend>>) -> WgpuInstance {
     let instance = wgpu::Instance::default();
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
@@ -499,7 +510,7 @@ async fn init(log_n_rows: u32) -> WgpuInstance {
         .await
         .unwrap();
 
-    let input_data = create_gpu_input(log_n_rows);
+    let input_data = create_gpu_input(log_n_rows, interaction_trace);
 
     // Create buffers
     let input_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -528,10 +539,24 @@ async fn init(log_n_rows: u32) -> WgpuInstance {
     });
 
     // Load shader
-    let shader_source = include_str!("gen_multiple_traces.wgsl");
+
+    let qm31_shader = include_str!("qm31.wgsl");
+    let fraction_shader = include_str!("fraction.wgsl");
+    let utils_shader = include_str!("utils.wgsl");
+    let combine_calculation_shader = include_str!("combined_calculation.wgsl");
+
+    // Load extend trace shader
+    let combined_calculation_combined_shader = format!(
+        "{}\n
+        {}\n
+        {}\n
+        {}",
+        qm31_shader, fraction_shader, utils_shader, combine_calculation_shader
+    );
+
     let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("Gen Trace Shader"),
-        source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+        label: Some("Combined Calculation Shader"),
+        source: wgpu::ShaderSource::Wgsl(combined_calculation_combined_shader.into()),
     });
 
     // Load interpolate shader
@@ -694,8 +719,9 @@ async fn init(log_n_rows: u32) -> WgpuInstance {
     }
 }
 
-pub async fn gen_multiple_traces(
+pub async fn gpu_combined_calculation(
     log_n_rows: u32,
+    interaction_trace: Vec<&&CirclePoly<SimdBackend>>,
 ) -> (
     Vec<BaseColumn>,
     Vec<BaseColumn>,
@@ -703,7 +729,7 @@ pub async fn gen_multiple_traces(
     Vec<CirclePoly<CpuBackend>>,
     Vec<CirclePoly<CpuBackend>>,
 ) {
-    let instance = init(log_n_rows).await;
+    let instance = init(log_n_rows, interaction_trace).await;
 
     #[cfg(not(target_family = "wasm"))]
     let gpu_start = Instant::now();

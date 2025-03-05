@@ -1,26 +1,37 @@
-const MODULUS_BITS: u32 = 31u;
-const HALF_BITS: u32 = 16u;
-const P: u32 = 2147483647u;
-
 // Define constants
 const N_ROWS: u32 = 32;
+const N_EXTENDED_ROWS: u32 = N_ROWS * 4;
 const N_STATE: u32 = 16;
 const N_INSTANCES_PER_ROW: u32 = 8;
 const N_COLUMNS: u32 = N_INSTANCES_PER_ROW * N_COLUMNS_PER_REP;
+const N_INTERACTION_COLUMNS: u32 = N_INSTANCES_PER_ROW * 4;
 const N_HALF_FULL_ROUNDS: u32 = 4;
 const FULL_ROUNDS: u32 = 2u * N_HALF_FULL_ROUNDS;
 const N_PARTIAL_ROUNDS: u32 = 14;
 const N_LANES: u32 = 16;
 const N_COLUMNS_PER_REP: u32 = N_STATE * (1 + FULL_ROUNDS) + N_PARTIAL_ROUNDS;
 const LOG_N_LANES: u32 = 4;
-const WORKGROUP_SIZE: u32 = 8;
+const N_WORKGROUPS: u32 = N_EXTENDED_ROWS * N_LANES / THREADS_PER_WORKGROUP;
 const THREADS_PER_WORKGROUP: u32 = 256;
-const TOTAL_THREAD_SIZE: u32 = THREADS_PER_WORKGROUP * WORKGROUP_SIZE;
 const MAX_ARRAY_LOG_SIZE: u32 = 20;
 const MAX_ARRAY_SIZE: u32 = 1u << MAX_ARRAY_LOG_SIZE;
-const N_PREPROCESSED_COLUMNS: u32 = 1;
-const N_INTERACTION_COLUMNS: u32 = N_INSTANCES_PER_ROW * 4;
+const N_CONSTRAINTS: u32 = 1144;
+const R: CM31 = CM31(M31(2u), M31(1u));
+const ONE = QM31(CM31(M31(1u), M31(0u)), CM31(M31(0u), M31(0u)));
+const DUMMY: u32 = 1004;
 const N_ORIGINAL_COLUMN_SIZE: u32 = N_LANES * N_ROWS;
+const N_EXTENDED_COLUMN_SIZE: u32 = N_LANES * N_EXTENDED_ROWS;
+
+const N_LINE_TWIDDLES_SIZE: u32 = N_EXTENDED_ROWS * N_LANES;
+const N_LINE_TWIDDLES_FLAT_SIZE: u32 = N_LINE_TWIDDLES_SIZE * 2;
+const N_CIRCLE_TWIDDLES_SIZE: u32 = N_LINE_TWIDDLES_SIZE * 2;
+const N_ORIGINAL_TRACE_COLUMNS: u32 = 1 + N_COLUMNS + N_INTERACTION_COLUMNS;
+const N_PREPROCESSED_COLUMNS: u32 = 1;
+
+const N_TRACES: u32 = 1 + N_COLUMNS + N_INTERACTION_COLUMNS;
+const N_PREPROCESSED_TRACE_OFFSET: u32 = 0u;
+const N_EXTENDED_TRACE_OFFSET: u32 = N_PREPROCESSED_TRACE_OFFSET + 1u;
+const N_INTERACTION_TRACE_OFFSET: u32 = N_EXTENDED_TRACE_OFFSET + N_COLUMNS;
 
 // Initialize EXTERNAL_ROUND_CONSTS with explicit values
 var<private> EXTERNAL_ROUND_CONSTS: array<array<u32, N_STATE>, FULL_ROUNDS> = array<array<u32, N_STATE>, FULL_ROUNDS>(
@@ -38,15 +49,6 @@ var<private> EXTERNAL_ROUND_CONSTS: array<array<u32, N_STATE>, FULL_ROUNDS> = ar
 var<private> INTERNAL_ROUND_CONSTS: array<u32, N_PARTIAL_ROUNDS> = array<u32, N_PARTIAL_ROUNDS>(
     1234, 1234, 1234, 1234, 1234, 1234, 1234, 1234, 1234, 1234, 1234, 1234, 1234, 1234
 );
-
-struct BaseColumn {
-    data: array<array<M31, N_LANES>, N_ROWS>,
-    length: u32,
-}
-
-struct M31 {
-    data: u32,
-}
 
 struct OriginalColumn {
     data: array<M31, N_ORIGINAL_COLUMN_SIZE>,
@@ -84,15 +86,73 @@ struct Results {
     interaction_values: array<u32, MAX_ARRAY_SIZE>,
 }
 
-@group(0) @binding(0)
+
+struct BaseColumn {
+    data: array<array<M31, N_LANES>, N_EXTENDED_ROWS>,
+}
+
+struct Extended1DColumn {
+    data: array<M31, N_EXTENDED_COLUMN_SIZE>,
+}
+
+struct LookupElements {
+    z: QM31,
+    alpha: QM31,
+    alpha_powers: array<QM31, N_STATE>,
+}
+
+struct Twiddles {
+    circle_twiddles: array<M31, N_CIRCLE_TWIDDLES_SIZE>,
+    circle_twiddles_size: u32,
+    line_twiddles_flat: array<M31, N_LINE_TWIDDLES_FLAT_SIZE>,
+    line_twiddles_layer_count: u32,
+    line_twiddles_sizes: array<u32, N_LINE_TWIDDLES_SIZE>,
+    line_twiddles_offsets: array<u32, N_LINE_TWIDDLES_SIZE>,
+}
+
+struct ComputeCompositionPolynomialInput {
+    original_trace: array<OriginalColumn, N_ORIGINAL_TRACE_COLUMNS>,
+    twiddles: Twiddles,
+    denom_inv: array<M31, 4>,
+    random_coeff_powers: array<QM31, N_CONSTRAINTS>,
+    lookup_elements: LookupElements,
+    trace_domain_log_size: u32,
+    eval_domain_log_size: u32,
+    total_sum: QM31,
+}
+
+struct ComputeCompositionPolynomialOutput {
+    poly: array<array<QM31, N_LANES>, N_EXTENDED_ROWS>,
+}
+
+struct RelationEntry {
+    multiplicity: QM31,
+    values: array<M31, N_STATE>,
+}
+
+struct ExtendTraceOutput {
+    extended_trace: array<Extended1DColumn, N_ORIGINAL_TRACE_COLUMNS>,
+}
+
+
+@group(1) @binding(0)
 var<storage, read> input: GenTraceInput;
 
 // Intermediate buffer
-@group(0) @binding(1)
+@group(1) @binding(1)
 var<storage, read_write> gen_trace_output: GenTraceOutput;
 
-@group(0) @binding(2)
+@group(1) @binding(2)
 var<storage, read_write> interpolate_output: Results;
+
+@group(1) @binding(3)
+var<storage, read> compute_composition_polynomial_input: ComputeCompositionPolynomialInput;
+
+@group(1) @binding(4)
+var<storage, read_write> compute_composition_polynomial_output: ComputeCompositionPolynomialOutput;
+
+@group(1) @binding(5)
+var<storage, read_write> extend_trace_output: ExtendTraceOutput;
 
 @compute @workgroup_size(THREADS_PER_WORKGROUP)
 fn gen_trace_interpolate_columns(
@@ -111,18 +171,7 @@ fn gen_trace_interpolate_columns(
 
     // initialize preprocessed trace
     gen_trace_output.preprocessed_trace[0].data[0][0] = M31(1u);
-    gen_trace_output.preprocessed_trace[0].length = N_ROWS * N_LANES;
 
-    for (var i = 0u; i < N_COLUMNS; i++) {
-        gen_trace_output.trace[i].length = N_ROWS * N_LANES;
-    }
-
-    for (var i = 0u; i < N_INSTANCES_PER_ROW; i++) {
-        for (var j = 0u; j < N_STATE; j++) {
-            gen_trace_output.lookup_data.initial_state[i][j].length = N_ROWS * N_LANES;
-            gen_trace_output.lookup_data.final_state[i][j].length = N_ROWS * N_LANES;
-        }
-    }
 
     let log_size = input.log_size;
 
@@ -147,7 +196,6 @@ fn gen_trace_interpolate_columns(
             for (var i = 0u; i < N_STATE; i++) {
                 gen_trace_output.lookup_data.initial_state[rep_i][i].data[vec_index][inner_vec_index] = state_1[i];
                 gen_trace_output.lookup_data.initial_state[rep_i][i].data[vec_index][inner_vec_index + 1u] = state_2[i];
-                gen_trace_output.lookup_data.initial_state[rep_i][i].length = N_ROWS * N_LANES;
             }
 
             // 4 full rounds
@@ -252,12 +300,6 @@ fn mod_mul(a: M31, b: M31) -> M31 {
     );
     
     return M31(result);
-}
-
-// Partial reduce for values in [0, 2P)
-fn partial_reduce(val: u32) -> u32 {
-    let reduced = val - P;
-    return select(val, reduced, reduced < val);
 }
 
 // Function to apply pow5 operation

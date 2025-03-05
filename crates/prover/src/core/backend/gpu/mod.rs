@@ -1,4 +1,5 @@
 pub mod blake2;
+pub mod combined_calculation;
 pub mod compute_composition_polynomial;
 pub mod compute_composition_polynomial_original_trace;
 pub mod extend_trace;

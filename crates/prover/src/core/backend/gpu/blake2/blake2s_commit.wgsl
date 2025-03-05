@@ -4,7 +4,7 @@
 const MAX_TOTAL_COLUMNS: u32 = 256 * 4;
 // Maximum flattened output size: for max layers, the flattened array will hold
 // sum_{i=0}^{max_log_size} (1 << i) nodes. Adjust as needed.
-const MAX_FLAT_SIZE: u32 = 65535;
+const MAX_FLAT_SIZE: u32 = 1u32 << 15;
 
 // Input buffer for commit() containing pre-sorted (in descending order of length) columns.
 struct CommitInput {

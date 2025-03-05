@@ -17,8 +17,10 @@ use super::preprocessed_columns::PreprocessedColumn;
 use super::{
     EvalAtRow, InfoEvaluator, PointEvaluator, SimdDomainEvaluator, PREPROCESSED_TRACE_IDX,
 };
+use crate::constraint_framework::INTERACTION_TRACE_IDX;
 use crate::core::air::accumulation::{DomainEvaluationAccumulator, PointEvaluationAccumulator};
 use crate::core::air::{Component, ComponentProver, Trace};
+use crate::core::backend::gpu::combined_calculation::gpu_combined_calculation;
 // #[cfg(not(target_family = "wasm"))]
 // use crate::core::backend::gpu::compute_composition_polynomial::compute_composition_polynomial_gpu;
 #[cfg(not(target_family = "wasm"))]
@@ -538,6 +540,12 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
         //     eval_domain.log_size(),
         //     self.logup_sums.0,
         // ));
+
+        println!("Running all-in-one GPU");
+        let all_in_one_gpu_results = pollster::block_on(gpu_combined_calculation(
+            eval_domain.log_size(),
+            component_polys[INTERACTION_TRACE_IDX].clone(),
+        ));
 
         #[cfg(not(target_family = "wasm"))]
         println!("Running TRACE_EXTEND_GPU");
