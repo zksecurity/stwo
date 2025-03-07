@@ -1,21 +1,4 @@
-const MODULUS_BITS: u32 = 31u;
-const HALF_BITS: u32 = 16u;
-// Mersenne prime P = 2^31 - 1
-const P: u32 = 2147483647u;
-const MAX_ARRAY_LOG_SIZE: u32 = 20;
-const MAX_ARRAY_SIZE: u32 = 1u << MAX_ARRAY_LOG_SIZE;
-const MAX_DEBUG_SIZE: u32 = 32;
-const MAX_SHARED_SIZE: u32 = 1u << 12;
-
-const N_ROWS: u32 = 32;
-const N_STATE: u32 = 16;
-const N_INSTANCES_PER_ROW: u32 = 8;
-const N_COLUMNS: u32 = N_INSTANCES_PER_ROW * N_COLUMNS_PER_REP;
-const N_HALF_FULL_ROUNDS: u32 = 4;
-const FULL_ROUNDS: u32 = 2u * N_HALF_FULL_ROUNDS;
-const N_PARTIAL_ROUNDS: u32 = 14;
-const N_LANES: u32 = 16;
-const N_COLUMNS_PER_REP: u32 = N_STATE * (1 + FULL_ROUNDS) + N_PARTIAL_ROUNDS;
+// Note: depends on gen_trace_interpolate_columns_constants.wgsl
 
 fn partial_reduce(val: u32) -> u32 {
     let reduced = val - P;
@@ -108,25 +91,19 @@ var<storage, read_write> output: Results;
 
 var<workgroup> shared_values: array<u32, MAX_SHARED_SIZE>;
 
-@compute @workgroup_size(64)
+@compute @workgroup_size(INTERPOLATE_THREADS_PER_WORKGROUP)
 fn interpolate(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let workgroups_size = 32u;
-    let threads_per_workgroup = 64u;
-    let thread_size = workgroups_size * threads_per_workgroup;
+    let workgroups_size = INTERPOLATE_WORKGROUP_SIZE;
+    let threads_per_workgroup = INTERPOLATE_THREADS_PER_WORKGROUP;
     let size = 1u << (input.log_size - 1u);
     
     let workgroup_id = global_id.y;
-    let local_id = global_id.x;
+    let local_thread_id = global_id.x;
 
-    let column_idx = threads_per_workgroup * workgroup_id + local_id;
+    let column_idx = threads_per_workgroup * workgroup_id + local_thread_id;
     if (column_idx >= N_COLUMNS) {
         return;
     }
-
-    let workgroup_chunk_size = (size + workgroups_size - 1u) / workgroups_size;
-    let thread_chunk_size = (workgroup_chunk_size + threads_per_workgroup - 1u) / threads_per_workgroup;
-    let start_idx = workgroup_id * workgroup_chunk_size + local_id * thread_chunk_size;
-    let end_idx = min(start_idx + thread_chunk_size, size);
 
     for (var i = 0u; i < size; i = i + 1u) {
         let idx0 = i << 1u;

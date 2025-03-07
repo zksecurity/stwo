@@ -499,7 +499,7 @@ mod tests {
         use crate::core::backend::gpu::gen_trace_interpolate_columns::gen_trace_interpolate_columns;
         use crate::examples::poseidon::N_COLUMNS;
 
-        let log_n_instances = 12;
+        let log_n_instances = 16;
         let log_n_instances_per_row = 3;
         let log_n_rows = log_n_instances - log_n_instances_per_row;
         let (_gpu_trace, _gpu_lookup_data, _gpu_trace_polys) =
@@ -521,8 +521,6 @@ mod tests {
             .into(),
         );
         let _cpu_trace = _trace.into_iter().map(|c| c.values.clone()).collect_vec();
-        // assert_eq!(_cpu_trace, _gpu_trace);
-        // assert_eq!(_lookup_data, _gpu_lookup_data);
         for i in 0..N_COLUMNS {
             assert_eq!(_cpu_trace_polys[i].coeffs, _gpu_trace_polys[i].coeffs);
             assert_eq!(
@@ -534,15 +532,10 @@ mod tests {
 
     #[test]
     fn test_gpu_poseidon_constraints() {
-        // use crate::core::backend::gpu::gen_trace::gen_trace as gen_trace_gpu;
-        // use crate::core::backend::gpu::gen_trace_parallel::gen_trace_parallel as gen_trace_gpu;
-        // use crate::core::backend::gpu::gen_trace_parallel_no_packed::gen_trace_parallel_no_packed
-        // as gen_trace_gpu;
-        // use crate::core::backend::gpu::gen_trace_parallel_no_packed_parallel_columns::gen_trace_parallel_no_packed_parallel_columns as gen_trace_gpu;
         use crate::core::backend::gpu::gen_trace_interpolate_columns::gen_trace_interpolate_columns as gen_trace_gpu;
         use crate::examples::poseidon::N_COLUMNS;
 
-        let log_n_instances = 12;
+        let log_n_instances = 16;
         let log_n_instances_per_row = 3;
         let log_n_rows = log_n_instances - log_n_instances_per_row;
         let (_gpu_trace, _gpu_lookup_data, _gpu_trace_polys) =
