@@ -4,7 +4,7 @@ use std::time::Instant;
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-const N_ROWS: u32 = 32;
+const N_ROWS: u32 = 512;
 const N_STATE: u32 = 16;
 const N_INSTANCES_PER_ROW: u32 = 1 << N_LOG_INSTANCES_PER_ROW;
 const N_LOG_INSTANCES_PER_ROW: u32 = 3;
@@ -14,11 +14,12 @@ const FULL_ROUNDS: u32 = 2 * N_HALF_FULL_ROUNDS;
 const N_PARTIAL_ROUNDS: u32 = 14;
 const N_LANES: u32 = 16;
 const N_COLUMNS_PER_REP: u32 = N_STATE * (1 + FULL_ROUNDS) + N_PARTIAL_ROUNDS;
-// const LOG_N_LANES: u32 = 4;
-const WORKGROUP_SIZE: u32 = 8;
+const GEN_TRACE_WORKGROUP_SIZE: u32 = N_ROWS * N_LANES / GEN_TRACE_THREADS_PER_WORKGROUP;
+const GEN_TRACE_THREADS_PER_WORKGROUP: u32 = 256;
+const INTERPOLATE_WORKGROUP_SIZE: u32 = 8;
 #[allow(dead_code)]
-const THREADS_PER_WORKGROUP: u32 = 256;
-const MAX_ARRAY_LOG_SIZE: u32 = 20;
+const INTERPOLATE_THREADS_PER_WORKGROUP: u32 = 256;
+const MAX_ARRAY_LOG_SIZE: u32 = 25;
 const MAX_ARRAY_SIZE: usize = 1 << MAX_ARRAY_LOG_SIZE;
 
 use crate::core::backend::cpu::circle::circle_twiddles_from_line_twiddles;
@@ -442,12 +443,13 @@ async fn init(log_n_rows: u32) -> WgpuInstance {
         .await
         .unwrap();
 
+    let adapter_limits = adapter.limits();
     let (device, queue) = adapter
         .request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("Device"),
                 required_features: wgpu::Features::SHADER_INT64,
-                required_limits: wgpu::Limits::default(),
+                required_limits: adapter_limits,
                 memory_hints: wgpu::MemoryHints::Performance,
             },
             None,
@@ -484,29 +486,56 @@ async fn init(log_n_rows: u32) -> WgpuInstance {
     });
 
     // Load shader
-    let shader_source = include_str!("gen_trace_interpolate_columns.wgsl");
+    let gen_trace_interpolate_columns_constants_shader =
+        include_str!("gen_trace_interpolate_columns_constants.wgsl");
+    let gen_trace_impl_shader = include_str!("gen_trace.wgsl");
+    let interpolate_impl_shader = include_str!("interpolate.wgsl");
+    let gen_trace_shader = format!(
+        "{}\n
+        {}",
+        gen_trace_interpolate_columns_constants_shader, gen_trace_impl_shader,
+    );
+    let interpolate_shader = format!(
+        "{}\n
+        {}",
+        gen_trace_interpolate_columns_constants_shader, interpolate_impl_shader,
+    );
     let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Gen Trace Shader"),
-        source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+        source: wgpu::ShaderSource::Wgsl(gen_trace_shader.into()),
     });
 
     // Load interpolate shader
-    let interpolate_shader_source = include_str!("interpolate.wgsl");
     let interpolate_shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Interpolate Shader"),
-        source: wgpu::ShaderSource::Wgsl(interpolate_shader_source.into()),
+        source: wgpu::ShaderSource::Wgsl(interpolate_shader.into()),
     });
 
     // Get the maximum buffer size supported by the device
     let max_buffer_size = device.limits().max_buffer_size;
     println!("Maximum buffer size supported: {} bytes", max_buffer_size);
+    #[cfg(target_family = "wasm")]
+    web_sys::console::log_1(
+        &format!("Maximum buffer size supported: {} bytes", max_buffer_size).into(),
+    );
 
     // Check if our buffer size exceeds the limit
-    if buffer_size > max_buffer_size as usize {
-        panic!(
-            "Required buffer size {} exceeds device maximum of {}",
-            buffer_size, max_buffer_size
-        );
+    if max_buffer_size > usize::MAX as u64 {
+        // If max_buffer_size is larger than what usize can represent on this platform
+        if buffer_size == usize::MAX {
+            // This is a special case where buffer_size has reached the maximum possible value
+            panic!("Buffer size has reached the maximum value representable by usize");
+        }
+        // We know buffer_size is less than max_buffer_size since max_buffer_size > usize::MAX
+        // and buffer_size <= usize::MAX
+    } else {
+        // Safe to convert max_buffer_size to usize since it's within range
+        if buffer_size > max_buffer_size as usize {
+            panic!(
+                "Buffer size {} exceeds maximum allowed size {}",
+                buffer_size, max_buffer_size
+            );
+        }
     }
 
     // Bind group layout
@@ -608,12 +637,11 @@ async fn init(log_n_rows: u32) -> WgpuInstance {
         });
         compute_pass.set_pipeline(&compute_pipeline);
         compute_pass.set_bind_group(0, &bind_group, &[]);
-        compute_pass.dispatch_workgroups(WORKGROUP_SIZE, 1, 1);
+        compute_pass.dispatch_workgroups(GEN_TRACE_WORKGROUP_SIZE, 1, 1);
 
         compute_pass.set_pipeline(&interpolate_pipeline);
         compute_pass.set_bind_group(0, &bind_group, &[]);
-        let first_workgroup_size = 32;
-        compute_pass.dispatch_workgroups(1, first_workgroup_size, 1);
+        compute_pass.dispatch_workgroups(1, INTERPOLATE_WORKGROUP_SIZE, 1);
     }
 
     // Copy output to staging buffer for read access
@@ -662,27 +690,6 @@ pub async fn gen_trace_interpolate_columns(
 
     // Submit the commands
     instance.queue.submit(Some(instance.encoder.finish()));
-
-    // // Wait for the GPU to finish and map the staging buffer
-    // let buffer_slice = instance.staging_buffer.slice(..);
-    // let (sender, receiver) = flume::bounded(1);
-    // buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
-    // instance
-    //     .device
-    //     .poll(wgpu::Maintain::wait())
-    //     .panic_on_timeout();
-    // let result = async {
-    //     receiver.recv_async().await.unwrap().unwrap();
-    //     let data = buffer_slice.get_mapped_range();
-
-    //     let output = GenTraceOutputVec::from_bytes(&data);
-    //     drop(data);
-    //     instance.staging_buffer.unmap();
-
-    //     let output_trace: Vec<BaseColumn> =
-    //         output.trace.clone().into_iter().map(|c| c.into()).collect();
-    //     (output_trace, output.lookup_data.into())
-    // };
 
     let interpolate_output_slice = instance.interpolate_staging_buffer.slice(..);
     let (sender, receiver) = flume::bounded(1);
