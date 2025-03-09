@@ -22,22 +22,27 @@ struct BaseColumn {
     length: u32,
 }
 
+struct OriginalColumn {
+    data: array<M31, N_ORIGINAL_COLUMN_SIZE>,
+}
+
 struct M31 {
     data: u32,
 }
 
-struct GenTraceInput {
-    initial_x: u32,
-    initial_y: u32,
-    log_size: u32,
-    circle_twiddles: array<u32, MAX_ARRAY_SIZE>,
+struct Twiddles {
+    circle_twiddles: array<M31, N_CIRCLE_TWIDDLES_SIZE>,
     circle_twiddles_size: u32,
-    line_twiddles_flat: array<u32, MAX_ARRAY_SIZE>,
+    line_twiddles_flat: array<M31, N_LINE_TWIDDLES_FLAT_SIZE>,
     line_twiddles_layer_count: u32,
-    line_twiddles_sizes: array<u32, MAX_ARRAY_SIZE>,
-    line_twiddles_offsets: array<u32, MAX_ARRAY_SIZE>,
-    mod_inv: u32,
-    current_layer: u32,
+    line_twiddles_sizes: array<u32, N_LINE_TWIDDLES_SIZE>,
+    line_twiddles_offsets: array<u32, N_LINE_TWIDDLES_SIZE>,
+    mod_inv: M31,
+}
+
+struct GenTraceInput {
+    log_size: u32,
+    twiddles: Twiddles,
 }
 
 struct LookupData {
@@ -46,6 +51,7 @@ struct LookupData {
 }
 
 struct GenTraceOutput {
+    original_traces: array<OriginalColumn, N_ORIGINAL_TRACE_COLUMNS>,
     trace: array<BaseColumn, N_COLUMNS>,
     lookup_data: LookupData,
 }
@@ -79,6 +85,9 @@ fn gen_trace_interpolate_columns(
 
     let global_invocation_index = workgroup_index * GEN_TRACE_THREADS_PER_WORKGROUP + local_invocation_index;
 
+    // initialize preprocessed trace
+    gen_trace_output.original_traces[0].data[0] = M31(1u);
+
     for (var i = 0u; i < N_COLUMNS; i++) {
         gen_trace_output.trace[i].length = N_ROWS * N_LANES;
     }
@@ -102,6 +111,7 @@ fn gen_trace_interpolate_columns(
 
             for (var i = 0u; i < N_STATE; i++) {
                 gen_trace_output.trace[col_index].data[vec_index][inner_vec_index] = state[i];
+                gen_trace_output.original_traces[col_index + N_TRACE_OFFSET].data[global_invocation_index] = state[i];
                 col_index += 1u;
             }
 
@@ -121,6 +131,7 @@ fn gen_trace_interpolate_columns(
                 }
                 for (var j = 0u; j < N_STATE; j++) {
                     gen_trace_output.trace[col_index].data[vec_index][inner_vec_index] = state[j];
+                    gen_trace_output.original_traces[col_index + N_TRACE_OFFSET].data[global_invocation_index] = state[j];
                     col_index += 1u;
                 }
             }
@@ -130,6 +141,7 @@ fn gen_trace_interpolate_columns(
                 state = apply_internal_round_matrix(state);
                 state[0] = pow5(state[0]);
                 gen_trace_output.trace[col_index].data[vec_index][inner_vec_index] = state[0];
+                gen_trace_output.original_traces[col_index + N_TRACE_OFFSET].data[global_invocation_index] = state[0];
                 col_index += 1u;
             }
             // 4 full rounds
@@ -143,6 +155,7 @@ fn gen_trace_interpolate_columns(
                 }
                 for (var j = 0u; j < N_STATE; j++) {
                     gen_trace_output.trace[col_index].data[vec_index][inner_vec_index] = state[j];
+                    gen_trace_output.original_traces[col_index + N_TRACE_OFFSET].data[global_invocation_index] = state[j];
                     col_index += 1u;
                 }
             }
