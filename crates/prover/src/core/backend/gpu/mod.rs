@@ -4,7 +4,7 @@ pub mod compute_composition_polynomial;
 pub mod compute_composition_polynomial_original_trace;
 pub mod extend_trace;
 pub mod fraction;
-// pub mod gen_interaction_trace;
+pub mod gen_interaction_trace;
 pub mod gen_multiple_traces;
 pub mod gen_trace_interpolate_columns;
 pub mod gpu_common;

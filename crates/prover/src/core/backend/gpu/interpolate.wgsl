@@ -1,5 +1,10 @@
 // Note: depends on gen_trace_interpolate_columns_constants.wgsl
 
+const MODULUS_BITS: u32 = 31u;
+const HALF_BITS: u32 = 16u;
+// Mersenne prime P = 2^31 - 1
+const P: u32 = 2147483647u;
+
 fn partial_reduce(val: u32) -> u32 {
     let reduced = val - P;
     return select(val, reduced, reduced < val);

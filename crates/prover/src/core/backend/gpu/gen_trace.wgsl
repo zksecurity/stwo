@@ -169,6 +169,11 @@ fn add(a: M31, b: M31) -> M31 {
     return M31(partial_reduce(a.data + b.data));
 }
 
+const MODULUS_BITS: u32 = 31u;
+const HALF_BITS: u32 = 16u;
+// Mersenne prime P = 2^31 - 1
+const P: u32 = 2147483647u;
+
 fn mod_mul(a: M31, b: M31) -> M31 {
     // Split into 16-bit parts
     let a1 = a.data >> HALF_BITS;

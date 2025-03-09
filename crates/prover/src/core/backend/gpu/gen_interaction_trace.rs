@@ -1,22 +1,13 @@
 use std::collections::HashMap;
 
-use itertools::Itertools;
 use wgpu::util::DeviceExt;
 
 use super::qm31::GpuQM31;
-use crate::constraint_framework::{
-    INTERACTION_TRACE_IDX, ORIGINAL_TRACE_IDX, PREPROCESSED_TRACE_IDX,
-};
 use crate::core::backend::gpu::qm31::GpuM31;
-use crate::core::backend::CpuBackend;
-use crate::core::fields::m31::M31;
-use crate::core::fields::qm31::QM31;
-use crate::core::pcs::TreeVec;
-use crate::core::poly::circle::CircleEvaluation;
-use crate::core::poly::BitReversedOrder;
-use crate::examples::poseidon::PoseidonElements;
+use crate::core::backend::simd::column::BaseColumn;
+use crate::examples::poseidon::{LookupData, PoseidonElements};
 
-pub const N_ROWS: u32 = 256;
+pub const N_ROWS: u32 = 32;
 pub const N_STATE: u32 = 16;
 pub const N_LOG_INSTANCES_PER_ROW: u32 = 3;
 pub const N_INSTANCES_PER_ROW: u32 = 1 << N_LOG_INSTANCES_PER_ROW;
@@ -32,26 +23,9 @@ pub const N_PARTIAL_ROUNDS: u32 = 14;
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
-pub struct GpuExtendedColumn {
-    pub data: [[GpuM31; N_LANES as usize]; N_EXTENDED_ROWS as usize],
-    pub length: u32,
-}
-
-impl From<&CircleEvaluation<CpuBackend, M31, BitReversedOrder>> for GpuExtendedColumn {
-    fn from(value: &CircleEvaluation<CpuBackend, M31, BitReversedOrder>) -> Self {
-        let mut data = [[GpuM31 { data: 0 }; N_LANES as usize]; N_EXTENDED_ROWS as usize];
-        for (i, chunk) in value.values.chunks(N_LANES as usize).enumerate() {
-            let mut row = [GpuM31 { data: 0 }; N_LANES as usize];
-            for (j, &val) in chunk.iter().enumerate() {
-                row[j] = val.into();
-            }
-            data[i] = row;
-        }
-        GpuExtendedColumn {
-            data,
-            length: N_EXTENDED_ROWS,
-        }
-    }
+struct GpuLookupData {
+    initial_state: [[GpuBaseColumn; N_STATE as usize]; N_INSTANCES_PER_ROW as usize],
+    final_state: [[GpuBaseColumn; N_STATE as usize]; N_INSTANCES_PER_ROW as usize],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -60,6 +34,13 @@ pub struct GpuLookupElements {
     pub z: GpuQM31,
     pub alpha: GpuQM31,
     pub alpha_powers: [GpuQM31; N_STATE as usize],
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct GpuBaseColumn {
+    data: [[GpuM31; N_LANES as usize]; N_ROWS as usize],
+    length: u32,
 }
 
 impl From<PoseidonElements> for GpuLookupElements {
@@ -80,26 +61,25 @@ impl From<PoseidonElements> for GpuLookupElements {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct ComputeCompositionPolynomialInput {
-    extended_preprocessed_trace: GpuExtendedColumn,
-    extended_trace: [GpuExtendedColumn; N_COLUMNS as usize],
-    extended_interaction_trace: [GpuExtendedColumn; N_INTERACTION_COLUMNS as usize],
-    denom_inv: [GpuM31; 4],
-    random_coeff_powers: [GpuQM31; N_CONSTRAINTS as usize],
+pub struct GenInteractionTraceInput {
+    log_size: u32,
+    lookup_data: GpuLookupData,
     lookup_elements: GpuLookupElements,
-    trace_domain_log_size: u32,
-    eval_domain_log_size: u32,
-    total_sum: GpuQM31,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct ComputeCompositionPolynomialOutput {
-    pub poly: [[GpuQM31; N_LANES as usize]; N_EXTENDED_ROWS as usize],
+#[repr(C)]
+pub struct GpuQM31Column {
+    pub data: [GpuQM31; N_ROWS as usize],
+    pub length: u32,
 }
 
-#[derive(Debug, Clone)]
-pub struct ComputationResults {
-    pub output: ComputeCompositionPolynomialOutput,
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+pub struct GenInteractionTraceOutput {
+    pub interaction_trace_qm31: [GpuQM31Column; N_INSTANCES_PER_ROW as usize],
+    pub interaction_trace_buffers: [GpuQM31Column; 2],
+    pub total_sum: GpuQM31,
 }
 
 pub trait ByteSerialize: Sized {
@@ -118,44 +98,28 @@ pub trait ByteSerialize: Sized {
     }
 }
 
-impl ByteSerialize for GpuExtendedColumn {}
-impl ByteSerialize for ComputeCompositionPolynomialOutput {}
+impl ByteSerialize for GpuLookupData {}
+impl ByteSerialize for GpuLookupElements {}
+impl ByteSerialize for GpuBaseColumn {}
+impl ByteSerialize for GpuQM31Column {}
+impl ByteSerialize for GenInteractionTraceOutput {}
 
-impl ComputeCompositionPolynomialInput {
+impl GenInteractionTraceInput {
     fn as_bytes(&self) -> &[u8] {
-        let total_size = std::mem::size_of::<ComputeCompositionPolynomialInput>();
+        let total_size = std::mem::size_of::<GenInteractionTraceInput>();
         let mut bytes = Vec::with_capacity(total_size);
+
         bytes.extend_from_slice(unsafe {
             std::slice::from_raw_parts(
-                &self.extended_preprocessed_trace as *const GpuExtendedColumn as *const u8,
-                std::mem::size_of::<GpuExtendedColumn>(),
-            )
-        });
-        bytes.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                &self.extended_trace as *const GpuExtendedColumn as *const u8,
-                N_COLUMNS as usize * std::mem::size_of::<GpuExtendedColumn>(),
+                &self.log_size as *const u32 as *const u8,
+                std::mem::size_of::<u32>(),
             )
         });
 
         bytes.extend_from_slice(unsafe {
             std::slice::from_raw_parts(
-                &self.extended_interaction_trace as *const GpuExtendedColumn as *const u8,
-                N_INTERACTION_COLUMNS as usize * std::mem::size_of::<GpuExtendedColumn>(),
-            )
-        });
-
-        bytes.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                &self.denom_inv as *const GpuM31 as *const u8,
-                4 * std::mem::size_of::<GpuM31>(),
-            )
-        });
-
-        bytes.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                &self.random_coeff_powers as *const GpuQM31 as *const u8,
-                N_CONSTRAINTS as usize * std::mem::size_of::<GpuQM31>(),
+                &self.lookup_data as *const GpuLookupData as *const u8,
+                std::mem::size_of::<GpuLookupData>(),
             )
         });
 
@@ -166,32 +130,11 @@ impl ComputeCompositionPolynomialInput {
             )
         });
 
-        bytes.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                &self.trace_domain_log_size as *const u32 as *const u8,
-                std::mem::size_of::<u32>(),
-            )
-        });
-
-        bytes.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                &self.eval_domain_log_size as *const u32 as *const u8,
-                std::mem::size_of::<u32>(),
-            )
-        });
-
-        bytes.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                &self.total_sum as *const GpuQM31 as *const u8,
-                std::mem::size_of::<GpuQM31>(),
-            )
-        });
-
         Box::leak(bytes.into_boxed_slice())
     }
 }
 
-impl ComputeCompositionPolynomialOutput {
+impl GenInteractionTraceOutput {
     fn from_bytes(bytes: &[u8]) -> Self {
         unsafe { *(bytes.as_ptr() as *const Self) }
     }
@@ -207,13 +150,9 @@ pub struct WgpuInstance {
 }
 
 async fn init(
-    trace: TreeVec<Vec<&CircleEvaluation<CpuBackend, M31, BitReversedOrder>>>,
-    denom_inv: Vec<M31>,
-    random_coeff_powers: Vec<QM31>,
-    lookup_elements: PoseidonElements,
-    trace_domain_log_size: u32,
-    eval_domain_log_size: u32,
-    total_sum: QM31,
+    log_size: u32,
+    lookup_data: LookupData,
+    lookup_elements: &PoseidonElements,
 ) -> WgpuInstance {
     let instance = wgpu::Instance::default();
     let adapter = instance
@@ -237,15 +176,7 @@ async fn init(
         .await
         .unwrap();
 
-    let input_data = create_gpu_input(
-        trace,
-        denom_inv,
-        random_coeff_powers,
-        lookup_elements,
-        trace_domain_log_size,
-        eval_domain_log_size,
-        total_sum,
-    );
+    let input_data = create_interaction_trace_input(log_size, lookup_data, lookup_elements);
 
     // Create buffers
     let input_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -254,7 +185,7 @@ async fn init(
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
     });
 
-    let buffer_size = std::mem::size_of::<ComputeCompositionPolynomialOutput>();
+    let buffer_size = std::mem::size_of::<GenInteractionTraceOutput>();
     let output_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Output Buffer"),
         size: buffer_size as wgpu::BufferAddress,
@@ -266,16 +197,18 @@ async fn init(
     let qm31_shader = include_str!("qm31.wgsl");
     let fraction_shader = include_str!("fraction.wgsl");
     let utils_shader = include_str!("utils.wgsl");
-    let composition_shader = include_str!("compute_composition_polynomial.wgsl");
+    let trace_constants = include_str!("gen_trace_interpolate_columns_constants.wgsl");
+    let interaction_trace_shader = include_str!("gen_interaction_trace.wgsl");
     let combined_shader = format!(
         "{}\n
         {}\n
         {}\n
+        {}\n    
         {}",
-        qm31_shader, fraction_shader, utils_shader, composition_shader
+        qm31_shader, fraction_shader, utils_shader, trace_constants, interaction_trace_shader
     );
     let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("Compute Composition Polynomial Shader"),
+        label: Some("Compute Interaction Trace Shader"),
         source: wgpu::ShaderSource::Wgsl(combined_shader.into()),
     });
 
@@ -305,7 +238,7 @@ async fn init(
                 count: None,
             },
         ],
-        label: Some("Compute Composition Polynomial Bind Group Layout"),
+        label: Some("Compute Interaction Trace Bind Group Layout"),
     });
 
     // Create bind group
@@ -321,22 +254,22 @@ async fn init(
                 resource: output_buffer.as_entire_binding(),
             },
         ],
-        label: Some("Compute Composition Polynomial Bind Group"),
+        label: Some("Compute Interaction Trace Bind Group"),
     });
 
     // Pipeline layout
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         bind_group_layouts: &[&bind_group_layout],
         push_constant_ranges: &[],
-        label: Some("Compute Composition Polynomial Pipeline Layout"),
+        label: Some("Compute Interaction Trace Pipeline Layout"),
     });
 
     // Compute pipeline
     let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("Compute Composition Polynomial Compute Pipeline"),
+        label: Some("Compute Interaction Trace Compute Pipeline"),
         layout: Some(&pipeline_layout),
         module: &shader_module,
-        entry_point: Some("compute_composition_polynomial"),
+        entry_point: Some("compute_interaction_trace"),
         cache: None,
         compilation_options: wgpu::PipelineCompilationOptions {
             constants: &HashMap::from([]),
@@ -346,13 +279,13 @@ async fn init(
 
     // Create encoder
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("Compute Composition Polynomial Command Encoder"),
+        label: Some("Compute Interaction Trace Command Encoder"),
     });
 
     // Dispatch the compute shader
     {
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("Compute Composition Polynomial Compute Pass"),
+            label: Some("Compute Interaction Trace Compute Pass"),
             timestamp_writes: None,
         });
         compute_pass.set_pipeline(&compute_pipeline);
@@ -379,81 +312,82 @@ async fn init(
     }
 }
 
-fn create_gpu_input(
-    trace: TreeVec<Vec<&CircleEvaluation<CpuBackend, M31, BitReversedOrder>>>,
-    denom_inv: Vec<M31>,
-    random_coeff_powers: Vec<QM31>,
-    lookup_elements: PoseidonElements,
-    trace_domain_log_size: u32,
-    eval_domain_log_size: u32,
-    total_sum: QM31,
-) -> ComputeCompositionPolynomialInput {
-    let extended_preprocessed_trace_gpu =
-        GpuExtendedColumn::from(trace.0[PREPROCESSED_TRACE_IDX][0]);
+impl From<&BaseColumn> for GpuBaseColumn {
+    fn from(value: &BaseColumn) -> Self {
+        let gpu_data = value
+            .data
+            .iter()
+            .map(|packed| {
+                let m31_array = packed.to_array(); // [M31; N_LANES]
+                let mut gpu_m31_array = [GpuM31 { data: 0 }; N_LANES as usize];
+                for (i, m31_val) in m31_array.iter().enumerate() {
+                    gpu_m31_array[i] = GpuM31 { data: m31_val.0 };
+                }
+                gpu_m31_array
+            })
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
 
-    let extended_trace_gpu: [GpuExtendedColumn; N_COLUMNS as usize] = trace.0[ORIGINAL_TRACE_IDX]
-        .iter()
-        .map(|eval| GpuExtendedColumn::from(*eval))
-        .collect_vec()
-        .try_into()
-        .expect("Wrong length");
+        GpuBaseColumn {
+            data: gpu_data,
+            length: value.length as u32,
+        }
+    }
+}
+impl LookupData {
+    fn to_gpu_base_columns(&self) -> GpuLookupData {
+        let mut initial_gpu = [[GpuBaseColumn {
+            data: [[GpuM31 { data: 0 }; N_LANES as usize]; N_ROWS as usize],
+            length: N_LANES * N_ROWS,
+        }; N_STATE as usize]; N_INSTANCES_PER_ROW as usize];
+        for (row_idx, row) in self.initial_state.iter().enumerate() {
+            for (col_idx, base_col) in row.iter().enumerate() {
+                initial_gpu[row_idx][col_idx] = GpuBaseColumn::from(base_col);
+            }
+        }
 
-    let extended_interaction_trace_gpu: [GpuExtendedColumn; N_INTERACTION_COLUMNS as usize] = trace
-        .0[INTERACTION_TRACE_IDX]
-        .iter()
-        .map(|eval| GpuExtendedColumn::from(*eval))
-        .collect_vec()
-        .try_into()
-        .expect("Wrong length");
+        let mut final_gpu = [[GpuBaseColumn {
+            data: [[GpuM31 { data: 0 }; N_LANES as usize]; N_ROWS as usize],
+            length: N_LANES * N_ROWS,
+        }; N_STATE as usize]; N_INSTANCES_PER_ROW as usize];
+        for (row_idx, row) in self.final_state.iter().enumerate() {
+            for (col_idx, base_col) in row.iter().enumerate() {
+                final_gpu[row_idx][col_idx] = GpuBaseColumn::from(base_col);
+            }
+        }
 
-    let denom_inv_gpu: [GpuM31; 4] = denom_inv
-        .into_iter()
-        .map(GpuM31::from)
-        .collect::<Vec<_>>()
-        .try_into()
-        .expect("Wrong length");
-
-    let random_coeff_powers_gpu: [GpuQM31; N_CONSTRAINTS as usize] = random_coeff_powers
-        .into_iter()
-        .map(GpuQM31::from)
-        .collect::<Vec<_>>()
-        .try_into()
-        .expect("Wrong length");
-
-    let lookup_elements_gpu = GpuLookupElements::from(lookup_elements);
-
-    ComputeCompositionPolynomialInput {
-        extended_preprocessed_trace: extended_preprocessed_trace_gpu,
-        extended_trace: extended_trace_gpu,
-        extended_interaction_trace: extended_interaction_trace_gpu,
-        denom_inv: denom_inv_gpu,
-        random_coeff_powers: random_coeff_powers_gpu,
-        lookup_elements: lookup_elements_gpu,
-        trace_domain_log_size,
-        eval_domain_log_size,
-        total_sum: total_sum.into(),
+        GpuLookupData {
+            initial_state: initial_gpu,
+            final_state: final_gpu,
+        }
     }
 }
 
-pub async fn compute_composition_polynomial_gpu<'a>(
-    trace: TreeVec<Vec<&CircleEvaluation<CpuBackend, M31, BitReversedOrder>>>,
-    denom_inv: Vec<M31>,
-    random_coeff_powers: Vec<QM31>,
-    lookup_elements: PoseidonElements,
-    trace_domain_log_size: u32,
-    eval_domain_log_size: u32,
-    total_sum: QM31,
-) -> ComputationResults {
-    let instance = init(
-        trace,
-        denom_inv,
-        random_coeff_powers,
-        lookup_elements,
-        trace_domain_log_size,
-        eval_domain_log_size,
-        total_sum,
-    )
-    .await;
+fn create_interaction_trace_input(
+    log_size: u32,
+    lookup_data: LookupData,
+    lookup_elements: &PoseidonElements,
+) -> GenInteractionTraceInput {
+    let gpu_lookup_elements = GpuLookupElements {
+        z: lookup_elements.0.z.into(),
+        alpha: lookup_elements.0.alpha.into(),
+        alpha_powers: lookup_elements.0.alpha_powers.map(|p| p.into()),
+    };
+
+    GenInteractionTraceInput {
+        log_size,
+        lookup_data: lookup_data.to_gpu_base_columns(),
+        lookup_elements: gpu_lookup_elements,
+    }
+}
+
+pub async fn compute_interaction_trace_gpu<'a>(
+    log_size: u32,
+    lookup_data: LookupData,
+    lookup_elements: &PoseidonElements,
+) -> GenInteractionTraceOutput {
+    let instance = init(log_size, lookup_data, lookup_elements).await;
     instance.queue.submit(Some(instance.encoder.finish()));
     let output_slice = instance.staging_buffer.slice(..);
     let (sender, receiver) = flume::bounded(1);
@@ -465,12 +399,12 @@ pub async fn compute_composition_polynomial_gpu<'a>(
     let result = async {
         receiver.recv_async().await.unwrap().unwrap();
         let data = output_slice.get_mapped_range();
-        let output = ComputeCompositionPolynomialOutput::from_bytes(&data);
+        let output = GenInteractionTraceOutput::from_bytes(&data);
         drop(data);
         instance.staging_buffer.unmap();
         output
     };
 
     let output = result.await;
-    ComputationResults { output }
+    output
 }

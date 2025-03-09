@@ -4,7 +4,7 @@ use std::time::Instant;
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-const N_ROWS: u32 = 512;
+const N_ROWS: u32 = 32;
 const N_STATE: u32 = 16;
 const N_INSTANCES_PER_ROW: u32 = 1 << N_LOG_INSTANCES_PER_ROW;
 const N_LOG_INSTANCES_PER_ROW: u32 = 3;

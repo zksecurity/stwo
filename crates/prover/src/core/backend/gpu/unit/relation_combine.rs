@@ -204,6 +204,11 @@ mod tests {
             values.map(|v| v.into()),
             gpu_lookup_elements,
         ));
+        println!("output: {:?}", output.state);
+        println!(
+            "lookup_elements.combine: {:?}",
+            lookup_elements.combine::<BaseField, SecureField>(&values)
+        );
         assert_eq!(
             lookup_elements.combine::<BaseField, SecureField>(&values),
             output.state.into(),
@@ -232,6 +237,38 @@ mod tests {
         for i in 0..poseidon_combine_array.len() {
             let output_state = output.state[i];
             assert_eq!(poseidon_combine_array[i], output_state.into());
+        }
+    }
+
+    #[test]
+    fn test_gpu_combine_first_poseidon() {
+        let mut channel = Blake2sChannel::default();
+        let poseidon_elements = PoseidonElements::draw(&mut channel);
+        let simd_values: [[GpuM31; N_LANES as usize]; N_STATE as usize] =
+            core::array::from_fn(|i| [GpuM31 { data: i as u32 }; N_LANES as usize]);
+        let values: [BaseField; N_STATE as usize] =
+            core::array::from_fn(|i| BaseField::from_u32_unchecked(i as u32));
+
+        let gpu_lookup_elements = GpuLookupElements {
+            z: poseidon_elements.0.z.into(),
+            alpha: poseidon_elements.0.alpha.into(),
+            alpha_powers: poseidon_elements.0.alpha_powers.map(|p| p.into()),
+        };
+
+        let single_output = pollster::block_on(compute_combine_operation(
+            CombineOperation,
+            values.map(|v| v.into()),
+            gpu_lookup_elements,
+        ));
+
+        let simd_output = pollster::block_on(compute_simd_combine_operation(
+            SimdCombineOperation,
+            simd_values,
+            poseidon_elements.into(),
+        ));
+
+        for i in 0..N_LANES {
+            assert_eq!(single_output.state, simd_output.state[i as usize]);
         }
     }
 }

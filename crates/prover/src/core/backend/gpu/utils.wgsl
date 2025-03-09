@@ -50,3 +50,19 @@ fn offset_bit_reversed_circle_domain_index(
     
     return bit_reverse_index(prev_index, eval_log_size);
 }
+
+fn circle_domain_index_to_coset_index(i: u32, n: u32) -> u32 {
+    if (i < (n / 2u)) {
+        return 2u * i;
+    } else {
+        return 2u * (n - 1u - i) + 1u;
+    }
+}
+
+fn coset_index_to_circle_domain_index(coset_index: u32, log_domain_size: u32) -> u32 {
+    if (coset_index % 2u == 0u) {
+        return coset_index / 2u;
+    } else {
+        return ((2u << log_domain_size) - coset_index) / 2u;
+    }
+}

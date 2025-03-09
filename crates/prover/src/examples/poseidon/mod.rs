@@ -414,6 +414,7 @@ mod tests {
     use crate::constraint_framework::assert_constraints;
     use crate::constraint_framework::preprocessed_columns::gen_is_first;
     use crate::core::air::Component;
+    use crate::core::backend::gpu::gen_interaction_trace::compute_interaction_trace_gpu;
     use crate::core::backend::gpu::prove::prove_gpu;
     use crate::core::backend::CpuBackend;
     use crate::core::channel::Blake2sChannel;
@@ -544,7 +545,7 @@ mod tests {
         use crate::core::backend::gpu::gen_trace_interpolate_columns::gen_trace_interpolate_columns as gen_trace_gpu;
         use crate::examples::poseidon::N_COLUMNS;
 
-        let log_n_instances = 16;
+        let log_n_instances = 12;
         let log_n_instances_per_row = 3;
         let log_n_rows = log_n_instances - log_n_instances_per_row;
         let (_gpu_trace, _gpu_lookup_data, _gpu_trace_polys) =
@@ -748,5 +749,67 @@ mod tests {
 
         // Prove in CPU
         let (_component, _proof) = prove_poseidon(log_n_instances, config);
+    }
+
+    #[test]
+    fn test_gen_interaction_trace() {
+        use crate::core::pcs::CommitmentSchemeProver;
+        use crate::examples::poseidon::{SimdBackend, LOG_EXPAND, N_LOG_INSTANCES_PER_ROW};
+
+        let log_n_instances = 12;
+        let config = PcsConfig {
+            pow_bits: 10,
+            fri_config: FriConfig::new(5, 1, 64),
+        };
+
+        assert!(log_n_instances >= N_LOG_INSTANCES_PER_ROW as u32);
+        let log_n_rows = log_n_instances - N_LOG_INSTANCES_PER_ROW as u32;
+
+        // Precompute twiddles.
+        let twiddles = SimdBackend::precompute_twiddles(
+            CanonicCoset::new(log_n_rows + LOG_EXPAND + config.fri_config.log_blowup_factor)
+                .circle_domain()
+                .half_coset,
+        );
+
+        // Setup protocol.
+        let channel = &mut Blake2sChannel::default();
+        let mut commitment_scheme =
+            CommitmentSchemeProver::<_, Blake2sMerkleChannel>::new(config, &twiddles);
+
+        // Preprocessed trace.
+        let mut tree_builder = commitment_scheme.tree_builder();
+        let constant_trace = vec![gen_is_first(log_n_rows)];
+        tree_builder.extend_evals(constant_trace);
+        tree_builder.commit(channel);
+
+        // Trace.
+        let (trace, lookup_data) = gen_trace(log_n_rows);
+        let mut tree_builder = commitment_scheme.tree_builder();
+        tree_builder.extend_evals(trace);
+        tree_builder.commit(channel);
+
+        // Draw lookup elements.
+        let lookup_elements = PoseidonElements::draw(channel);
+
+        // Interaction trace.
+        let (_cpu_interaction_trace, _cpu_total_sum) =
+            gen_interaction_trace(log_n_rows, lookup_data.clone(), &lookup_elements);
+
+        // print first interaction trace
+        println!("First interaction trace: {:?}", _cpu_interaction_trace[0]);
+
+        // GPU interaction trace
+        let _gpu_interaction_trace = pollster::block_on(compute_interaction_trace_gpu(
+            log_n_rows,
+            lookup_data.clone(),
+            &lookup_elements,
+        ));
+
+        // print first interaction trace
+        println!(
+            "First interaction trace: {:?}",
+            _gpu_interaction_trace.interaction_trace_qm31[0].data
+        );
     }
 }
