@@ -7,7 +7,7 @@ use crate::core::backend::gpu::qm31::GpuM31;
 use crate::core::backend::simd::column::BaseColumn;
 use crate::examples::poseidon::{LookupData, PoseidonElements};
 
-pub const N_ROWS: u32 = 32;
+pub const N_ROWS: u32 = 512;
 pub const N_STATE: u32 = 16;
 pub const N_LOG_INSTANCES_PER_ROW: u32 = 3;
 pub const N_INSTANCES_PER_ROW: u32 = 1 << N_LOG_INSTANCES_PER_ROW;
@@ -20,6 +20,8 @@ pub const N_WORKGROUPS: u32 = N_EXTENDED_ROWS * N_LANES / THREADS_PER_WORKGROUP;
 pub const THREADS_PER_WORKGROUP: u32 = 256;
 pub const N_HALF_FULL_ROUNDS: u32 = 4;
 pub const N_PARTIAL_ROUNDS: u32 = 14;
+
+pub const N_ORIGINAL_COLUMN_SIZE: u32 = N_LANES * N_ROWS;
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
@@ -41,6 +43,12 @@ pub struct GpuLookupElements {
 pub struct GpuBaseColumn {
     data: [[GpuM31; N_LANES as usize]; N_ROWS as usize],
     length: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct GpuOriginalColumn {
+    pub data: [GpuM31; N_ORIGINAL_COLUMN_SIZE as usize],
 }
 
 impl From<PoseidonElements> for GpuLookupElements {
@@ -70,15 +78,16 @@ pub struct GenInteractionTraceInput {
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct GpuQM31Column {
-    pub data: [GpuQM31; N_ROWS as usize],
+    pub data: [GpuQM31; N_ORIGINAL_COLUMN_SIZE as usize],
     pub length: u32,
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct GenInteractionTraceOutput {
+    pub interaction_trace: [GpuOriginalColumn; N_INTERACTION_COLUMNS as usize],
     pub interaction_trace_qm31: [GpuQM31Column; N_INSTANCES_PER_ROW as usize],
-    pub interaction_trace_buffers: [GpuQM31Column; 2],
+    pub interaction_trace_buffers: [GpuQM31Column; 4],
     pub total_sum: GpuQM31,
 }
 
@@ -102,6 +111,7 @@ impl ByteSerialize for GpuLookupData {}
 impl ByteSerialize for GpuLookupElements {}
 impl ByteSerialize for GpuBaseColumn {}
 impl ByteSerialize for GpuQM31Column {}
+impl ByteSerialize for GpuOriginalColumn {}
 impl ByteSerialize for GenInteractionTraceOutput {}
 
 impl GenInteractionTraceInput {
@@ -277,6 +287,20 @@ async fn init(
         },
     });
 
+    // interaction trace to original column
+    let interaction_trace_to_original_column_pipeline =
+        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Compute Interaction Trace To Original Column Compute Pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader_module,
+            entry_point: Some("interaction_trace_to_original_column"),
+            cache: None,
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: &HashMap::from([]),
+                zero_initialize_workgroup_memory: true,
+            },
+        });
+
     // Create encoder
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("Compute Interaction Trace Command Encoder"),
@@ -290,7 +314,10 @@ async fn init(
         });
         compute_pass.set_pipeline(&compute_pipeline);
         compute_pass.set_bind_group(0, &bind_group, &[]);
-        compute_pass.dispatch_workgroups(N_WORKGROUPS, 1, 1);
+        compute_pass.dispatch_workgroups(1, 1, 1);
+
+        compute_pass.set_pipeline(&interaction_trace_to_original_column_pipeline);
+        compute_pass.dispatch_workgroups(1, 1, 1);
     }
 
     // Copy output to staging buffer for read access

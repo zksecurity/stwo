@@ -1,7 +1,7 @@
 // will include gen_trace_interpolate_columns_constants.wgsl
 
 struct QM31Column {
-    data: array<QM31, N_ROWS>,
+    data: array<QM31, N_ORIGINAL_COLUMN_SIZE>,
     length: u32
 }
 
@@ -32,11 +32,12 @@ struct GenInteractionTraceInput {
 };
 
 struct GenInteractionTraceOutput {
+    interaction_trace: array<OriginalColumn, N_INTERACTION_COLUMNS>,
+    // chunk 
     interaction_trace_qm31: array<QM31Column, N_INSTANCES_PER_ROW>,
-    interaction_trace_buffers: array<QM31Column, 2>,
-    total_sum: QM31
-    // interaction_trace: array<BaseColumn, N_INTERACTION_COLUMNS>,
-    // interaction_trace: array<OriginalColumn, N_INTERACTION_COLUMNS>,
+    interaction_trace_buffers: array<QM31Column, 4>,
+    total_sum: QM31,
+    // chunk ends
 }
 
 @group(0) @binding(0)
@@ -110,6 +111,7 @@ fn compute_interaction_trace(
             }
             output.interaction_trace_qm31[rep_i].data[row] = qm31_add(output.interaction_trace_qm31[rep_i].data[row], prev_value);
         }
+        output.interaction_trace_qm31[rep_i].length = N_LANES * N_ROWS;
         workgroupBarrier();
     }
 
@@ -135,20 +137,20 @@ fn compute_interaction_trace(
         target_index = 0u;
         source_index = 1u;
         for (var r: u32 = 0u; r < total_rows; r = r + 1u) {
-            output.interaction_trace_buffers[target_index].data[r] = output.interaction_trace_buffers[source_index].data[circle_domain_index_to_coset_index(r, total_rows)];
+            output.interaction_trace_buffers[target_index].data[circle_domain_index_to_coset_index(r, total_rows)] = output.interaction_trace_buffers[source_index].data[r];
         }
 
         // calculate prefix sum in coset order
         target_index = 0u;
         for (var r: u32 = 1u; r < total_rows; r = r + 1u) {
-            output.interaction_trace_buffers[target_index].data[r] = qm31_add(output.interaction_trace_buffers[target_index].data[r - 1u], output.interaction_trace_buffers[source_index].data[r]);
+            output.interaction_trace_buffers[target_index].data[r] = qm31_add(output.interaction_trace_buffers[target_index].data[r - 1u], output.interaction_trace_buffers[target_index].data[r]);
         }
 
         // coset order to circle domain order
         target_index = 1u;
         source_index = 0u;
         for (var r: u32 = 0u; r < total_rows; r = r + 1u) {
-            output.interaction_trace_buffers[target_index].data[r] = output.interaction_trace_buffers[source_index].data[coset_index_to_circle_domain_index(r, log_size)];
+            output.interaction_trace_buffers[target_index].data[coset_index_to_circle_domain_index(r, log_size)] = output.interaction_trace_buffers[source_index].data[r];
         }
 
         // normal order(circle domain order) to bit-reversed order
@@ -167,6 +169,29 @@ fn compute_interaction_trace(
         // copy interaction_trace_buffers[0] to last column
         for (var r: u32 = 0u; r < total_rows; r = r + 1u) {
             output.interaction_trace_qm31[last_rep].data[r] = output.interaction_trace_buffers[target_index].data[r];
+        }
+    }
+}
+
+@compute @workgroup_size(GEN_INTERACTION_TRACE_THREADS_PER_WORKGROUP)
+fn interaction_trace_to_original_column(
+    @builtin(global_invocation_id) global_id: vec3<u32>
+) {
+    var total_rows: u32 = 1u << input.log_size;
+
+    var num_threads: u32 = GEN_INTERACTION_TRACE_THREADS_PER_WORKGROUP;
+    var thread_id: u32 = global_id.x;
+    var chunk_size: u32 = (total_rows + num_threads - 1u) / num_threads;
+    var chunk_start: u32 = thread_id * chunk_size;
+    var chunk_end: u32 = min(chunk_start + chunk_size, total_rows);
+
+    for (var rep_i: u32 = 0u; rep_i < N_INSTANCES_PER_ROW; rep_i = rep_i + 1u) {
+        for (var row: u32 = chunk_start; row < chunk_end; row = row + 1u) {
+            let interaction_trace_column_index = rep_i * 4u;
+            output.interaction_trace[interaction_trace_column_index].data[row] = output.interaction_trace_qm31[rep_i].data[row].a.a;
+            output.interaction_trace[interaction_trace_column_index + 1u].data[row] = output.interaction_trace_qm31[rep_i].data[row].a.b;
+            output.interaction_trace[interaction_trace_column_index + 2u].data[row] = output.interaction_trace_qm31[rep_i].data[row].b.a;
+            output.interaction_trace[interaction_trace_column_index + 3u].data[row] = output.interaction_trace_qm31[rep_i].data[row].b.b;
         }
     }
 }

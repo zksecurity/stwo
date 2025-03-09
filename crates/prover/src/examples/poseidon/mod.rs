@@ -414,9 +414,11 @@ mod tests {
     use crate::constraint_framework::assert_constraints;
     use crate::constraint_framework::preprocessed_columns::gen_is_first;
     use crate::core::air::Component;
+    #[allow(unused_imports)]
     use crate::core::backend::gpu::gen_interaction_trace::compute_interaction_trace_gpu;
     use crate::core::backend::gpu::prove::prove_gpu;
-    use crate::core::backend::CpuBackend;
+    #[allow(unused_imports)]
+    use crate::core::backend::{Column, CpuBackend};
     use crate::core::channel::Blake2sChannel;
     use crate::core::fields::m31::BaseField;
     use crate::core::fri::FriConfig;
@@ -756,7 +758,7 @@ mod tests {
         use crate::core::pcs::CommitmentSchemeProver;
         use crate::examples::poseidon::{SimdBackend, LOG_EXPAND, N_LOG_INSTANCES_PER_ROW};
 
-        let log_n_instances = 12;
+        let log_n_instances = 16;
         let config = PcsConfig {
             pow_bits: 10,
             fri_config: FriConfig::new(5, 1, 64),
@@ -793,23 +795,47 @@ mod tests {
         let lookup_elements = PoseidonElements::draw(channel);
 
         // Interaction trace.
+        let cpu_start = Instant::now();
         let (_cpu_interaction_trace, _cpu_total_sum) =
             gen_interaction_trace(log_n_rows, lookup_data.clone(), &lookup_elements);
-
-        // print first interaction trace
-        println!("First interaction trace: {:?}", _cpu_interaction_trace[0]);
+        let cpu_end = Instant::now();
+        println!("CPU time: {:?}", cpu_end - cpu_start);
 
         // GPU interaction trace
+        let gpu_start = Instant::now();
         let _gpu_interaction_trace = pollster::block_on(compute_interaction_trace_gpu(
             log_n_rows,
             lookup_data.clone(),
             &lookup_elements,
         ));
+        let gpu_end = Instant::now();
+        println!("GPU time: {:?}", gpu_end - gpu_start);
 
-        // print first interaction trace
-        println!(
-            "First interaction trace: {:?}",
-            _gpu_interaction_trace.interaction_trace_qm31[0].data
-        );
+        let cpu_interaction_trace_chunks = _cpu_interaction_trace.chunks(4);
+        let gpu_interaction_trace_chunks = _gpu_interaction_trace.interaction_trace_qm31.chunks(1);
+
+        for (cpu_chunk, gpu_chunk) in cpu_interaction_trace_chunks.zip(gpu_interaction_trace_chunks)
+        {
+            for i in 0..cpu_chunk[0].length {
+                assert_eq!(cpu_chunk[0].values.at(i), gpu_chunk[0].data[i].a.a.into());
+                assert_eq!(cpu_chunk[1].values.at(i), gpu_chunk[0].data[i].a.b.into());
+                assert_eq!(cpu_chunk[2].values.at(i), gpu_chunk[0].data[i].b.a.into());
+                assert_eq!(cpu_chunk[3].values.at(i), gpu_chunk[0].data[i].b.b.into());
+            }
+        }
+
+        assert_eq!(_cpu_total_sum, _gpu_interaction_trace.total_sum.into());
+
+        let gpu_interaction_trace_original_column = _gpu_interaction_trace.interaction_trace;
+        let cpu_interaction_trace_original_column = _cpu_interaction_trace;
+
+        for (gpu_column, cpu_column) in gpu_interaction_trace_original_column
+            .iter()
+            .zip(cpu_interaction_trace_original_column.iter())
+        {
+            for i in 0..cpu_column.length {
+                assert_eq!(gpu_column.data[i], cpu_column.values.at(i).into());
+            }
+        }
     }
 }
