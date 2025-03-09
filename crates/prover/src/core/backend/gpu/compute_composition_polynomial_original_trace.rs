@@ -16,7 +16,7 @@ use crate::core::poly::circle::{CircleDomain, CirclePoly, PolyOps};
 use crate::core::poly::utils::domain_line_twiddles_from_tree;
 use crate::examples::poseidon::PoseidonElements;
 
-pub const N_ROWS: u32 = 32;
+pub const N_ROWS: u32 = 256;
 pub const N_STATE: u32 = 16;
 pub const N_LOG_INSTANCES_PER_ROW: u32 = 3;
 pub const N_INSTANCES_PER_ROW: u32 = 1 << N_LOG_INSTANCES_PER_ROW;
@@ -64,6 +64,7 @@ pub struct Twiddles {
     pub line_twiddles_layer_count: u32,
     pub line_twiddles_sizes: [u32; N_LINE_TWIDDLES_SIZE as usize],
     pub line_twiddles_offsets: [u32; N_LINE_TWIDDLES_SIZE as usize],
+    pub mod_inv: u32,
 }
 
 impl From<&&&CirclePoly<SimdBackend>> for GpuOriginalColumn {
@@ -461,6 +462,7 @@ fn create_composition_polynomial_gpu_input(
         line_twiddles_flat: [GpuM31 { data: 0 }; N_LINE_TWIDDLES_FLAT_SIZE as usize],
         circle_twiddles: [GpuM31 { data: 0 }; N_CIRCLE_TWIDDLES_SIZE as usize],
         circle_twiddles_size: 0,
+        mod_inv: 0,
     };
     for (i, twiddle) in line_twiddles.iter().enumerate() {
         twiddle_input.line_twiddles_sizes[i] = twiddle.len() as u32;

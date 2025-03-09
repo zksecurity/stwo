@@ -1,6 +1,6 @@
 // Note: depends on qm31.wgsl, fraction.wgsl, utils.wgsl
 // Define constants
-const N_ROWS: u32 = 32;
+const N_ROWS: u32 = 256;
 const N_EXTENDED_ROWS: u32 = N_ROWS * 4;
 const N_STATE: u32 = 16;
 const N_INSTANCES_PER_ROW: u32 = 8;
@@ -76,6 +76,7 @@ struct Twiddles {
     line_twiddles_layer_count: u32,
     line_twiddles_sizes: array<u32, N_LINE_TWIDDLES_SIZE>,
     line_twiddles_offsets: array<u32, N_LINE_TWIDDLES_SIZE>,
+    mod_inv: u32,
 }
 
 struct ComputeCompositionPolynomialInput {

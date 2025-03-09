@@ -7,7 +7,7 @@ use crate::core::backend::gpu::qm31::GpuM31;
 use crate::core::backend::simd::column::BaseColumn;
 use crate::examples::poseidon::{LookupData, PoseidonElements};
 
-pub const N_ROWS: u32 = 512;
+pub const N_ROWS: u32 = 256;
 pub const N_STATE: u32 = 16;
 pub const N_LOG_INSTANCES_PER_ROW: u32 = 3;
 pub const N_INSTANCES_PER_ROW: u32 = 1 << N_LOG_INSTANCES_PER_ROW;
@@ -68,7 +68,9 @@ impl From<PoseidonElements> for GpuLookupElements {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
+#[repr(C)]
 pub struct GenInteractionTraceInput {
     log_size: u32,
     lookup_data: GpuLookupData,
@@ -84,6 +86,7 @@ pub struct GpuQM31Column {
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
+#[repr(C)]
 pub struct GenInteractionTraceOutput {
     pub interaction_trace: [GpuOriginalColumn; N_INTERACTION_COLUMNS as usize],
     pub interaction_trace_qm31: [GpuQM31Column; N_INSTANCES_PER_ROW as usize],
@@ -116,31 +119,12 @@ impl ByteSerialize for GenInteractionTraceOutput {}
 
 impl GenInteractionTraceInput {
     fn as_bytes(&self) -> &[u8] {
-        let total_size = std::mem::size_of::<GenInteractionTraceInput>();
-        let mut bytes = Vec::with_capacity(total_size);
-
-        bytes.extend_from_slice(unsafe {
+        unsafe {
             std::slice::from_raw_parts(
-                &self.log_size as *const u32 as *const u8,
-                std::mem::size_of::<u32>(),
+                self as *const Self as *const u8,
+                std::mem::size_of::<Self>(),
             )
-        });
-
-        bytes.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                &self.lookup_data as *const GpuLookupData as *const u8,
-                std::mem::size_of::<GpuLookupData>(),
-            )
-        });
-
-        bytes.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                &self.lookup_elements as *const GpuLookupElements as *const u8,
-                std::mem::size_of::<GpuLookupElements>(),
-            )
-        });
-
-        Box::leak(bytes.into_boxed_slice())
+        }
     }
 }
 

@@ -1,18 +1,20 @@
 #[cfg(not(target_family = "wasm"))]
 use std::time::Instant;
 
-use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-const N_ROWS: u32 = 32;
+const N_ROWS: u32 = 256;
 const N_STATE: u32 = 16;
 const N_INSTANCES_PER_ROW: u32 = 1 << N_LOG_INSTANCES_PER_ROW;
 const N_LOG_INSTANCES_PER_ROW: u32 = 3;
 const N_COLUMNS: u32 = N_INSTANCES_PER_ROW * N_COLUMNS_PER_REP;
+// const N_INTERACTION_COLUMNS: u32 = N_INSTANCES_PER_ROW * 4;
 const N_HALF_FULL_ROUNDS: u32 = 4;
 const FULL_ROUNDS: u32 = 2 * N_HALF_FULL_ROUNDS;
 const N_PARTIAL_ROUNDS: u32 = 14;
 const N_LANES: u32 = 16;
+const N_EXTENDED_ROWS: u32 = N_ROWS * 4;
+// const N_ORIGINAL_ROWS: u32 = N_ROWS;
 const N_COLUMNS_PER_REP: u32 = N_STATE * (1 + FULL_ROUNDS) + N_PARTIAL_ROUNDS;
 const GEN_TRACE_WORKGROUP_SIZE: u32 = N_ROWS * N_LANES / GEN_TRACE_THREADS_PER_WORKGROUP;
 const GEN_TRACE_THREADS_PER_WORKGROUP: u32 = 256;
@@ -21,6 +23,10 @@ const INTERPOLATE_WORKGROUP_SIZE: u32 = 8;
 const INTERPOLATE_THREADS_PER_WORKGROUP: u32 = 256;
 const MAX_ARRAY_LOG_SIZE: u32 = 25;
 const MAX_ARRAY_SIZE: usize = 1 << MAX_ARRAY_LOG_SIZE;
+
+pub const N_LINE_TWIDDLES_SIZE: u32 = N_EXTENDED_ROWS * N_LANES;
+pub const N_LINE_TWIDDLES_FLAT_SIZE: u32 = N_LINE_TWIDDLES_SIZE * 2;
+pub const N_CIRCLE_TWIDDLES_SIZE: u32 = N_LINE_TWIDDLES_SIZE * 2;
 
 use crate::core::backend::cpu::circle::circle_twiddles_from_line_twiddles;
 use crate::core::backend::simd::column::BaseColumn;
@@ -38,11 +44,23 @@ use crate::core::poly::utils::domain_line_twiddles_from_tree;
 #[allow(unused_imports)]
 use crate::examples::poseidon::LookupData;
 
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy)]
 #[repr(C)]
-struct Complex {
-    real: f32,
-    imag: f32,
+pub struct Twiddles {
+    pub circle_twiddles: [GpuM31; N_CIRCLE_TWIDDLES_SIZE as usize],
+    pub circle_twiddles_size: u32,
+    pub line_twiddles_flat: [GpuM31; N_LINE_TWIDDLES_FLAT_SIZE as usize],
+    pub line_twiddles_layer_count: u32,
+    pub line_twiddles_sizes: [u32; N_LINE_TWIDDLES_SIZE as usize],
+    pub line_twiddles_offsets: [u32; N_LINE_TWIDDLES_SIZE as usize],
+    pub mod_inv: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+struct GpuGenTraceInput {
+    pub log_size: u32,
+    pub twiddles: Twiddles,
 }
 
 #[derive(Debug, Clone)]
@@ -190,7 +208,7 @@ struct GpuLookupData {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
-struct GpuM31 {
+pub struct GpuM31 {
     data: u32,
 }
 

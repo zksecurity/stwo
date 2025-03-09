@@ -547,7 +547,7 @@ mod tests {
         use crate::core::backend::gpu::gen_trace_interpolate_columns::gen_trace_interpolate_columns as gen_trace_gpu;
         use crate::examples::poseidon::N_COLUMNS;
 
-        let log_n_instances = 12;
+        let log_n_instances = 15;
         let log_n_instances_per_row = 3;
         let log_n_rows = log_n_instances - log_n_instances_per_row;
         let (_gpu_trace, _gpu_lookup_data, _gpu_trace_polys) =
@@ -649,7 +649,7 @@ mod tests {
 
         // Get from environment variable:
         let log_n_instances = env::var("LOG_N_INSTANCES")
-            .unwrap_or_else(|_| "12".to_string())
+            .unwrap_or_else(|_| "15".to_string())
             .parse::<u32>()
             .unwrap();
         let config = PcsConfig {
@@ -758,7 +758,7 @@ mod tests {
         use crate::core::pcs::CommitmentSchemeProver;
         use crate::examples::poseidon::{SimdBackend, LOG_EXPAND, N_LOG_INSTANCES_PER_ROW};
 
-        let log_n_instances = 16;
+        let log_n_instances = 15;
         let config = PcsConfig {
             pow_bits: 10,
             fri_config: FriConfig::new(5, 1, 64),

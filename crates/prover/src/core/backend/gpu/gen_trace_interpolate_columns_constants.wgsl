@@ -4,7 +4,7 @@ const MAX_ARRAY_SIZE: u32 = 1u << MAX_ARRAY_LOG_SIZE;
 const MAX_DEBUG_SIZE: u32 = 32;
 const MAX_SHARED_SIZE: u32 = 1u << 12;
 
-const N_ROWS: u32 = 512;
+const N_ROWS: u32 = 256;
 const N_STATE: u32 = 16;
 const N_INSTANCES_PER_ROW: u32 = 8;
 const N_COLUMNS: u32 = N_INSTANCES_PER_ROW * N_COLUMNS_PER_REP;
