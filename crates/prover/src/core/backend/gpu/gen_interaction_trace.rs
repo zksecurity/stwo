@@ -346,6 +346,7 @@ impl From<&BaseColumn> for GpuBaseColumn {
         }
     }
 }
+
 impl LookupData {
     fn to_gpu_base_columns(&self) -> GpuLookupData {
         let mut initial_gpu = [[GpuBaseColumn {

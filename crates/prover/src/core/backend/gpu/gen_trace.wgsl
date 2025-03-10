@@ -22,10 +22,6 @@ struct BaseColumn {
     length: u32,
 }
 
-struct M31 {
-    data: u32,
-}
-
 struct Twiddles {
     circle_twiddles: array<M31, N_CIRCLE_TWIDDLES_SIZE>,
     circle_twiddles_size: u32,
@@ -39,11 +35,18 @@ struct Twiddles {
 struct GenTraceInput {
     log_size: u32,
     twiddles: Twiddles,
+    lookup_elements: LookupElements,
 }
 
 struct LookupData {
     initial_state: array<array<BaseColumn, N_STATE>, N_INSTANCES_PER_ROW>,
     final_state: array<array<BaseColumn, N_STATE>, N_INSTANCES_PER_ROW>,
+}
+
+struct LookupElements {
+    z: QM31,
+    alpha: QM31,
+    alpha_powers: array<QM31, N_STATE>,
 }
 
 struct OriginalColumn {
@@ -55,6 +58,15 @@ struct GenTraceOutput {
     trace: array<BaseColumn, N_COLUMNS>,
     lookup_data: LookupData,
 }
+
+
+// struct GenInteractionTraceOutput {
+//     // chunk 
+//     interaction_trace_qm31: array<QM31Column, N_INSTANCES_PER_ROW>,
+//     interaction_trace_buffers: array<QM31Column, 4>,
+//     total_sum: QM31,
+//     // chunk ends
+// }
 
 struct Results {
     values: array<M31, N_FLAT_MAX_ARRAY_SIZE>,
@@ -69,6 +81,9 @@ var<storage, read_write> gen_trace_output: GenTraceOutput;
 
 @group(0) @binding(2)
 var<storage, read_write> interpolate_output: Results;
+
+// @group(0) @binding(3)
+// var<storage, read_write> gen_interaction_trace_output: GenInteractionTraceOutput;
 
 @compute @workgroup_size(GEN_TRACE_THREADS_PER_WORKGROUP)
 fn gen_trace_interpolate_columns(
@@ -122,7 +137,7 @@ fn gen_trace_interpolate_columns(
             // 4 full rounds
             for (var i = 0u; i < N_HALF_FULL_ROUNDS; i++) {
                 for (var j = 0u; j < N_STATE; j++) {
-                    state[j] = add(state[j], M31(EXTERNAL_ROUND_CONSTS[i][j]));
+                    state[j] = m31_add(state[j], M31(EXTERNAL_ROUND_CONSTS[i][j]));
                 }
                 state = apply_external_round_matrix(state);
                 for (var j = 0u; j < N_STATE; j++) {
@@ -136,7 +151,7 @@ fn gen_trace_interpolate_columns(
             }
             // Partial rounds
             for (var i = 0u; i < N_PARTIAL_ROUNDS; i++) {
-                state[0] = add(state[0], M31(INTERNAL_ROUND_CONSTS[i]));
+                state[0] = m31_add(state[0], M31(INTERNAL_ROUND_CONSTS[i]));
                 state = apply_internal_round_matrix(state);
                 state[0] = pow5(state[0]);
                 gen_trace_output.trace[col_index].data[vec_index][inner_vec_index] = state[0];
@@ -146,7 +161,7 @@ fn gen_trace_interpolate_columns(
             // 4 full rounds
             for (var i = 0u; i < N_HALF_FULL_ROUNDS; i++) {
                 for (var j = 0u; j < N_STATE; j++) {
-                    state[j] = add(state[j], M31(EXTERNAL_ROUND_CONSTS[i + N_HALF_FULL_ROUNDS][j]));
+                    state[j] = m31_add(state[j], M31(EXTERNAL_ROUND_CONSTS[i + N_HALF_FULL_ROUNDS][j]));
                 }
                 state = apply_external_round_matrix(state);
                 for (var j = 0u; j < N_STATE; j++) {
@@ -177,56 +192,9 @@ fn initialize_state(vec_index: u32, inner_vec_index: u32, rep_i: u32) -> array<M
     return state;
 }
 
-fn add(a: M31, b: M31) -> M31 {
-    return M31(partial_reduce(a.data + b.data));
-}
-
-const MODULUS_BITS: u32 = 31u;
-const HALF_BITS: u32 = 16u;
-// Mersenne prime P = 2^31 - 1
-const P: u32 = 2147483647u;
-
-fn mod_mul(a: M31, b: M31) -> M31 {
-    // Split into 16-bit parts
-    let a1 = a.data >> HALF_BITS;
-    let a0 = a.data & 0xFFFFu;
-    let b1 = b.data >> HALF_BITS;
-    let b0 = b.data & 0xFFFFu;
-    
-    // Compute partial products
-    let m0 = partial_reduce(a0 * b0);
-    let m1 = partial_reduce(a0 * b1);
-    let m2 = partial_reduce(a1 * b0);
-    let m3 = partial_reduce(a1 * b1);
-    
-    // Combine middle terms with reduction
-    let mid = partial_reduce(m1 + m2);
-    
-    // Combine parts with partial reduction
-    let shifted_mid = partial_reduce(mid << HALF_BITS);
-    let low = partial_reduce(m0 + shifted_mid);
-    
-    let high_part = partial_reduce(m3 + (mid >> HALF_BITS));
-    
-    // Final combination using Mersenne prime property
-    let result = partial_reduce(
-        partial_reduce((high_part << 1u)) + 
-        partial_reduce((low >> MODULUS_BITS)) + 
-        partial_reduce(low & P)
-    );
-    
-    return M31(result);
-}
-
-// Partial reduce for values in [0, 2P)
-fn partial_reduce(val: u32) -> u32 {
-    let reduced = val - P;
-    return select(val, reduced, reduced < val);
-}
-
 // Function to apply pow5 operation
 fn pow5(x: M31) -> M31 {
-    return mod_mul(mod_mul(mod_mul(x, x), mod_mul(x, x)), x);
+    return m31_mul(m31_mul(m31_mul(x, x), m31_mul(x, x)), x);
 }
 
 /// Applies the external round matrix.
@@ -248,9 +216,9 @@ fn apply_external_round_matrix(state: array<M31, N_STATE>) -> array<M31, N_STATE
         modified_state[4 * i + 3] = modified_partial_state[3];
     }
     for (var j = 0u; j < 4u; j++) {
-        let s = add(add(modified_state[j], modified_state[j + 4]), add(modified_state[j + 8], modified_state[j + 12]));
+        let s = m31_add(m31_add(modified_state[j], modified_state[j + 4]), m31_add(modified_state[j + 8], modified_state[j + 12]));
         for (var i = 0u; i < 4u; i++) {
-            modified_state[4 * i + j] = add(modified_state[4 * i + j], s);
+            modified_state[4 * i + j] = m31_add(modified_state[4 * i + j], s);
         }
     }
     return modified_state;
@@ -262,13 +230,13 @@ fn apply_external_round_matrix(state: array<M31, N_STATE>) -> array<M31, N_STATE
 fn apply_internal_round_matrix(state: array<M31, N_STATE>) -> array<M31, N_STATE> {
     var sum = state[0];
     for (var i = 1u; i < N_STATE; i++) {
-        sum = add(sum, state[i]);
+        sum = m31_add(sum, state[i]);
     }
 
     var result = array<M31, N_STATE>();
     for (var i = 0u; i < N_STATE; i++) {
         let factor = partial_reduce(1u << (i + 1));
-        result[i] = add(mod_mul(M31(factor), state[i]), sum);
+        result[i] = m31_add(m31_mul(M31(factor), state[i]), sum);
     }
 
     return result;
@@ -276,15 +244,15 @@ fn apply_internal_round_matrix(state: array<M31, N_STATE>) -> array<M31, N_STATE
 
 /// Applies the M4 MDS matrix described in <https://eprint.iacr.org/2023/323.pdf> 5.1.
 fn apply_m4(x: array<M31, 4>) -> array<M31, 4> {
-    let t0 = add(x[0], x[1]);
-    let t02 = add(t0, t0);
-    let t1 = add(x[2], x[3]);
-    let t12 = add(t1, t1);
-    let t2 = add(add(x[1], x[1]), t1);
-    let t3 = add(add(x[3], x[3]), t0);
-    let t4 = add(add(t12, t12), t3);
-    let t5 = add(add(t02, t02), t2);
-    let t6 = add(t3, t5);
-    let t7 = add(t2, t4);
+    let t0 = m31_add(x[0], x[1]);
+    let t02 = m31_add(t0, t0);
+    let t1 = m31_add(x[2], x[3]);
+    let t12 = m31_add(t1, t1);
+    let t2 = m31_add(m31_add(x[1], x[1]), t1);
+    let t3 = m31_add(m31_add(x[3], x[3]), t0);
+    let t4 = m31_add(m31_add(t12, t12), t3);
+    let t5 = m31_add(m31_add(t02, t02), t2);
+    let t6 = m31_add(t3, t5);
+    let t7 = m31_add(t2, t4);
     return array<M31, 4>(t6, t5, t7, t4);
 }

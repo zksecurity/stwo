@@ -31,6 +31,7 @@ pub const N_LINE_TWIDDLES_FLAT_SIZE: u32 = N_LINE_TWIDDLES_SIZE * 2;
 pub const N_CIRCLE_TWIDDLES_SIZE: u32 = N_LINE_TWIDDLES_SIZE * 2;
 const N_ORIGINAL_TRACE_COLUMNS: u32 = 1 + N_COLUMNS + N_INTERACTION_COLUMNS + 3;
 
+use super::qm31::GpuQM31;
 use crate::core::backend::cpu::circle::circle_twiddles_from_line_twiddles;
 use crate::core::backend::simd::column::BaseColumn;
 #[allow(unused_imports)]
@@ -46,6 +47,7 @@ use crate::core::poly::circle::{CanonicCoset, CircleEvaluation, CirclePoly, Poly
 use crate::core::poly::utils::domain_line_twiddles_from_tree;
 #[allow(unused_imports)]
 use crate::examples::poseidon::LookupData;
+use crate::examples::poseidon::PoseidonElements;
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
@@ -65,11 +67,37 @@ pub struct GpuOriginalColumn {
     pub data: [GpuM31; N_ORIGINAL_COLUMN_SIZE as usize],
 }
 
+impl From<PoseidonElements> for GpuLookupElements {
+    fn from(value: PoseidonElements) -> Self {
+        GpuLookupElements {
+            z: value.0.z.into(),
+            alpha: value.0.alpha.into(),
+            alpha_powers: value
+                .0
+                .alpha_powers
+                .iter()
+                .map(|&x| x.into())
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct GpuLookupElements {
+    pub z: GpuQM31,
+    pub alpha: GpuQM31,
+    pub alpha_powers: [GpuQM31; N_STATE as usize],
+}
+
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 struct GpuGenTraceInput {
     pub log_size: u32,
     pub twiddles: Twiddles,
+    pub lookup_elements: GpuLookupElements,
 }
 
 impl GpuGenTraceInput {
@@ -316,7 +344,7 @@ pub trait ByteSerialize: Sized {
 
 impl ByteSerialize for BaseColumn {}
 impl ByteSerialize for GenTraceOutput {}
-
+impl ByteSerialize for GpuLookupElements {}
 #[allow(dead_code)]
 struct WgpuInstance {
     instance: wgpu::Instance,
@@ -328,7 +356,7 @@ struct WgpuInstance {
     encoder: wgpu::CommandEncoder,
 }
 
-fn create_gpu_input(log_size: u32) -> GpuGenTraceInput {
+fn create_gpu_input(log_size: u32, lookup_elements: &PoseidonElements) -> GpuGenTraceInput {
     let mut input = GpuGenTraceInput {
         log_size: 0,
         twiddles: Twiddles {
@@ -339,6 +367,11 @@ fn create_gpu_input(log_size: u32) -> GpuGenTraceInput {
             line_twiddles_sizes: [0; N_LINE_TWIDDLES_SIZE as usize],
             line_twiddles_offsets: [0; N_LINE_TWIDDLES_SIZE as usize],
             mod_inv: GpuM31 { data: 0 },
+        },
+        lookup_elements: GpuLookupElements {
+            z: lookup_elements.0.z.into(),
+            alpha: lookup_elements.0.alpha.into(),
+            alpha_powers: lookup_elements.0.alpha_powers.map(|p| p.into()),
         },
     };
     input.log_size = log_size;
@@ -378,7 +411,7 @@ fn create_gpu_input(log_size: u32) -> GpuGenTraceInput {
     input
 }
 
-async fn init(log_n_rows: u32) -> WgpuInstance {
+async fn init(log_n_rows: u32, lookup_elements: &PoseidonElements) -> WgpuInstance {
     let instance = wgpu::Instance::default();
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
@@ -403,7 +436,7 @@ async fn init(log_n_rows: u32) -> WgpuInstance {
         .await
         .unwrap();
 
-    let input_data = create_gpu_input(log_n_rows);
+    let input_data = create_gpu_input(log_n_rows, lookup_elements);
 
     // Create buffers
     let input_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -439,8 +472,9 @@ async fn init(log_n_rows: u32) -> WgpuInstance {
     let interpolate_impl_shader = include_str!("interpolate.wgsl");
     let gen_trace_shader = format!(
         "{}\n
+        {}\n
         {}",
-        gen_trace_interpolate_columns_constants_shader, gen_trace_impl_shader,
+        gen_trace_interpolate_columns_constants_shader, qm31_shader, gen_trace_impl_shader,
     );
     let interpolate_shader = format!(
         "{}\n
@@ -628,13 +662,14 @@ async fn init(log_n_rows: u32) -> WgpuInstance {
 
 pub async fn gen_trace_interpolate_columns(
     log_n_rows: u32,
+    lookup_elements: &PoseidonElements,
 ) -> (
     Vec<BaseColumn>,
     LookupData,
     Vec<CirclePoly<CpuBackend>>,
     Vec<CircleEvaluation<CpuBackend, BaseField>>,
 ) {
-    let instance = init(log_n_rows).await;
+    let instance = init(log_n_rows, lookup_elements).await;
 
     #[cfg(not(target_family = "wasm"))]
     let gpu_start = Instant::now();

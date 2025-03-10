@@ -417,18 +417,19 @@ mod tests {
     #[allow(unused_imports)]
     use crate::core::backend::gpu::gen_interaction_trace::compute_interaction_trace_gpu;
     use crate::core::backend::gpu::prove::prove_gpu;
+    use crate::core::backend::simd::SimdBackend;
     #[allow(unused_imports)]
     use crate::core::backend::{Column, CpuBackend};
     use crate::core::channel::Blake2sChannel;
     use crate::core::fields::m31::BaseField;
     use crate::core::fri::FriConfig;
-    use crate::core::pcs::{CommitmentSchemeVerifier, PcsConfig, TreeVec};
+    use crate::core::pcs::{CommitmentSchemeProver, CommitmentSchemeVerifier, PcsConfig, TreeVec};
     use crate::core::poly::circle::{CanonicCoset, PolyOps};
     use crate::core::prover::verify;
     use crate::core::vcs::blake2_merkle::Blake2sMerkleChannel;
     use crate::examples::poseidon::{
         apply_internal_round_matrix, apply_m4, eval_poseidon_constraints, gen_interaction_trace,
-        gen_preprocessed_trace, gen_trace, prove_poseidon, PoseidonElements,
+        gen_preprocessed_trace, gen_trace, prove_poseidon, PoseidonElements, LOG_EXPAND,
     };
     use crate::math::matrix::{RowMajorMatrix, SquareMatrix};
 
@@ -514,8 +515,9 @@ mod tests {
         let log_n_instances = 16;
         let log_n_instances_per_row = 3;
         let log_n_rows = log_n_instances - log_n_instances_per_row;
+        let dummy_lookup = PoseidonElements::dummy();
         let (_gpu_trace, _gpu_lookup_data, _gpu_trace_polys, _gpu_original_trace) =
-            gen_trace_interpolate_columns(log_n_rows).await;
+            gen_trace_interpolate_columns(log_n_rows, &dummy_lookup).await;
 
         let checkpoint1 = web_sys::window().unwrap().performance().unwrap().now();
         let (_trace, _lookup_data) = gen_trace(log_n_rows);
@@ -550,8 +552,42 @@ mod tests {
         let log_n_instances = 15;
         let log_n_instances_per_row = 3;
         let log_n_rows = log_n_instances - log_n_instances_per_row;
+
+        /////////////////////////////////////////////////////////////////////////////////////////////////////
+        let config = PcsConfig {
+            pow_bits: 10,
+            fri_config: FriConfig::new(5, 1, 64),
+        };
+
+        let twiddles = SimdBackend::precompute_twiddles(
+            CanonicCoset::new(log_n_rows + LOG_EXPAND + config.fri_config.log_blowup_factor)
+                .circle_domain()
+                .half_coset,
+        );
+
+        // Setup protocol.
+        let channel = &mut Blake2sChannel::default();
+        let mut commitment_scheme =
+            CommitmentSchemeProver::<_, Blake2sMerkleChannel>::new(config, &twiddles);
+
+        // Preprocessed trace.
+        let mut tree_builder = commitment_scheme.tree_builder();
+        let constant_trace = vec![gen_is_first(log_n_rows)];
+        tree_builder.extend_evals(constant_trace);
+        tree_builder.commit(channel);
+
+        // Trace.
+        let (trace, _lookup_data) = gen_trace(log_n_rows);
+        let mut tree_builder = commitment_scheme.tree_builder();
+        tree_builder.extend_evals(trace);
+        tree_builder.commit(channel);
+
+        // Draw lookup elements.
+        let lookup_elements = PoseidonElements::draw(channel);
+        /////////////////////////////////////////////////////////////////////////////////////////////////////
+
         let (_gpu_trace, _gpu_lookup_data, _gpu_trace_polys, _gpu_original_trace) =
-            pollster::block_on(gen_trace_gpu(log_n_rows));
+            pollster::block_on(gen_trace_gpu(log_n_rows, &lookup_elements));
 
         let cpu_start = Instant::now();
         let _cpu_preprocessed_trace = gen_preprocessed_trace(log_n_rows);
