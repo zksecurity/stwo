@@ -8,13 +8,13 @@ const N_STATE: u32 = 16;
 const N_INSTANCES_PER_ROW: u32 = 1 << N_LOG_INSTANCES_PER_ROW;
 const N_LOG_INSTANCES_PER_ROW: u32 = 3;
 const N_COLUMNS: u32 = N_INSTANCES_PER_ROW * N_COLUMNS_PER_REP;
-const N_INTERACTION_COLUMNS: u32 = N_INSTANCES_PER_ROW * 4;
+// const N_INTERACTION_COLUMNS: u32 = N_INSTANCES_PER_ROW * 4;
 const N_HALF_FULL_ROUNDS: u32 = 4;
 const FULL_ROUNDS: u32 = 2 * N_HALF_FULL_ROUNDS;
 const N_PARTIAL_ROUNDS: u32 = 14;
 const N_LANES: u32 = 16;
 const N_EXTENDED_ROWS: u32 = N_ROWS * 4;
-const N_ORIGINAL_ROWS: u32 = N_ROWS;
+// const N_ORIGINAL_ROWS: u32 = N_ROWS;
 const N_COLUMNS_PER_REP: u32 = N_STATE * (1 + FULL_ROUNDS) + N_PARTIAL_ROUNDS;
 const GEN_TRACE_WORKGROUP_SIZE: u32 = N_ROWS * N_LANES / GEN_TRACE_THREADS_PER_WORKGROUP;
 const GEN_TRACE_THREADS_PER_WORKGROUP: u32 = 256;
@@ -27,10 +27,8 @@ const MAX_ARRAY_SIZE: usize = 1 << MAX_ARRAY_LOG_SIZE;
 pub const N_LINE_TWIDDLES_SIZE: u32 = N_EXTENDED_ROWS * N_LANES;
 pub const N_LINE_TWIDDLES_FLAT_SIZE: u32 = N_LINE_TWIDDLES_SIZE * 2;
 pub const N_CIRCLE_TWIDDLES_SIZE: u32 = N_LINE_TWIDDLES_SIZE * 2;
-pub const N_ORIGINAL_TRACE_COLUMNS: u32 = 1 + N_COLUMNS + N_INTERACTION_COLUMNS;
 
 use crate::core::backend::cpu::circle::circle_twiddles_from_line_twiddles;
-use crate::core::backend::gpu::qm31::GpuM31;
 use crate::core::backend::simd::column::BaseColumn;
 #[allow(unused_imports)]
 use crate::core::backend::simd::m31::PackedM31;
@@ -55,7 +53,7 @@ pub struct Twiddles {
     pub line_twiddles_layer_count: u32,
     pub line_twiddles_sizes: [u32; N_LINE_TWIDDLES_SIZE as usize],
     pub line_twiddles_offsets: [u32; N_LINE_TWIDDLES_SIZE as usize],
-    pub mod_inv: GpuM31,
+    pub mod_inv: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -65,19 +63,138 @@ struct GpuGenTraceInput {
     pub twiddles: Twiddles,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 #[repr(C)]
-pub struct GpuOriginalColumn {
-    pub coeffs: [GpuM31; (N_LANES * N_ORIGINAL_ROWS) as usize],
+struct GenTraceInput<F> {
+    pub initial_x: F,
+    pub initial_y: F,
+    pub log_size: u32,
+    pub circle_twiddles: Vec<F>,
+    pub circle_twiddles_size: u32,
+    pub line_twiddles_flat: Vec<F>,
+    pub line_twiddles_layer_count: u32,
+    pub line_twiddles_sizes: Vec<u32>,
+    pub line_twiddles_offsets: Vec<u32>,
+    pub mod_inv: u32,
+    pub current_layer: u32,
 }
 
-impl GpuGenTraceInput {
+impl<F> GenTraceInput<F>
+where
+    F: Into<u32> + From<u32> + Copy,
+{
     fn as_bytes(&self) -> &[u8] {
-        unsafe {
+        let total_size = std::mem::size_of::<GenTraceInput<F>>();
+        let mut bytes = Vec::with_capacity(total_size);
+
+        // initial_x, initial_y
+        bytes.extend_from_slice(unsafe {
             std::slice::from_raw_parts(
-                self as *const Self as *const u8,
-                std::mem::size_of::<Self>(),
+                &self.initial_x as *const F as *const u8,
+                std::mem::size_of::<F>(),
             )
+        });
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                &self.initial_y as *const F as *const u8,
+                std::mem::size_of::<F>(),
+            )
+        });
+
+        // log_size
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                &self.log_size as *const u32 as *const u8,
+                std::mem::size_of::<u32>(),
+            )
+        });
+
+        let mut padded_circle_twiddles = vec![F::from(0u32); MAX_ARRAY_SIZE];
+        padded_circle_twiddles[..self.circle_twiddles.len()].copy_from_slice(&self.circle_twiddles);
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                padded_circle_twiddles.as_ptr() as *const u8,
+                MAX_ARRAY_SIZE * std::mem::size_of::<F>(),
+            )
+        });
+
+        // circle_twiddles_size
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                &self.circle_twiddles_size as *const u32 as *const u8,
+                std::mem::size_of::<u32>(),
+            )
+        });
+
+        let mut padded_line_twiddles = vec![F::from(0u32); MAX_ARRAY_SIZE];
+        padded_line_twiddles[..self.line_twiddles_flat.len()]
+            .copy_from_slice(&self.line_twiddles_flat);
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                padded_line_twiddles.as_ptr() as *const u8,
+                MAX_ARRAY_SIZE * std::mem::size_of::<F>(),
+            )
+        });
+
+        // line_twiddles_layer_count
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                &self.line_twiddles_layer_count as *const u32 as *const u8,
+                std::mem::size_of::<u32>(),
+            )
+        });
+
+        let mut padded_sizes = vec![0u32; MAX_ARRAY_SIZE];
+        padded_sizes[..self.line_twiddles_sizes.len()].copy_from_slice(&self.line_twiddles_sizes);
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                padded_sizes.as_ptr() as *const u8,
+                MAX_ARRAY_SIZE * std::mem::size_of::<u32>(),
+            )
+        });
+
+        let mut padded_offsets = vec![0u32; MAX_ARRAY_SIZE];
+        padded_offsets[..self.line_twiddles_offsets.len()]
+            .copy_from_slice(&self.line_twiddles_offsets);
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                padded_offsets.as_ptr() as *const u8,
+                MAX_ARRAY_SIZE * std::mem::size_of::<u32>(),
+            )
+        });
+
+        // mod_inv
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                &self.mod_inv as *const u32 as *const u8,
+                std::mem::size_of::<u32>(),
+            )
+        });
+
+        // current_layer
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                &self.current_layer as *const u32 as *const u8,
+                std::mem::size_of::<u32>(),
+            )
+        });
+
+        Box::leak(bytes.into_boxed_slice())
+    }
+
+    fn zero() -> Self {
+        Self {
+            initial_x: F::from(0),
+            initial_y: F::from(0),
+            log_size: 0,
+            circle_twiddles: vec![F::from(0); MAX_ARRAY_SIZE],
+            circle_twiddles_size: 0,
+            line_twiddles_flat: vec![F::from(0); MAX_ARRAY_SIZE],
+            line_twiddles_layer_count: 0,
+            line_twiddles_sizes: vec![0; MAX_ARRAY_SIZE],
+            line_twiddles_offsets: vec![0; MAX_ARRAY_SIZE],
+            mod_inv: 0,
+            current_layer: 0,
         }
     }
 }
@@ -87,6 +204,12 @@ impl GpuGenTraceInput {
 struct GpuLookupData {
     initial_state: [[GpuBaseColumn; N_STATE as usize]; N_INSTANCES_PER_ROW as usize],
     final_state: [[GpuBaseColumn; N_STATE as usize]; N_INSTANCES_PER_ROW as usize],
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct GpuM31 {
+    data: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -118,16 +241,73 @@ impl From<GpuBaseColumn> for BaseColumn {
 #[derive(Clone, Debug, Copy)]
 #[repr(C)]
 pub struct GenTraceOutput {
-    original_traces: [GpuOriginalColumn; N_ORIGINAL_TRACE_COLUMNS as usize],
     trace: [GpuBaseColumn; N_COLUMNS as usize],
     lookup_data: GpuLookupData,
 }
 
 #[allow(dead_code)]
-#[derive(Clone, Debug, Copy)]
-#[repr(C)]
 pub struct InterpolateOutput {
     results: [u32; MAX_ARRAY_SIZE],
+}
+
+#[derive(Clone, Debug)]
+#[repr(C)]
+struct GenTraceOutputVec {
+    trace: Vec<BaseColumn>,
+    lookup_data: LookupData,
+}
+
+#[allow(dead_code)]
+struct InterpolateOutputVec {
+    results: Vec<CirclePoly<CpuBackend>>,
+}
+
+impl InterpolateOutputVec {
+    #[allow(dead_code)]
+    pub fn from_bytes(bytes: &[u8], log_n_rows: u32) -> Self {
+        assert!(bytes.len() >= std::mem::size_of::<[u32; MAX_ARRAY_SIZE]>());
+
+        let results_slice = unsafe {
+            std::slice::from_raw_parts(
+                bytes.as_ptr() as *const u32,
+                N_COLUMNS as usize * (1 << log_n_rows) as usize,
+            )
+        };
+
+        let mut polys = Vec::new();
+        for i in 0..N_COLUMNS {
+            polys.push(CirclePoly::new(
+                results_slice[i as usize * (1 << log_n_rows) as usize
+                    ..(i as usize + 1) * (1 << log_n_rows) as usize]
+                    .iter()
+                    .map(|&x| M31(x))
+                    .collect(),
+            ));
+        }
+
+        Self { results: polys }
+    }
+}
+
+#[allow(dead_code)]
+impl GenTraceOutputVec {
+    fn from_bytes(bytes: &[u8]) -> Self {
+        let base_column_size = std::mem::size_of::<GpuBaseColumn>();
+        let lookup_data_size = std::mem::size_of::<GpuLookupData>();
+        assert!(bytes.len() >= base_column_size * N_COLUMNS as usize + lookup_data_size);
+        let base_column_slice = bytes
+            .chunks(base_column_size)
+            .take(N_COLUMNS as usize)
+            .map(|chunk| BaseColumn::from_bytes(chunk))
+            .collect::<Vec<_>>();
+        let lookup_data_start = base_column_size * N_COLUMNS as usize;
+        let lookup_data =
+            LookupData::from_bytes(&bytes[lookup_data_start..lookup_data_start + lookup_data_size]);
+        Self {
+            trace: base_column_slice,
+            lookup_data,
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -224,14 +404,6 @@ pub trait ByteSerialize: Sized {
 
 impl ByteSerialize for BaseColumn {}
 impl ByteSerialize for GenTraceOutput {}
-impl ByteSerialize for GpuGenTraceInput {}
-impl ByteSerialize for GpuLookupData {}
-
-impl InterpolateOutput {
-    fn from_bytes(bytes: &[u8]) -> Self {
-        unsafe { *(bytes.as_ptr() as *const Self) }
-    }
-}
 
 #[allow(dead_code)]
 struct WgpuInstance {
@@ -244,44 +416,38 @@ struct WgpuInstance {
     encoder: wgpu::CommandEncoder,
 }
 
-fn create_gpu_input(log_size: u32) -> GpuGenTraceInput {
+fn create_gpu_input(log_size: u32) -> GenTraceInput<BaseField> {
+    let mut input = GenTraceInput::zero();
+    input.log_size = log_size;
+
     let domain = CanonicCoset::new(log_size + 3).circle_domain();
     let twiddles = CpuBackend::precompute_twiddles(domain.half_coset);
-    let line_twiddles = domain_line_twiddles_from_tree(domain, &twiddles.twiddles);
-    let mut twiddle_input = Twiddles {
-        line_twiddles_layer_count: line_twiddles.len() as u32,
-        line_twiddles_sizes: [0; N_LINE_TWIDDLES_SIZE as usize],
-        line_twiddles_offsets: [0; N_LINE_TWIDDLES_SIZE as usize],
-        line_twiddles_flat: [GpuM31 { data: 0 }; N_LINE_TWIDDLES_FLAT_SIZE as usize],
-        circle_twiddles: [GpuM31 { data: 0 }; N_CIRCLE_TWIDDLES_SIZE as usize],
-        circle_twiddles_size: 0,
-        mod_inv: GpuM31 { data: 0 },
-    };
+
+    // line twiddles
+    let domain = CanonicCoset::new(log_size).circle_domain();
+    let line_twiddles = domain_line_twiddles_from_tree(domain, &twiddles.itwiddles);
+    input.line_twiddles_layer_count = line_twiddles.len() as u32;
     for (i, twiddle) in line_twiddles.iter().enumerate() {
-        twiddle_input.line_twiddles_sizes[i] = twiddle.len() as u32;
-        twiddle_input.line_twiddles_offsets[i] = if i == 0 {
+        input.line_twiddles_sizes[i] = twiddle.len() as u32;
+        input.line_twiddles_offsets[i] = if i == 0 {
             0
         } else {
-            twiddle_input.line_twiddles_offsets[i - 1] + twiddle_input.line_twiddles_sizes[i - 1]
+            input.line_twiddles_offsets[i - 1] + input.line_twiddles_sizes[i - 1]
         };
-        for (j, &twiddle) in twiddle.iter().enumerate() {
-            twiddle_input.line_twiddles_flat[twiddle_input.line_twiddles_offsets[i] as usize + j] =
-                twiddle.into();
+        for (j, twiddle) in twiddle.iter().enumerate() {
+            input.line_twiddles_flat[input.line_twiddles_offsets[i] as usize + j] = *twiddle;
         }
     }
-    let circle_twiddles: Vec<_> = circle_twiddles_from_line_twiddles(line_twiddles[0])
-        .map(|x| GpuM31::from(x))
-        .collect();
-    twiddle_input.circle_twiddles[..circle_twiddles.len()].copy_from_slice(&circle_twiddles);
-    twiddle_input.circle_twiddles_size = circle_twiddles.len() as u32;
+
+    // circle twiddles
+    let circle_twiddles: Vec<_> = circle_twiddles_from_line_twiddles(line_twiddles[0]).collect();
+    input.circle_twiddles[..circle_twiddles.len()].copy_from_slice(&circle_twiddles);
+    input.circle_twiddles_size = circle_twiddles.len() as u32;
 
     let inv = BaseField::from_u32_unchecked(domain.size() as u32).inverse();
-    twiddle_input.mod_inv = inv.into();
+    input.mod_inv = inv.into();
 
-    GpuGenTraceInput {
-        log_size,
-        twiddles: twiddle_input,
-    }
+    input
 }
 
 async fn init(log_n_rows: u32) -> WgpuInstance {
@@ -342,7 +508,6 @@ async fn init(log_n_rows: u32) -> WgpuInstance {
         include_str!("gen_trace_interpolate_columns_constants.wgsl");
     let gen_trace_impl_shader = include_str!("gen_trace.wgsl");
     let interpolate_impl_shader = include_str!("interpolate.wgsl");
-    let qm31_impl_shader = include_str!("qm31.wgsl");
     let gen_trace_shader = format!(
         "{}\n
         {}",
@@ -350,9 +515,8 @@ async fn init(log_n_rows: u32) -> WgpuInstance {
     );
     let interpolate_shader = format!(
         "{}\n
-        {}\n
         {}",
-        gen_trace_interpolate_columns_constants_shader, qm31_impl_shader, interpolate_impl_shader,
+        gen_trace_interpolate_columns_constants_shader, interpolate_impl_shader,
     );
     let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Gen Trace Shader"),
@@ -555,7 +719,7 @@ pub async fn gen_trace_interpolate_columns(
     let interpolate_result = async {
         receiver.recv_async().await.unwrap().unwrap();
         let data = interpolate_output_slice.get_mapped_range();
-        let output = InterpolateOutput::from_bytes(&data);
+        let output = InterpolateOutputVec::from_bytes(&data, log_n_rows);
         drop(data);
         instance.interpolate_staging_buffer.unmap();
         output
@@ -585,17 +749,6 @@ pub async fn gen_trace_interpolate_columns(
         initial_state: std::array::from_fn(|_| std::array::from_fn(|_| BaseColumn::zeros(1))),
         final_state: std::array::from_fn(|_| std::array::from_fn(|_| BaseColumn::zeros(1))),
     };
-
-    let mut polys = Vec::new();
-    for i in 0..N_COLUMNS {
-        polys.push(CirclePoly::new(
-            _interpolate_output.results[i as usize * (1 << log_n_rows) as usize
-                ..(i as usize + 1) * (1 << log_n_rows) as usize]
-                .iter()
-                .map(|&x| M31(x))
-                .collect(),
-        ));
-    }
-
-    (Vec::new(), lookup_data, polys)
+    (Vec::new(), lookup_data, _interpolate_output.results)
+    // (trace, lookup_data, _interpolate_output.results)
 }
