@@ -565,25 +565,36 @@ mod tests {
                 .half_coset,
         );
 
-        // Setup protocol.
-        let channel = &mut Blake2sChannel::default();
-        let mut commitment_scheme =
-            CommitmentSchemeProver::<_, Blake2sMerkleChannel>::new(config, &twiddles);
+        let lookup_elements: PoseidonElements;
 
-        // Preprocessed trace.
-        let mut tree_builder = commitment_scheme.tree_builder();
-        let constant_trace = vec![gen_is_first(log_n_rows)];
-        tree_builder.extend_evals(constant_trace);
-        tree_builder.commit(channel);
+        {
+            // Setup protocol.
+            let channel = &mut Blake2sChannel::default();
+            let mut commitment_scheme =
+                CommitmentSchemeProver::<_, Blake2sMerkleChannel>::new(config, &twiddles);
 
-        // Trace.
-        let (trace, _lookup_data) = gen_trace(log_n_rows);
-        let mut tree_builder = commitment_scheme.tree_builder();
-        tree_builder.extend_evals(trace);
-        tree_builder.commit(channel);
+            // Preprocessed trace.
+            let mut tree_builder = commitment_scheme.tree_builder();
+            let constant_trace = vec![gen_is_first(log_n_rows)];
+            tree_builder.extend_evals(constant_trace);
+            tree_builder.commit(channel);
 
-        // Draw lookup elements.
-        let lookup_elements = PoseidonElements::draw(channel);
+            // Trace.
+            let (trace, _lookup_data) = gen_trace(log_n_rows);
+            let mut tree_builder = commitment_scheme.tree_builder();
+            tree_builder.extend_evals(trace);
+            tree_builder.commit(channel);
+
+            // Draw lookup elements.
+            lookup_elements = PoseidonElements::draw(channel);
+
+            // Interaction trace.
+            let (trace, _total_sum) =
+                gen_interaction_trace(log_n_rows, _lookup_data, &lookup_elements);
+            let mut tree_builder = commitment_scheme.tree_builder();
+            tree_builder.extend_evals(trace);
+            tree_builder.commit(channel);
+        }
         /////////////////////////////////////////////////////////////////////////////////////////////////////
 
         let (_gpu_trace, _gpu_lookup_data, _gpu_trace_polys, _gpu_original_trace) =
@@ -592,6 +603,8 @@ mod tests {
         let cpu_start = Instant::now();
         let _cpu_preprocessed_trace = gen_preprocessed_trace(log_n_rows);
         let (_trace, _lookup_data) = gen_trace(log_n_rows);
+        let (_cpu_interaction_trace, _total_sum) =
+            gen_interaction_trace(log_n_rows, _lookup_data.clone(), &lookup_elements);
         let _cpu_original_trace = _trace.clone();
         let twiddles = CpuBackend::precompute_twiddles(
             CanonicCoset::new(log_n_rows).circle_domain().half_coset,
@@ -627,6 +640,20 @@ mod tests {
                 assert_eq!(
                     _cpu_original_trace[i].values.at(j),
                     _gpu_original_trace[i + 1].values.at(j)
+                );
+            }
+        }
+
+        // _cpu_interaction_trace and _gpu_original_trace
+        let gpu_original_trace_offset = 1 + N_COLUMNS;
+        for i in 0.._cpu_interaction_trace.len() {
+            // compare _cpu_interaction_trace[i] and _gpu_original_trace[i +
+            for j in 0.._cpu_interaction_trace[i].length {
+                assert_eq!(
+                    _cpu_interaction_trace[i].values.at(j),
+                    _gpu_original_trace[i + gpu_original_trace_offset]
+                        .values
+                        .at(j)
                 );
             }
         }

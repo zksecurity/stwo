@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 #[cfg(not(target_family = "wasm"))]
 use std::time::Instant;
 
@@ -644,6 +645,34 @@ async fn init(log_n_rows: u32, lookup_elements: &PoseidonElements) -> WgpuInstan
         compilation_options: Default::default(),
     });
 
+    // compute interaction trace
+    let compute_interaction_trace_pipeline =
+        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Compute Interaction Trace Pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader_module,
+            entry_point: Some("compute_interaction_trace"),
+            cache: None,
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: &HashMap::from([]),
+                zero_initialize_workgroup_memory: true,
+            },
+        });
+
+    // load interaction trace to original column
+    let load_interaction_trace_to_original_column_pipeline =
+        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Load Interaction Trace to Original Column Pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader_module,
+            entry_point: Some("interaction_trace_to_original_column"),
+            cache: None,
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: &HashMap::from([]),
+                zero_initialize_workgroup_memory: true,
+            },
+        });
+
     let interpolate_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: None,
         layout: Some(&pipeline_layout),
@@ -667,6 +696,12 @@ async fn init(log_n_rows: u32, lookup_elements: &PoseidonElements) -> WgpuInstan
         compute_pass.set_pipeline(&compute_pipeline);
         compute_pass.set_bind_group(0, &bind_group, &[]);
         compute_pass.dispatch_workgroups(GEN_TRACE_WORKGROUP_SIZE, 1, 1);
+
+        compute_pass.set_pipeline(&compute_interaction_trace_pipeline);
+        compute_pass.dispatch_workgroups(1, 1, 1);
+
+        compute_pass.set_pipeline(&load_interaction_trace_to_original_column_pipeline);
+        compute_pass.dispatch_workgroups(1, 1, 1);
 
         compute_pass.set_pipeline(&interpolate_pipeline);
         compute_pass.set_bind_group(0, &bind_group, &[]);
