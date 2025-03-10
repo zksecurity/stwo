@@ -31,6 +31,11 @@ struct LookupData {
     final_state: array<array<BaseColumn, N_STATE>, N_INSTANCES_PER_ROW>,
 }
 
+struct QM31Column {
+    data: array<QM31, N_ORIGINAL_COLUMN_SIZE>,
+    length: u32
+}
+
 struct OriginalColumn {
     data: array<M31, N_ORIGINAL_COLUMN_SIZE>,
 }
@@ -39,6 +44,14 @@ struct GenTraceOutput {
     original_trace: array<OriginalColumn, N_ORIGINAL_TRACE_COLUMNS>,
     trace: array<BaseColumn, N_COLUMNS>,
     lookup_data: LookupData,
+}
+
+struct GenInteractionTraceOutput {
+    // chunk 
+    interaction_trace_qm31: array<QM31Column, N_INSTANCES_PER_ROW>,
+    interaction_trace_buffers: array<QM31Column, 4>,
+    total_sum: QM31,
+    // chunk ends
 }
 
 struct Results {
@@ -53,6 +66,9 @@ var<storage, read_write> gen_trace_output: GenTraceOutput;
 
 @group(0) @binding(2)
 var<storage, read_write> output: Results;
+
+@group(0) @binding(3)
+var<storage, read_write> gen_interaction_trace_output: GenInteractionTraceOutput;
 
 @compute @workgroup_size(INTERPOLATE_THREADS_PER_WORKGROUP)
 fn interpolate(@builtin(global_invocation_id) global_id: vec3<u32>) {

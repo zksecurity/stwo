@@ -176,6 +176,22 @@ struct InterpolateOutputVec {
     results: Vec<CirclePoly<CpuBackend>>,
 }
 
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct GpuQM31Column {
+    pub data: [GpuQM31; N_ORIGINAL_COLUMN_SIZE as usize],
+    pub length: u32,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct GenInteractionTraceOutput {
+    pub interaction_trace_qm31: [GpuQM31Column; N_INSTANCES_PER_ROW as usize],
+    pub interaction_trace_buffers: [GpuQM31Column; 4],
+    pub total_sum: GpuQM31,
+}
+
 impl InterpolateOutputVec {
     #[allow(dead_code)]
     pub fn from_bytes(bytes: &[u8], log_n_rows: u32) -> Self {
@@ -345,6 +361,9 @@ pub trait ByteSerialize: Sized {
 impl ByteSerialize for BaseColumn {}
 impl ByteSerialize for GenTraceOutput {}
 impl ByteSerialize for GpuLookupElements {}
+impl ByteSerialize for GpuQM31Column {}
+impl ByteSerialize for GenInteractionTraceOutput {}
+
 #[allow(dead_code)]
 struct WgpuInstance {
     instance: wgpu::Instance,
@@ -353,6 +372,7 @@ struct WgpuInstance {
     queue: wgpu::Queue,
     staging_buffer: wgpu::Buffer,
     interpolate_staging_buffer: wgpu::Buffer,
+    gen_interaction_trace_staging_buffer: wgpu::Buffer,
     encoder: wgpu::CommandEncoder,
 }
 
@@ -464,17 +484,29 @@ async fn init(log_n_rows: u32, lookup_elements: &PoseidonElements) -> WgpuInstan
         mapped_at_creation: false,
     });
 
+    let gen_interaction_trace_output_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Gen Interaction Trace Output Buffer"),
+        size: std::mem::size_of::<GenInteractionTraceOutput>() as wgpu::BufferAddress,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+
     // Load shader
     let gen_trace_interpolate_columns_constants_shader =
         include_str!("gen_trace_interpolate_columns_constants.wgsl");
+    let utils_shader = include_str!("utils.wgsl");
     let qm31_shader = include_str!("qm31.wgsl");
     let gen_trace_impl_shader = include_str!("gen_trace.wgsl");
     let interpolate_impl_shader = include_str!("interpolate.wgsl");
     let gen_trace_shader = format!(
         "{}\n
+        {}\n    
         {}\n
         {}",
-        gen_trace_interpolate_columns_constants_shader, qm31_shader, gen_trace_impl_shader,
+        gen_trace_interpolate_columns_constants_shader,
+        utils_shader,
+        qm31_shader,
+        gen_trace_impl_shader,
     );
     let interpolate_shader = format!(
         "{}\n
@@ -556,6 +588,17 @@ async fn init(log_n_rows: u32, lookup_elements: &PoseidonElements) -> WgpuInstan
                 },
                 count: None,
             },
+            // Binding 3: Gen Interaction Trace Output buffer
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
         label: Some("Gen Trace Bind Group Layout"),
     });
@@ -575,6 +618,10 @@ async fn init(log_n_rows: u32, lookup_elements: &PoseidonElements) -> WgpuInstan
             wgpu::BindGroupEntry {
                 binding: 2,
                 resource: interpolate_output_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: gen_interaction_trace_output_buffer.as_entire_binding(),
             },
         ],
         label: Some("Gen Trace Bind Group"),
@@ -640,6 +687,14 @@ async fn init(log_n_rows: u32, lookup_elements: &PoseidonElements) -> WgpuInstan
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
+
+    let gen_interaction_trace_staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Gen Interaction Trace Staging Buffer"),
+        size: std::mem::size_of::<GenInteractionTraceOutput>() as u64,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
     encoder.copy_buffer_to_buffer(&output_buffer, 0, &staging_buffer, 0, staging_buffer.size());
     encoder.copy_buffer_to_buffer(
         &interpolate_output_buffer,
@@ -647,6 +702,13 @@ async fn init(log_n_rows: u32, lookup_elements: &PoseidonElements) -> WgpuInstan
         &interpolate_staging_buffer,
         0,
         interpolate_staging_buffer.size(),
+    );
+    encoder.copy_buffer_to_buffer(
+        &gen_interaction_trace_output_buffer,
+        0,
+        &gen_interaction_trace_staging_buffer,
+        0,
+        gen_interaction_trace_staging_buffer.size(),
     );
 
     WgpuInstance {
@@ -656,6 +718,7 @@ async fn init(log_n_rows: u32, lookup_elements: &PoseidonElements) -> WgpuInstan
         queue,
         staging_buffer,
         interpolate_staging_buffer,
+        gen_interaction_trace_staging_buffer,
         encoder,
     }
 }
