@@ -514,7 +514,7 @@ mod tests {
         let log_n_instances = 16;
         let log_n_instances_per_row = 3;
         let log_n_rows = log_n_instances - log_n_instances_per_row;
-        let (_gpu_trace, _gpu_lookup_data, _gpu_trace_polys) =
+        let (_gpu_trace, _gpu_lookup_data, _gpu_trace_polys, _gpu_original_trace) =
             gen_trace_interpolate_columns(log_n_rows).await;
 
         let checkpoint1 = web_sys::window().unwrap().performance().unwrap().now();
@@ -550,11 +550,13 @@ mod tests {
         let log_n_instances = 15;
         let log_n_instances_per_row = 3;
         let log_n_rows = log_n_instances - log_n_instances_per_row;
-        let (_gpu_trace, _gpu_lookup_data, _gpu_trace_polys) =
+        let (_gpu_trace, _gpu_lookup_data, _gpu_trace_polys, _gpu_original_trace) =
             pollster::block_on(gen_trace_gpu(log_n_rows));
 
         let cpu_start = Instant::now();
+        let _cpu_preprocessed_trace = gen_preprocessed_trace(log_n_rows);
         let (_trace, _lookup_data) = gen_trace(log_n_rows);
+        let _cpu_original_trace = _trace.clone();
         let twiddles = CpuBackend::precompute_twiddles(
             CanonicCoset::new(log_n_rows).circle_domain().half_coset,
         );
@@ -563,15 +565,34 @@ mod tests {
         let cpu_end = Instant::now();
         println!("CPU time: {:?}", cpu_end - cpu_start);
         let _cpu_trace = _trace.into_iter().map(|c| c.values.clone()).collect_vec();
-        println!("HAHA");
         assert_eq!(_cpu_trace, _gpu_trace);
         assert_eq!(_lookup_data, _gpu_lookup_data);
+
         for i in 0..N_COLUMNS {
             assert_eq!(_cpu_trace_polys[i].coeffs, _gpu_trace_polys[i].coeffs);
             assert_eq!(
                 _cpu_trace_polys[i].log_size(),
                 _gpu_trace_polys[i].log_size()
             );
+        }
+
+        // compare _cpu_preprocessed_trace and _gpu_original_trace[0]
+        for i in 0.._cpu_preprocessed_trace.len() {
+            assert_eq!(
+                _cpu_preprocessed_trace[0].values.at(i),
+                _gpu_original_trace[0].values.at(i)
+            );
+        }
+
+        // _cpu_original_trace and _gpu_original_trace
+        // iterate _cpu_original_trace
+        for i in 0..N_COLUMNS {
+            for j in 0.._cpu_original_trace[i].length {
+                assert_eq!(
+                    _cpu_original_trace[i].values.at(j),
+                    _gpu_original_trace[i + 1].values.at(j)
+                );
+            }
         }
     }
 

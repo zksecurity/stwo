@@ -31,7 +31,12 @@ struct LookupData {
     final_state: array<array<BaseColumn, N_STATE>, N_INSTANCES_PER_ROW>,
 }
 
+struct OriginalColumn {
+    data: array<M31, N_ORIGINAL_COLUMN_SIZE>,
+}
+
 struct GenTraceOutput {
+    original_trace: array<OriginalColumn, N_ORIGINAL_TRACE_COLUMNS>,
     trace: array<BaseColumn, N_COLUMNS>,
     lookup_data: LookupData,
 }

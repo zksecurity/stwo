@@ -8,13 +8,16 @@ const N_STATE: u32 = 16;
 const N_INSTANCES_PER_ROW: u32 = 1 << N_LOG_INSTANCES_PER_ROW;
 const N_LOG_INSTANCES_PER_ROW: u32 = 3;
 const N_COLUMNS: u32 = N_INSTANCES_PER_ROW * N_COLUMNS_PER_REP;
-// const N_INTERACTION_COLUMNS: u32 = N_INSTANCES_PER_ROW * 4;
+const N_INTERACTION_COLUMNS: u32 = N_INSTANCES_PER_ROW * 4;
 const N_HALF_FULL_ROUNDS: u32 = 4;
 const FULL_ROUNDS: u32 = 2 * N_HALF_FULL_ROUNDS;
 const N_PARTIAL_ROUNDS: u32 = 14;
 const N_LANES: u32 = 16;
 const N_EXTENDED_ROWS: u32 = N_ROWS * 4;
 // const N_ORIGINAL_ROWS: u32 = N_ROWS;
+
+const N_ORIGINAL_COLUMN_SIZE: u32 = N_LANES * N_ROWS;
+
 const N_COLUMNS_PER_REP: u32 = N_STATE * (1 + FULL_ROUNDS) + N_PARTIAL_ROUNDS;
 const GEN_TRACE_WORKGROUP_SIZE: u32 = N_ROWS * N_LANES / GEN_TRACE_THREADS_PER_WORKGROUP;
 const GEN_TRACE_THREADS_PER_WORKGROUP: u32 = 256;
@@ -26,6 +29,7 @@ const N_FLAT_MAX_ARRAY_SIZE: u32 = N_ROWS * N_LANES * N_COLUMNS;
 pub const N_LINE_TWIDDLES_SIZE: u32 = N_EXTENDED_ROWS * N_LANES;
 pub const N_LINE_TWIDDLES_FLAT_SIZE: u32 = N_LINE_TWIDDLES_SIZE * 2;
 pub const N_CIRCLE_TWIDDLES_SIZE: u32 = N_LINE_TWIDDLES_SIZE * 2;
+const N_ORIGINAL_TRACE_COLUMNS: u32 = 1 + N_COLUMNS + N_INTERACTION_COLUMNS + 3;
 
 use crate::core::backend::cpu::circle::circle_twiddles_from_line_twiddles;
 use crate::core::backend::simd::column::BaseColumn;
@@ -38,7 +42,7 @@ use crate::core::fields::m31::BaseField;
 #[allow(unused_imports)]
 use crate::core::fields::m31::M31;
 use crate::core::fields::FieldExpOps;
-use crate::core::poly::circle::{CanonicCoset, CirclePoly, PolyOps};
+use crate::core::poly::circle::{CanonicCoset, CircleEvaluation, CirclePoly, PolyOps};
 use crate::core::poly::utils::domain_line_twiddles_from_tree;
 #[allow(unused_imports)]
 use crate::examples::poseidon::LookupData;
@@ -53,6 +57,12 @@ pub struct Twiddles {
     pub line_twiddles_sizes: [u32; N_LINE_TWIDDLES_SIZE as usize],
     pub line_twiddles_offsets: [u32; N_LINE_TWIDDLES_SIZE as usize],
     pub mod_inv: GpuM31,
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct GpuOriginalColumn {
+    pub data: [GpuM31; N_ORIGINAL_COLUMN_SIZE as usize],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -115,6 +125,7 @@ impl From<GpuBaseColumn> for BaseColumn {
 #[derive(Clone, Debug, Copy)]
 #[repr(C)]
 pub struct GenTraceOutput {
+    original_trace: [GpuOriginalColumn; N_ORIGINAL_TRACE_COLUMNS as usize],
     trace: [GpuBaseColumn; N_COLUMNS as usize],
     lookup_data: GpuLookupData,
 }
@@ -127,6 +138,7 @@ pub struct InterpolateOutput {
 #[derive(Clone, Debug)]
 #[repr(C)]
 struct GenTraceOutputVec {
+    original_trace: Vec<CircleEvaluation<CpuBackend, BaseField>>,
     trace: Vec<BaseColumn>,
     lookup_data: LookupData,
 }
@@ -162,23 +174,49 @@ impl InterpolateOutputVec {
         Self { results: polys }
     }
 }
-
 #[allow(dead_code)]
 impl GenTraceOutputVec {
-    fn from_bytes(bytes: &[u8]) -> Self {
+    fn from_bytes(bytes: &[u8], log_n_rows: u32) -> Self {
+        let size_original_trace =
+            std::mem::size_of::<GpuOriginalColumn>() * (N_ORIGINAL_TRACE_COLUMNS as usize);
         let base_column_size = std::mem::size_of::<GpuBaseColumn>();
+        let size_trace = base_column_size * (N_COLUMNS as usize);
         let lookup_data_size = std::mem::size_of::<GpuLookupData>();
-        assert!(bytes.len() >= base_column_size * N_COLUMNS as usize + lookup_data_size);
-        let base_column_slice = bytes
+        let total_size = size_original_trace + size_trace + lookup_data_size;
+        assert!(
+            bytes.len() >= total_size,
+            "Not enough bytes: expected {} but got {}",
+            total_size,
+            bytes.len()
+        );
+
+        let circle_domain = CanonicCoset::new(log_n_rows).circle_domain();
+
+        let original_trace: Vec<CircleEvaluation<CpuBackend, BaseField>> = bytes
+            .chunks(std::mem::size_of::<GpuOriginalColumn>())
+            .take(N_ORIGINAL_TRACE_COLUMNS as usize)
+            .map(|chunk| {
+                let gpu_original = unsafe { &*(chunk.as_ptr() as *const GpuOriginalColumn) };
+                let values: Vec<M31> = gpu_original.data.iter().map(|x| M31(x.data)).collect();
+                CircleEvaluation::new(circle_domain.clone(), values)
+            })
+            .collect();
+
+        let trace_offset = size_original_trace;
+        let trace_bytes = &bytes[trace_offset..trace_offset + size_trace];
+        let trace: Vec<BaseColumn> = trace_bytes
             .chunks(base_column_size)
             .take(N_COLUMNS as usize)
             .map(|chunk| BaseColumn::from_bytes(chunk))
-            .collect::<Vec<_>>();
-        let lookup_data_start = base_column_size * N_COLUMNS as usize;
-        let lookup_data =
-            LookupData::from_bytes(&bytes[lookup_data_start..lookup_data_start + lookup_data_size]);
+            .collect();
+
+        let lookup_data_offset = size_original_trace + size_trace;
+        let lookup_data_bytes = &bytes[lookup_data_offset..lookup_data_offset + lookup_data_size];
+        let lookup_data = LookupData::from_bytes(lookup_data_bytes);
+
         Self {
-            trace: base_column_slice,
+            original_trace,
+            trace,
             lookup_data,
         }
     }
@@ -590,7 +628,12 @@ async fn init(log_n_rows: u32) -> WgpuInstance {
 
 pub async fn gen_trace_interpolate_columns(
     log_n_rows: u32,
-) -> (Vec<BaseColumn>, LookupData, Vec<CirclePoly<CpuBackend>>) {
+) -> (
+    Vec<BaseColumn>,
+    LookupData,
+    Vec<CirclePoly<CpuBackend>>,
+    Vec<CircleEvaluation<CpuBackend, BaseField>>,
+) {
     let instance = init(log_n_rows).await;
 
     #[cfg(not(target_family = "wasm"))]
@@ -611,10 +654,10 @@ pub async fn gen_trace_interpolate_columns(
     let result = async {
         receiver.recv_async().await.unwrap().unwrap();
         let data = staging_buffer_slice.get_mapped_range();
-        let output = GenTraceOutputVec::from_bytes(&data);
+        let output = GenTraceOutputVec::from_bytes(&data, log_n_rows);
         drop(data);
         instance.staging_buffer.unmap();
-        (output.trace, output.lookup_data)
+        (output.trace, output.lookup_data, output.original_trace)
     };
 
     let interpolate_output_slice = instance.interpolate_staging_buffer.slice(..);
@@ -633,7 +676,7 @@ pub async fn gen_trace_interpolate_columns(
         output
     };
 
-    let (trace, lookup_data) = result.await;
+    let (trace, lookup_data, original_trace) = result.await;
     let _interpolate_output = interpolate_result.await;
 
     #[cfg(not(target_family = "wasm"))]
@@ -658,5 +701,10 @@ pub async fn gen_trace_interpolate_columns(
     //     final_state: std::array::from_fn(|_| std::array::from_fn(|_| BaseColumn::zeros(1))),
     // };
     // (Vec::new(), lookup_data, _interpolate_output.results)
-    (trace, lookup_data, _interpolate_output.results)
+    (
+        trace,
+        lookup_data,
+        _interpolate_output.results,
+        original_trace,
+    )
 }

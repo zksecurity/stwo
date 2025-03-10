@@ -46,7 +46,12 @@ struct LookupData {
     final_state: array<array<BaseColumn, N_STATE>, N_INSTANCES_PER_ROW>,
 }
 
+struct OriginalColumn {
+    data: array<M31, N_ORIGINAL_COLUMN_SIZE>,
+}
+
 struct GenTraceOutput {
+    original_trace: array<OriginalColumn, N_ORIGINAL_TRACE_COLUMNS>,
     trace: array<BaseColumn, N_COLUMNS>,
     lookup_data: LookupData,
 }
@@ -80,6 +85,8 @@ fn gen_trace_interpolate_columns(
 
     let global_invocation_index = workgroup_index * GEN_TRACE_THREADS_PER_WORKGROUP + local_invocation_index;
 
+    gen_trace_output.original_trace[0].data[0] = M31(1u);
+
     for (var i = 0u; i < N_COLUMNS; i++) {
         gen_trace_output.trace[i].length = N_ROWS * N_LANES;
     }
@@ -103,6 +110,7 @@ fn gen_trace_interpolate_columns(
 
             for (var i = 0u; i < N_STATE; i++) {
                 gen_trace_output.trace[col_index].data[vec_index][inner_vec_index] = state[i];
+                gen_trace_output.original_trace[col_index + N_PREPROCESSED_COLUMNS].data[global_invocation_index] = state[i];
                 col_index += 1u;
             }
 
@@ -122,6 +130,7 @@ fn gen_trace_interpolate_columns(
                 }
                 for (var j = 0u; j < N_STATE; j++) {
                     gen_trace_output.trace[col_index].data[vec_index][inner_vec_index] = state[j];
+                    gen_trace_output.original_trace[col_index + N_PREPROCESSED_COLUMNS].data[global_invocation_index] = state[j];
                     col_index += 1u;
                 }
             }
@@ -131,6 +140,7 @@ fn gen_trace_interpolate_columns(
                 state = apply_internal_round_matrix(state);
                 state[0] = pow5(state[0]);
                 gen_trace_output.trace[col_index].data[vec_index][inner_vec_index] = state[0];
+                gen_trace_output.original_trace[col_index + N_PREPROCESSED_COLUMNS].data[global_invocation_index] = state[0];
                 col_index += 1u;
             }
             // 4 full rounds
@@ -144,6 +154,7 @@ fn gen_trace_interpolate_columns(
                 }
                 for (var j = 0u; j < N_STATE; j++) {
                     gen_trace_output.trace[col_index].data[vec_index][inner_vec_index] = state[j];
+                    gen_trace_output.original_trace[col_index + N_PREPROCESSED_COLUMNS].data[global_invocation_index] = state[j];
                     col_index += 1u;
                 }
             }
