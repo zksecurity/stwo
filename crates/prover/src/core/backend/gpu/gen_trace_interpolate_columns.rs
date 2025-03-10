@@ -31,9 +31,11 @@ pub const N_LINE_TWIDDLES_SIZE: u32 = N_EXTENDED_ROWS * N_LANES;
 pub const N_LINE_TWIDDLES_FLAT_SIZE: u32 = N_LINE_TWIDDLES_SIZE * 2;
 pub const N_CIRCLE_TWIDDLES_SIZE: u32 = N_LINE_TWIDDLES_SIZE * 2;
 const N_ORIGINAL_TRACE_COLUMNS: u32 = 1 + N_COLUMNS + N_INTERACTION_COLUMNS + 3;
+const N_CONSTRAINTS: u32 = 1144;
 
-use super::qm31::GpuQM31;
+use super::qm31::{GpuCM31, GpuM31, GpuQM31};
 use crate::core::backend::cpu::circle::circle_twiddles_from_line_twiddles;
+use crate::core::backend::gpu::common::GpuBaseColumn;
 use crate::core::backend::simd::column::BaseColumn;
 #[allow(unused_imports)]
 use crate::core::backend::simd::m31::PackedM31;
@@ -99,6 +101,10 @@ struct GpuGenTraceInput {
     pub log_size: u32,
     pub twiddles: Twiddles,
     pub lookup_elements: GpuLookupElements,
+    pub denom_inv: [GpuM31; 4],
+    pub random_coeff_powers: [GpuQM31; N_CONSTRAINTS as usize],
+    pub trace_domain_log_size: u32,
+    pub eval_domain_log_size: u32,
 }
 
 impl GpuGenTraceInput {
@@ -117,38 +123,6 @@ impl GpuGenTraceInput {
 struct GpuLookupData {
     initial_state: [[GpuBaseColumn; N_STATE as usize]; N_INSTANCES_PER_ROW as usize],
     final_state: [[GpuBaseColumn; N_STATE as usize]; N_INSTANCES_PER_ROW as usize],
-}
-
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-pub struct GpuM31 {
-    data: u32,
-}
-
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-pub struct GpuBaseColumn {
-    data: [[GpuM31; N_LANES as usize]; N_ROWS as usize],
-    length: u32,
-}
-
-impl From<GpuBaseColumn> for BaseColumn {
-    fn from(value: GpuBaseColumn) -> Self {
-        BaseColumn {
-            data: value
-                .data
-                .iter()
-                .map(|f| {
-                    let mut array: [M31; N_LANES as usize] = [M31(0); N_LANES as usize];
-                    for (i, v) in f.iter().enumerate() {
-                        array[i] = M31(v.data);
-                    }
-                    PackedM31::from_array(array)
-                })
-                .collect(),
-            length: value.length as usize,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Copy)]
@@ -267,62 +241,6 @@ impl GenTraceOutputVec {
     }
 }
 
-#[allow(dead_code)]
-impl BaseColumn {
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        assert!(bytes.len() >= std::mem::size_of::<Self>());
-        let slice = unsafe { &*(bytes.as_ptr() as *const GpuBaseColumn) };
-        (*slice).into()
-    }
-}
-
-#[allow(dead_code)]
-impl LookupData {
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        let base_column_size = std::mem::size_of::<GpuBaseColumn>();
-        let base_column_vec_size = base_column_size * N_STATE as usize;
-        let state_size = base_column_vec_size * N_INSTANCES_PER_ROW as usize;
-        let lookup_data_size = state_size * 2;
-        assert!(bytes.len() >= lookup_data_size);
-        let initial_state_slice: [[BaseColumn; N_STATE as usize]; N_INSTANCES_PER_ROW as usize] =
-            bytes
-                .chunks(base_column_vec_size)
-                .take(N_INSTANCES_PER_ROW as usize)
-                .map(|chunk| {
-                    chunk
-                        .chunks(base_column_size)
-                        .take(N_STATE as usize)
-                        .map(|chunk| BaseColumn::from_bytes(chunk))
-                        .collect::<Vec<_>>()
-                        .try_into()
-                        .unwrap()
-                })
-                .collect::<Vec<_>>()
-                .try_into()
-                .unwrap();
-        let final_state_slice: [[BaseColumn; N_STATE as usize]; N_INSTANCES_PER_ROW as usize] =
-            bytes[state_size..]
-                .chunks(base_column_vec_size)
-                .take(N_INSTANCES_PER_ROW as usize)
-                .map(|chunk| {
-                    chunk
-                        .chunks(base_column_size)
-                        .take(N_STATE as usize)
-                        .map(|chunk| BaseColumn::from_bytes(chunk))
-                        .collect::<Vec<_>>()
-                        .try_into()
-                        .unwrap()
-                })
-                .collect::<Vec<_>>()
-                .try_into()
-                .unwrap();
-        Self {
-            initial_state: initial_state_slice,
-            final_state: final_state_slice,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 struct Ids {
@@ -394,6 +312,19 @@ fn create_gpu_input(log_size: u32, lookup_elements: &PoseidonElements) -> GpuGen
             alpha: lookup_elements.0.alpha.into(),
             alpha_powers: lookup_elements.0.alpha_powers.map(|p| p.into()),
         },
+        denom_inv: [GpuM31 { data: 0 }; 4],
+        random_coeff_powers: [GpuQM31 {
+            a: GpuCM31 {
+                a: GpuM31 { data: 0 },
+                b: GpuM31 { data: 0 },
+            },
+            b: GpuCM31 {
+                a: GpuM31 { data: 0 },
+                b: GpuM31 { data: 0 },
+            },
+        }; N_CONSTRAINTS as usize],
+        trace_domain_log_size: 0,
+        eval_domain_log_size: 0,
     };
     input.log_size = log_size;
 

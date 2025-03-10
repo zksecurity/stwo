@@ -1,5 +1,5 @@
 pub mod blake2;
-pub mod combined_calculation;
+pub mod common;
 pub mod compute_composition_polynomial;
 pub mod compute_composition_polynomial_original_trace;
 pub mod extend_trace;
@@ -8,6 +8,7 @@ pub mod gen_interaction_trace;
 pub mod gen_multiple_traces;
 pub mod gen_trace_interpolate_columns;
 pub mod gpu_common;
+pub mod integrated;
 pub mod prove;
 pub mod qm31;
 pub mod unit;

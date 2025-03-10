@@ -416,6 +416,7 @@ mod tests {
     use crate::core::air::Component;
     #[allow(unused_imports)]
     use crate::core::backend::gpu::gen_interaction_trace::compute_interaction_trace_gpu;
+    use crate::core::backend::gpu::integrated::integrated_module::compute_integrated_module;
     use crate::core::backend::gpu::prove::prove_gpu;
     use crate::core::backend::simd::SimdBackend;
     #[allow(unused_imports)]
@@ -657,6 +658,11 @@ mod tests {
                 );
             }
         }
+
+        let _another_gpu_output =
+            pollster::block_on(compute_integrated_module(log_n_rows, &lookup_elements));
+        // println!("another_gpu_output: {:?}", _another_gpu_output);
+        assert_eq!(_lookup_data, _another_gpu_output.1);
     }
 
     #[test]
