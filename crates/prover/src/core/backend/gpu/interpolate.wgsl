@@ -49,15 +49,13 @@ fn ibutterfly(v0: ptr<function, u32>, v1: ptr<function, u32>, itwid: u32) {
 }
 
 struct GenTraceInput {
-    initial_x: u32,
-    initial_y: u32,
     log_size: u32,
-    circle_twiddles: array<u32, MAX_ARRAY_SIZE>,
+    circle_twiddles: array<u32, N_CIRCLE_TWIDDLES_SIZE>,
     circle_twiddles_size: u32,
-    line_twiddles_flat: array<u32, MAX_ARRAY_SIZE>,
+    line_twiddles_flat: array<u32, N_LINE_TWIDDLES_FLAT_SIZE>,
     line_twiddles_layer_count: u32,
-    line_twiddles_sizes: array<u32, MAX_ARRAY_SIZE>,
-    line_twiddles_offsets: array<u32, MAX_ARRAY_SIZE>,
+    line_twiddles_sizes: array<u32, N_LINE_TWIDDLES_SIZE>,
+    line_twiddles_offsets: array<u32, N_LINE_TWIDDLES_SIZE>,
     mod_inv: u32,
     current_layer: u32,
 }

@@ -63,138 +63,26 @@ struct GpuGenTraceInput {
     pub twiddles: Twiddles,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 #[repr(C)]
-struct GenTraceInput<F> {
-    pub initial_x: F,
-    pub initial_y: F,
+struct GpuGenTraceInputTemp {
     pub log_size: u32,
-    pub circle_twiddles: Vec<F>,
+    pub circle_twiddles: [u32; N_CIRCLE_TWIDDLES_SIZE as usize],
     pub circle_twiddles_size: u32,
-    pub line_twiddles_flat: Vec<F>,
+    pub line_twiddles_flat: [u32; N_LINE_TWIDDLES_FLAT_SIZE as usize],
     pub line_twiddles_layer_count: u32,
-    pub line_twiddles_sizes: Vec<u32>,
-    pub line_twiddles_offsets: Vec<u32>,
+    pub line_twiddles_sizes: [u32; N_LINE_TWIDDLES_SIZE as usize],
+    pub line_twiddles_offsets: [u32; N_LINE_TWIDDLES_SIZE as usize],
     pub mod_inv: u32,
-    pub current_layer: u32,
 }
 
-impl<F> GenTraceInput<F>
-where
-    F: Into<u32> + From<u32> + Copy,
-{
+impl GpuGenTraceInputTemp {
     fn as_bytes(&self) -> &[u8] {
-        let total_size = std::mem::size_of::<GenTraceInput<F>>();
-        let mut bytes = Vec::with_capacity(total_size);
-
-        // initial_x, initial_y
-        bytes.extend_from_slice(unsafe {
+        unsafe {
             std::slice::from_raw_parts(
-                &self.initial_x as *const F as *const u8,
-                std::mem::size_of::<F>(),
+                self as *const Self as *const u8,
+                std::mem::size_of::<Self>(),
             )
-        });
-        bytes.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                &self.initial_y as *const F as *const u8,
-                std::mem::size_of::<F>(),
-            )
-        });
-
-        // log_size
-        bytes.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                &self.log_size as *const u32 as *const u8,
-                std::mem::size_of::<u32>(),
-            )
-        });
-
-        let mut padded_circle_twiddles = vec![F::from(0u32); MAX_ARRAY_SIZE];
-        padded_circle_twiddles[..self.circle_twiddles.len()].copy_from_slice(&self.circle_twiddles);
-        bytes.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                padded_circle_twiddles.as_ptr() as *const u8,
-                MAX_ARRAY_SIZE * std::mem::size_of::<F>(),
-            )
-        });
-
-        // circle_twiddles_size
-        bytes.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                &self.circle_twiddles_size as *const u32 as *const u8,
-                std::mem::size_of::<u32>(),
-            )
-        });
-
-        let mut padded_line_twiddles = vec![F::from(0u32); MAX_ARRAY_SIZE];
-        padded_line_twiddles[..self.line_twiddles_flat.len()]
-            .copy_from_slice(&self.line_twiddles_flat);
-        bytes.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                padded_line_twiddles.as_ptr() as *const u8,
-                MAX_ARRAY_SIZE * std::mem::size_of::<F>(),
-            )
-        });
-
-        // line_twiddles_layer_count
-        bytes.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                &self.line_twiddles_layer_count as *const u32 as *const u8,
-                std::mem::size_of::<u32>(),
-            )
-        });
-
-        let mut padded_sizes = vec![0u32; MAX_ARRAY_SIZE];
-        padded_sizes[..self.line_twiddles_sizes.len()].copy_from_slice(&self.line_twiddles_sizes);
-        bytes.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                padded_sizes.as_ptr() as *const u8,
-                MAX_ARRAY_SIZE * std::mem::size_of::<u32>(),
-            )
-        });
-
-        let mut padded_offsets = vec![0u32; MAX_ARRAY_SIZE];
-        padded_offsets[..self.line_twiddles_offsets.len()]
-            .copy_from_slice(&self.line_twiddles_offsets);
-        bytes.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                padded_offsets.as_ptr() as *const u8,
-                MAX_ARRAY_SIZE * std::mem::size_of::<u32>(),
-            )
-        });
-
-        // mod_inv
-        bytes.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                &self.mod_inv as *const u32 as *const u8,
-                std::mem::size_of::<u32>(),
-            )
-        });
-
-        // current_layer
-        bytes.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                &self.current_layer as *const u32 as *const u8,
-                std::mem::size_of::<u32>(),
-            )
-        });
-
-        Box::leak(bytes.into_boxed_slice())
-    }
-
-    fn zero() -> Self {
-        Self {
-            initial_x: F::from(0),
-            initial_y: F::from(0),
-            log_size: 0,
-            circle_twiddles: vec![F::from(0); MAX_ARRAY_SIZE],
-            circle_twiddles_size: 0,
-            line_twiddles_flat: vec![F::from(0); MAX_ARRAY_SIZE],
-            line_twiddles_layer_count: 0,
-            line_twiddles_sizes: vec![0; MAX_ARRAY_SIZE],
-            line_twiddles_offsets: vec![0; MAX_ARRAY_SIZE],
-            mod_inv: 0,
-            current_layer: 0,
         }
     }
 }
@@ -416,8 +304,17 @@ struct WgpuInstance {
     encoder: wgpu::CommandEncoder,
 }
 
-fn create_gpu_input(log_size: u32) -> GenTraceInput<BaseField> {
-    let mut input = GenTraceInput::zero();
+fn create_gpu_input(log_size: u32) -> GpuGenTraceInputTemp {
+    let mut input = GpuGenTraceInputTemp {
+        log_size: 0,
+        circle_twiddles: [0; N_CIRCLE_TWIDDLES_SIZE as usize],
+        circle_twiddles_size: 0,
+        line_twiddles_flat: [0; N_LINE_TWIDDLES_FLAT_SIZE as usize],
+        line_twiddles_layer_count: 0,
+        line_twiddles_sizes: [0; N_LINE_TWIDDLES_SIZE as usize],
+        line_twiddles_offsets: [0; N_LINE_TWIDDLES_SIZE as usize],
+        mod_inv: 0,
+    };
     input.log_size = log_size;
 
     let domain = CanonicCoset::new(log_size + 3).circle_domain();
@@ -435,12 +332,18 @@ fn create_gpu_input(log_size: u32) -> GenTraceInput<BaseField> {
             input.line_twiddles_offsets[i - 1] + input.line_twiddles_sizes[i - 1]
         };
         for (j, twiddle) in twiddle.iter().enumerate() {
-            input.line_twiddles_flat[input.line_twiddles_offsets[i] as usize + j] = *twiddle;
+            input.line_twiddles_flat[input.line_twiddles_offsets[i] as usize + j] =
+                (*twiddle).into();
         }
     }
 
     // circle twiddles
-    let circle_twiddles: Vec<_> = circle_twiddles_from_line_twiddles(line_twiddles[0]).collect();
+    // let circle_twiddles: Vec<GpuM31> = circle_twiddles_from_line_twiddles(line_twiddles[0])
+    //     .map(|x| GpuM31 { data: x.into() })
+    //     .collect();
+    let circle_twiddles: Vec<_> = circle_twiddles_from_line_twiddles(line_twiddles[0])
+        .map(|x| x.into())
+        .collect();
     input.circle_twiddles[..circle_twiddles.len()].copy_from_slice(&circle_twiddles);
     input.circle_twiddles_size = circle_twiddles.len() as u32;
 
