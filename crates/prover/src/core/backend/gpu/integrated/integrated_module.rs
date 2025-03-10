@@ -96,7 +96,7 @@ pub struct GpuLookupElements {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
-struct GpuGenTraceInput {
+struct IntegratedInput {
     pub log_size: u32,
     pub twiddles: Twiddles,
     pub lookup_elements: GpuLookupElements,
@@ -106,7 +106,7 @@ struct GpuGenTraceInput {
     pub eval_domain_log_size: u32,
 }
 
-impl GpuGenTraceInput {
+impl IntegratedInput {
     fn as_bytes(&self) -> &[u8] {
         unsafe {
             std::slice::from_raw_parts(
@@ -300,8 +300,8 @@ struct WgpuInstance {
     encoder: wgpu::CommandEncoder,
 }
 
-fn create_gpu_input(log_size: u32, lookup_elements: &PoseidonElements) -> GpuGenTraceInput {
-    let mut input = GpuGenTraceInput {
+fn create_gpu_input(log_size: u32, lookup_elements: &PoseidonElements) -> IntegratedInput {
+    let mut input = IntegratedInput {
         log_size: 0,
         twiddles: Twiddles {
             circle_twiddles: [GpuM31 { data: 0 }; N_CIRCLE_TWIDDLES_SIZE as usize],
@@ -430,23 +430,26 @@ async fn init(log_n_rows: u32, lookup_elements: &PoseidonElements) -> WgpuInstan
 
     // Load shader
     let constant_shader = include_str!("integrated_module_constants.wgsl");
+    let io_shader = include_str!("integrated_io.wgsl");
     let utils_shader = include_str!("../utils.wgsl");
     let qm31_shader = include_str!("../qm31.wgsl");
     let gen_trace_impl_shader = include_str!("gen_trace.wgsl");
     let gen_trace_shader = format!(
         "{}\n
+        {}\n
         {}\n    
         {}\n
         {}",
-        constant_shader, utils_shader, qm31_shader, gen_trace_impl_shader,
+        constant_shader, io_shader, utils_shader, qm31_shader, gen_trace_impl_shader,
     );
 
     let interpolate_impl_shader = include_str!("interpolate_trace.wgsl");
     let interpolate_shader = format!(
         "{}\n
         {}\n
+        {}\n
         {}",
-        constant_shader, qm31_shader, interpolate_impl_shader,
+        constant_shader, io_shader, qm31_shader, interpolate_impl_shader,
     );
     let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Gen Trace Shader"),

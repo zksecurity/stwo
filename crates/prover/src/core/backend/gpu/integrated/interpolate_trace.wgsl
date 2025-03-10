@@ -6,70 +6,6 @@ fn ibutterfly(v0: ptr<function, M31>, v1: ptr<function, M31>, itwid: M31) {
     *v1 = m31_mul(m31_sub(tmp, *v1), itwid);
 }
 
-struct Twiddles {
-    circle_twiddles: array<M31, N_CIRCLE_TWIDDLES_SIZE>,
-    circle_twiddles_size: u32,
-    line_twiddles_flat: array<M31, N_LINE_TWIDDLES_FLAT_SIZE>,
-    line_twiddles_layer_count: u32,
-    line_twiddles_sizes: array<u32, N_LINE_TWIDDLES_SIZE>,
-    line_twiddles_offsets: array<u32, N_LINE_TWIDDLES_SIZE>,
-    mod_inv: M31,
-}
-
-struct GenTraceInput {
-    log_size: u32,
-    twiddles: Twiddles,
-}
-
-struct BaseColumn {
-    data: array<array<M31, N_LANES>, N_ROWS>,
-    length: u32,
-}
-
-struct LookupData {
-    initial_state: array<array<BaseColumn, N_STATE>, N_INSTANCES_PER_ROW>,
-    final_state: array<array<BaseColumn, N_STATE>, N_INSTANCES_PER_ROW>,
-}
-
-struct QM31Column {
-    data: array<QM31, N_ORIGINAL_COLUMN_SIZE>,
-    length: u32
-}
-
-struct OriginalColumn {
-    data: array<M31, N_ORIGINAL_COLUMN_SIZE>,
-}
-
-struct GenTraceOutput {
-    original_trace: array<OriginalColumn, N_ORIGINAL_TRACE_COLUMNS>,
-    trace: array<BaseColumn, N_COLUMNS>,
-    lookup_data: LookupData,
-}
-
-struct GenInteractionTraceOutput {
-    // chunk 
-    interaction_trace_qm31: array<QM31Column, N_INSTANCES_PER_ROW>,
-    interaction_trace_buffers: array<QM31Column, 4>,
-    total_sum: QM31,
-    // chunk ends
-}
-
-struct Results {
-    values: array<M31, N_FLAT_MAX_ARRAY_SIZE>,
-}
-
-@group(0) @binding(0)
-var<storage, read> input: GenTraceInput;
-
-@group(0) @binding(1)
-var<storage, read_write> gen_trace_output: GenTraceOutput;
-
-@group(0) @binding(2)
-var<storage, read_write> output: Results;
-
-@group(0) @binding(3)
-var<storage, read_write> gen_interaction_trace_output: GenInteractionTraceOutput;
-
 @compute @workgroup_size(INTERPOLATE_THREADS_PER_WORKGROUP)
 fn interpolate(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let workgroups_size = INTERPOLATE_WORKGROUP_SIZE;
@@ -95,8 +31,8 @@ fn interpolate(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
         ibutterfly(&val0, &val1, input.twiddles.circle_twiddles[i]);
 
-        output.values[column_idx * (1u << input.log_size) + idx0] = val0;
-        output.values[column_idx * (1u << input.log_size) + idx1] = val1;
+        interpolate_output.values[column_idx * (1u << input.log_size) + idx0] = val0;
+        interpolate_output.values[column_idx * (1u << input.log_size) + idx1] = val1;
     }
 
     interpolate_compute(column_idx);
@@ -118,13 +54,13 @@ fn interpolate_compute(column_idx: u32) {
                 let idx0 = idx0_offset + l;
                 let idx1 = idx0 + step;
                 
-                var val0 = output.values[column_idx * (1u << input.log_size) + idx0];
-                var val1 = output.values[column_idx * (1u << input.log_size) + idx1];
+                var val0 = interpolate_output.values[column_idx * (1u << input.log_size) + idx0];
+                var val1 = interpolate_output.values[column_idx * (1u << input.log_size) + idx1];
                 
                 ibutterfly(&val0, &val1, t);
                 
-                output.values[column_idx * (1u << input.log_size) + idx0] = val0;
-                output.values[column_idx * (1u << input.log_size) + idx1] = val1;
+                interpolate_output.values[column_idx * (1u << input.log_size) + idx0] = val0;
+                interpolate_output.values[column_idx * (1u << input.log_size) + idx1] = val1;
             }
         }
 
@@ -137,6 +73,6 @@ fn interpolate_compute(column_idx: u32) {
 
 fn mod_mul_compute(column_idx: u32) {
     for (var i = 0u; i < (1u << input.log_size); i += 1u) {
-        output.values[column_idx * (1u << input.log_size) + i] = m31_mul(output.values[column_idx * (1u << input.log_size) + i], input.twiddles.mod_inv);
+        interpolate_output.values[column_idx * (1u << input.log_size) + i] = m31_mul(interpolate_output.values[column_idx * (1u << input.log_size) + i], input.twiddles.mod_inv);
     }
 }
