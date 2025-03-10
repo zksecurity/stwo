@@ -26,15 +26,19 @@ struct M31 {
     data: u32,
 }
 
-struct GenTraceInput {
-    log_size: u32,
-    circle_twiddles: array<u32, N_CIRCLE_TWIDDLES_SIZE>,
+struct Twiddles {
+    circle_twiddles: array<M31, N_CIRCLE_TWIDDLES_SIZE>,
     circle_twiddles_size: u32,
-    line_twiddles_flat: array<u32, N_LINE_TWIDDLES_FLAT_SIZE>,
+    line_twiddles_flat: array<M31, N_LINE_TWIDDLES_FLAT_SIZE>,
     line_twiddles_layer_count: u32,
     line_twiddles_sizes: array<u32, N_LINE_TWIDDLES_SIZE>,
     line_twiddles_offsets: array<u32, N_LINE_TWIDDLES_SIZE>,
-    mod_inv: u32,
+    mod_inv: M31,
+}
+
+struct GenTraceInput {
+    log_size: u32,
+    twiddles: Twiddles,
 }
 
 struct LookupData {
@@ -48,7 +52,7 @@ struct GenTraceOutput {
 }
 
 struct Results {
-    values: array<u32, MAX_ARRAY_SIZE>,
+    values: array<M31, MAX_ARRAY_SIZE>,
 }
 
 @group(0) @binding(0)

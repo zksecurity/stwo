@@ -53,7 +53,7 @@ pub struct Twiddles {
     pub line_twiddles_layer_count: u32,
     pub line_twiddles_sizes: [u32; N_LINE_TWIDDLES_SIZE as usize],
     pub line_twiddles_offsets: [u32; N_LINE_TWIDDLES_SIZE as usize],
-    pub mod_inv: u32,
+    pub mod_inv: GpuM31,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -63,20 +63,7 @@ struct GpuGenTraceInput {
     pub twiddles: Twiddles,
 }
 
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-struct GpuGenTraceInputTemp {
-    pub log_size: u32,
-    pub circle_twiddles: [u32; N_CIRCLE_TWIDDLES_SIZE as usize],
-    pub circle_twiddles_size: u32,
-    pub line_twiddles_flat: [u32; N_LINE_TWIDDLES_FLAT_SIZE as usize],
-    pub line_twiddles_layer_count: u32,
-    pub line_twiddles_sizes: [u32; N_LINE_TWIDDLES_SIZE as usize],
-    pub line_twiddles_offsets: [u32; N_LINE_TWIDDLES_SIZE as usize],
-    pub mod_inv: u32,
-}
-
-impl GpuGenTraceInputTemp {
+impl GpuGenTraceInput {
     fn as_bytes(&self) -> &[u8] {
         unsafe {
             std::slice::from_raw_parts(
@@ -135,7 +122,7 @@ pub struct GenTraceOutput {
 
 #[allow(dead_code)]
 pub struct InterpolateOutput {
-    results: [u32; MAX_ARRAY_SIZE],
+    results: [GpuM31; MAX_ARRAY_SIZE],
 }
 
 #[derive(Clone, Debug)]
@@ -304,16 +291,18 @@ struct WgpuInstance {
     encoder: wgpu::CommandEncoder,
 }
 
-fn create_gpu_input(log_size: u32) -> GpuGenTraceInputTemp {
-    let mut input = GpuGenTraceInputTemp {
+fn create_gpu_input(log_size: u32) -> GpuGenTraceInput {
+    let mut input = GpuGenTraceInput {
         log_size: 0,
-        circle_twiddles: [0; N_CIRCLE_TWIDDLES_SIZE as usize],
-        circle_twiddles_size: 0,
-        line_twiddles_flat: [0; N_LINE_TWIDDLES_FLAT_SIZE as usize],
-        line_twiddles_layer_count: 0,
-        line_twiddles_sizes: [0; N_LINE_TWIDDLES_SIZE as usize],
-        line_twiddles_offsets: [0; N_LINE_TWIDDLES_SIZE as usize],
-        mod_inv: 0,
+        twiddles: Twiddles {
+            circle_twiddles: [GpuM31 { data: 0 }; N_CIRCLE_TWIDDLES_SIZE as usize],
+            circle_twiddles_size: 0,
+            line_twiddles_flat: [GpuM31 { data: 0 }; N_LINE_TWIDDLES_FLAT_SIZE as usize],
+            line_twiddles_layer_count: 0,
+            line_twiddles_sizes: [0; N_LINE_TWIDDLES_SIZE as usize],
+            line_twiddles_offsets: [0; N_LINE_TWIDDLES_SIZE as usize],
+            mod_inv: GpuM31 { data: 0 },
+        },
     };
     input.log_size = log_size;
 
@@ -323,32 +312,31 @@ fn create_gpu_input(log_size: u32) -> GpuGenTraceInputTemp {
     // line twiddles
     let domain = CanonicCoset::new(log_size).circle_domain();
     let line_twiddles = domain_line_twiddles_from_tree(domain, &twiddles.itwiddles);
-    input.line_twiddles_layer_count = line_twiddles.len() as u32;
+    input.twiddles.line_twiddles_layer_count = line_twiddles.len() as u32;
     for (i, twiddle) in line_twiddles.iter().enumerate() {
-        input.line_twiddles_sizes[i] = twiddle.len() as u32;
-        input.line_twiddles_offsets[i] = if i == 0 {
+        input.twiddles.line_twiddles_sizes[i] = twiddle.len() as u32;
+        input.twiddles.line_twiddles_offsets[i] = if i == 0 {
             0
         } else {
-            input.line_twiddles_offsets[i - 1] + input.line_twiddles_sizes[i - 1]
+            input.twiddles.line_twiddles_offsets[i - 1] + input.twiddles.line_twiddles_sizes[i - 1]
         };
         for (j, twiddle) in twiddle.iter().enumerate() {
-            input.line_twiddles_flat[input.line_twiddles_offsets[i] as usize + j] =
-                (*twiddle).into();
+            input.twiddles.line_twiddles_flat
+                [input.twiddles.line_twiddles_offsets[i] as usize + j] = GpuM31 {
+                data: (*twiddle).into(),
+            };
         }
     }
 
     // circle twiddles
-    // let circle_twiddles: Vec<GpuM31> = circle_twiddles_from_line_twiddles(line_twiddles[0])
-    //     .map(|x| GpuM31 { data: x.into() })
-    //     .collect();
-    let circle_twiddles: Vec<_> = circle_twiddles_from_line_twiddles(line_twiddles[0])
-        .map(|x| x.into())
+    let circle_twiddles: Vec<GpuM31> = circle_twiddles_from_line_twiddles(line_twiddles[0])
+        .map(|x| GpuM31 { data: x.into() })
         .collect();
-    input.circle_twiddles[..circle_twiddles.len()].copy_from_slice(&circle_twiddles);
-    input.circle_twiddles_size = circle_twiddles.len() as u32;
+    input.twiddles.circle_twiddles[..circle_twiddles.len()].copy_from_slice(&circle_twiddles);
+    input.twiddles.circle_twiddles_size = circle_twiddles.len() as u32;
 
     let inv = BaseField::from_u32_unchecked(domain.size() as u32).inverse();
-    input.mod_inv = inv.into();
+    input.twiddles.mod_inv = GpuM31 { data: inv.into() };
 
     input
 }
@@ -409,6 +397,7 @@ async fn init(log_n_rows: u32) -> WgpuInstance {
     // Load shader
     let gen_trace_interpolate_columns_constants_shader =
         include_str!("gen_trace_interpolate_columns_constants.wgsl");
+    let qm31_shader = include_str!("qm31.wgsl");
     let gen_trace_impl_shader = include_str!("gen_trace.wgsl");
     let interpolate_impl_shader = include_str!("interpolate.wgsl");
     let gen_trace_shader = format!(
@@ -418,8 +407,9 @@ async fn init(log_n_rows: u32) -> WgpuInstance {
     );
     let interpolate_shader = format!(
         "{}\n
+        {}\n
         {}",
-        gen_trace_interpolate_columns_constants_shader, interpolate_impl_shader,
+        gen_trace_interpolate_columns_constants_shader, qm31_shader, interpolate_impl_shader,
     );
     let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Gen Trace Shader"),
