@@ -21,8 +21,7 @@ const GEN_TRACE_THREADS_PER_WORKGROUP: u32 = 256;
 const INTERPOLATE_WORKGROUP_SIZE: u32 = 8;
 #[allow(dead_code)]
 const INTERPOLATE_THREADS_PER_WORKGROUP: u32 = 256;
-const MAX_ARRAY_LOG_SIZE: u32 = 25;
-const MAX_ARRAY_SIZE: usize = 1 << MAX_ARRAY_LOG_SIZE;
+const N_FLAT_MAX_ARRAY_SIZE: u32 = N_ROWS * N_LANES * N_COLUMNS;
 
 pub const N_LINE_TWIDDLES_SIZE: u32 = N_EXTENDED_ROWS * N_LANES;
 pub const N_LINE_TWIDDLES_FLAT_SIZE: u32 = N_LINE_TWIDDLES_SIZE * 2;
@@ -122,7 +121,7 @@ pub struct GenTraceOutput {
 
 #[allow(dead_code)]
 pub struct InterpolateOutput {
-    results: [GpuM31; MAX_ARRAY_SIZE],
+    results: [GpuM31; N_FLAT_MAX_ARRAY_SIZE as usize],
 }
 
 #[derive(Clone, Debug)]
@@ -140,7 +139,7 @@ struct InterpolateOutputVec {
 impl InterpolateOutputVec {
     #[allow(dead_code)]
     pub fn from_bytes(bytes: &[u8], log_n_rows: u32) -> Self {
-        assert!(bytes.len() >= std::mem::size_of::<[u32; MAX_ARRAY_SIZE]>());
+        assert!(bytes.len() >= std::mem::size_of::<[u32; N_FLAT_MAX_ARRAY_SIZE as usize]>());
 
         let results_slice = unsafe {
             std::slice::from_raw_parts(
@@ -602,6 +601,22 @@ pub async fn gen_trace_interpolate_columns(
     // Submit the commands
     instance.queue.submit(Some(instance.encoder.finish()));
 
+    let staging_buffer_slice = instance.staging_buffer.slice(..);
+    let (sender, receiver) = flume::bounded(1);
+    staging_buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
+    instance
+        .device
+        .poll(wgpu::Maintain::wait())
+        .panic_on_timeout();
+    let result = async {
+        receiver.recv_async().await.unwrap().unwrap();
+        let data = staging_buffer_slice.get_mapped_range();
+        let output = GenTraceOutputVec::from_bytes(&data);
+        drop(data);
+        instance.staging_buffer.unmap();
+        (output.trace, output.lookup_data)
+    };
+
     let interpolate_output_slice = instance.interpolate_staging_buffer.slice(..);
     let (sender, receiver) = flume::bounded(1);
     interpolate_output_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
@@ -618,7 +633,7 @@ pub async fn gen_trace_interpolate_columns(
         output
     };
 
-    // let (trace, lookup_data) = result.await;
+    let (trace, lookup_data) = result.await;
     let _interpolate_output = interpolate_result.await;
 
     #[cfg(not(target_family = "wasm"))]
@@ -638,10 +653,10 @@ pub async fn gen_trace_interpolate_columns(
         .into(),
     );
 
-    let lookup_data = LookupData {
-        initial_state: std::array::from_fn(|_| std::array::from_fn(|_| BaseColumn::zeros(1))),
-        final_state: std::array::from_fn(|_| std::array::from_fn(|_| BaseColumn::zeros(1))),
-    };
-    (Vec::new(), lookup_data, _interpolate_output.results)
-    // (trace, lookup_data, _interpolate_output.results)
+    // let lookup_data = LookupData {
+    //     initial_state: std::array::from_fn(|_| std::array::from_fn(|_| BaseColumn::zeros(1))),
+    //     final_state: std::array::from_fn(|_| std::array::from_fn(|_| BaseColumn::zeros(1))),
+    // };
+    // (Vec::new(), lookup_data, _interpolate_output.results)
+    (trace, lookup_data, _interpolate_output.results)
 }

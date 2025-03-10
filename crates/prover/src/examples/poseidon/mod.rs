@@ -563,8 +563,9 @@ mod tests {
         let cpu_end = Instant::now();
         println!("CPU time: {:?}", cpu_end - cpu_start);
         let _cpu_trace = _trace.into_iter().map(|c| c.values.clone()).collect_vec();
-        // assert_eq!(_cpu_trace, _gpu_trace);
-        // assert_eq!(_lookup_data, _gpu_lookup_data);
+        println!("HAHA");
+        assert_eq!(_cpu_trace, _gpu_trace);
+        assert_eq!(_lookup_data, _gpu_lookup_data);
         for i in 0..N_COLUMNS {
             assert_eq!(_cpu_trace_polys[i].coeffs, _gpu_trace_polys[i].coeffs);
             assert_eq!(

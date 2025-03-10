@@ -52,7 +52,7 @@ struct GenTraceOutput {
 }
 
 struct Results {
-    values: array<M31, MAX_ARRAY_SIZE>,
+    values: array<M31, N_FLAT_MAX_ARRAY_SIZE>,
 }
 
 @group(0) @binding(0)

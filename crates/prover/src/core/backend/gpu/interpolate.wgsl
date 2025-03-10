@@ -37,7 +37,7 @@ struct GenTraceOutput {
 }
 
 struct Results {
-    values: array<M31, MAX_ARRAY_SIZE>,
+    values: array<M31, N_FLAT_MAX_ARRAY_SIZE>,
 }
 
 @group(0) @binding(0)
@@ -48,8 +48,6 @@ var<storage, read_write> gen_trace_output: GenTraceOutput;
 
 @group(0) @binding(2)
 var<storage, read_write> output: Results;
-
-var<workgroup> shared_values: array<u32, MAX_SHARED_SIZE>;
 
 @compute @workgroup_size(INTERPOLATE_THREADS_PER_WORKGROUP)
 fn interpolate(@builtin(global_invocation_id) global_id: vec3<u32>) {
