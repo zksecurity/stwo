@@ -1,6 +1,5 @@
 //! AIR for Poseidon2 hash function from <https://eprint.iacr.org/2023/323.pdf>.
 
-mod lookup_elem;
 use std::ops::{Add, AddAssign, Mul, Sub};
 
 use itertools::Itertools;
@@ -20,9 +19,8 @@ use crate::core::backend::web::webgpu::compute_composition_polynomial_original_t
 use crate::core::backend::web::WebBackend;
 use crate::core::backend::{Col, Column};
 use crate::core::channel::Blake2sChannel;
-use crate::core::fields::cm31::CM31;
 use crate::core::fields::m31::BaseField;
-use crate::core::fields::qm31::{SecureField, QM31};
+use crate::core::fields::qm31::SecureField;
 use crate::core::fields::FieldExpOps;
 use crate::core::pcs::{CommitmentSchemeProver, PcsConfig};
 use crate::core::poly::circle::{CanonicCoset, CircleEvaluation, PolyOps};
@@ -70,44 +68,17 @@ impl FrameworkEval for PoseidonEval {
 }
 impl FrameworkEvalWeb for PoseidonEval {
     fn evaluate_web<'b>(&self, eval: WebDomainEvaluator<'b>) {
-        let lookup_elements = PoseidonElements::with_lookup(eval.eval_domain.log_size());
-
-        let gpu_results = pollster::block_on(compute_composition_polynomial_original_trace_gpu(
+        let _ = pollster::block_on(compute_composition_polynomial_original_trace_gpu(
             eval.trace_poly,
             eval.eval_domain,
             eval.denom_inv,
             eval.random_coeff_powers,
-            lookup_elements,
+            &self.lookup_elements,
             eval.trace_domain_log_size,
             eval.eval_domain.log_size(),
             eval.claimed_sum,
+            eval.col,
         ));
-
-        let _gpu_vec: Vec<SecureField> = gpu_results
-            .output
-            .poly
-            .iter()
-            .flat_map(|inner| {
-                inner.iter().map(|&gpu_qm| {
-                    QM31(
-                        CM31::from_m31(gpu_qm.a.a.data.into(), gpu_qm.a.b.data.into()),
-                        CM31::from_m31(gpu_qm.b.a.data.into(), gpu_qm.b.b.data.into()),
-                    )
-                })
-            })
-            .collect();
-
-        // want to write this into eval.col
-        eval.col
-            .data
-            .iter_mut()
-            .zip(gpu_results.output.poly.iter())
-            .for_each(|(res, gpu_qm)| {
-                *res = QM31(
-                    CM31::from_m31(gpu_qm.a.a.data.into(), gpu_qm.a.b.data.into()),
-                    CM31::from_m31(gpu_qm.b.a.data.into(), gpu_qm.b.b.data.into()),
-                )
-            });
     }
 }
 
@@ -606,7 +577,7 @@ mod tests {
 
         // Get from environment variable:
         let log_n_instances = env::var("LOG_N_INSTANCES")
-            .unwrap_or_else(|_| "10".to_string())
+            .unwrap_or_else(|_| "12".to_string())
             .parse::<u32>()
             .unwrap();
         let config = PcsConfig {

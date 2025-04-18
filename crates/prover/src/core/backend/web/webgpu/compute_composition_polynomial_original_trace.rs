@@ -5,11 +5,15 @@ use wgpu::util::DeviceExt;
 
 use super::qm31::GpuQM31;
 use crate::core::backend::cpu::circle::circle_twiddles_from_line_twiddles;
+use crate::core::backend::simd::column::VeryPackedSecureColumnByCoords;
+// use crate::core::backend::simd::m31::PackedM31;
+// use crate::core::backend::simd::very_packed_m31::{VeryPackedM31, N_VERY_PACKED_ELEMS};
 use crate::core::backend::web::webgpu::qm31::GpuM31;
 use crate::core::backend::web::WebBackend;
 use crate::core::backend::{Column, CpuBackend};
 use crate::core::fields::m31::M31;
 use crate::core::fields::qm31::QM31;
+// use crate::core::fields::secure_column::SECURE_EXTENSION_DEGREE;
 use crate::core::pcs::TreeVec;
 use crate::core::poly::circle::{CircleDomain, CirclePoly, PolyOps};
 use crate::core::poly::utils::domain_line_twiddles_from_tree;
@@ -85,8 +89,8 @@ pub struct GpuLookupElements {
     pub alpha_powers: [GpuQM31; N_STATE as usize],
 }
 
-impl From<PoseidonElements> for GpuLookupElements {
-    fn from(value: PoseidonElements) -> Self {
+impl From<&PoseidonElements> for GpuLookupElements {
+    fn from(value: &PoseidonElements) -> Self {
         GpuLookupElements {
             z: value.0.z.into(),
             alpha: value.0.alpha.into(),
@@ -173,7 +177,7 @@ async fn init<'a>(
     eval_domain: CircleDomain,
     denom_inv: Vec<M31>,
     random_coeff_powers: Vec<QM31>,
-    lookup_elements: PoseidonElements,
+    lookup_elements: &PoseidonElements,
     trace_domain_log_size: u32,
     eval_domain_log_size: u32,
     total_sum: QM31,
@@ -426,7 +430,7 @@ fn create_composition_polynomial_gpu_input<'a>(
     eval_domain: CircleDomain,
     denom_inv: Vec<M31>,
     random_coeff_powers: Vec<QM31>,
-    lookup_elements: PoseidonElements,
+    lookup_elements: &PoseidonElements,
     trace_domain_log_size: u32,
     eval_domain_log_size: u32,
     total_sum: QM31,
@@ -503,11 +507,12 @@ pub async fn compute_composition_polynomial_original_trace_gpu<'a>(
     eval_domain: CircleDomain,
     denom_inv: Vec<M31>,
     random_coeff_powers: Vec<QM31>,
-    lookup_elements: PoseidonElements,
+    lookup_elements: &PoseidonElements,
     trace_domain_log_size: u32,
     eval_domain_log_size: u32,
     total_sum: QM31,
-) -> ComputationResults {
+    col: &mut VeryPackedSecureColumnByCoords,
+) {
     let instance = init(
         original_trace,
         eval_domain,
@@ -537,5 +542,13 @@ pub async fn compute_composition_polynomial_original_trace_gpu<'a>(
     };
 
     let output = result.await;
-    ComputationResults { output }
+    for (chunk_idx, chunk) in output.poly.iter().enumerate() {
+        for (inner_idx, &qm) in chunk.iter().enumerate() {
+            let idx = chunk_idx * N_LANES as usize + inner_idx;
+            col.columns[0].set(idx, qm.a.a.data.into());
+            col.columns[1].set(idx, qm.a.b.data.into());
+            col.columns[2].set(idx, qm.b.a.data.into());
+            col.columns[3].set(idx, qm.b.b.data.into());
+        }
+    }
 }
