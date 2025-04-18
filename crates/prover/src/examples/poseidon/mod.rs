@@ -8,15 +8,14 @@ use tracing::{info, span, Level};
 
 use crate::constraint_framework::logup::LogupTraceGenerator;
 use crate::constraint_framework::{
-    relation, EvalAtRow, FrameworkComponent, FrameworkEval, Relation, RelationEntry,
-    TraceLocationAllocator,
+    relation, EvalAtRow, FrameworkComponent, FrameworkEval, FrameworkEvalWeb, Relation,
+    RelationEntry, TraceLocationAllocator, WebDomainEvaluator,
 };
 use crate::core::backend::simd::column::BaseColumn;
 use crate::core::backend::simd::m31::{PackedBaseField, LOG_N_LANES};
 use crate::core::backend::simd::qm31::PackedSecureField;
 use crate::core::backend::simd::SimdBackend;
 use crate::core::backend::web::WebBackend;
-// use crate::core::backend::web::WebBackend;
 use crate::core::backend::{Col, Column};
 use crate::core::channel::Blake2sChannel;
 use crate::core::fields::m31::BaseField;
@@ -64,6 +63,12 @@ impl FrameworkEval for PoseidonEval {
     fn evaluate<E: EvalAtRow>(&self, mut eval: E) -> E {
         eval_poseidon_constraints(&mut eval, &self.lookup_elements);
         eval
+    }
+}
+impl FrameworkEvalWeb for PoseidonEval {
+    fn evaluate_web<'b>(&self, _eval: WebDomainEvaluator<'b>) {
+        println!("evaluate_web");
+        eval_poseidon_constraints_web(&self.lookup_elements);
     }
 }
 
@@ -196,6 +201,12 @@ pub fn eval_poseidon_constraints<E: EvalAtRow>(eval: &mut E, lookup_elements: &P
     }
 
     eval.finalize_logup_in_pairs();
+}
+
+#[allow(unused_variables)]
+pub fn eval_poseidon_constraints_web(lookup_elements: &PoseidonElements) {
+    println!("eval_poseidon_constraints_web");
+    // TODO: call WebGPU code here.
 }
 
 pub struct LookupData {

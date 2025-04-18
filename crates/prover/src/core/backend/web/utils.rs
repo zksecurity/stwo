@@ -136,6 +136,20 @@ impl AsRef<CirclePoly<SimdBackend>> for CirclePoly<WebBackend> {
     }
 }
 
+impl<'a> AsRef<CirclePoly<WebBackend>> for &'a CirclePoly<WebBackend> {
+    fn as_ref(&self) -> &CirclePoly<WebBackend> {
+        self
+    }
+}
+
+impl<'a> AsRef<CircleEvaluation<WebBackend, BaseField, BitReversedOrder>>
+    for &'a CircleEvaluation<WebBackend, BaseField, BitReversedOrder>
+{
+    fn as_ref(&self) -> &CircleEvaluation<WebBackend, BaseField, BitReversedOrder> {
+        self
+    }
+}
+
 impl Into<CirclePoly<WebBackend>> for CirclePoly<SimdBackend> {
     fn into(self) -> CirclePoly<WebBackend> {
         assert_eq!(std::mem::size_of::<SimdBackend>(), 0);

@@ -11,6 +11,7 @@ use tracing::{span, Level};
 
 use super::cpu_domain::CpuDomainEvaluator;
 use super::preprocessed_columns::PreProcessedColumnId;
+use super::web_domain::WebDomainEvaluator;
 use super::{
     EvalAtRow, InfoEvaluator, PointEvaluator, SimdDomainEvaluator, PREPROCESSED_TRACE_IDX,
 };
@@ -420,7 +421,13 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
     }
 }
 
-impl<E: FrameworkEval + Sync> ComponentProver<WebBackend> for FrameworkComponent<E> {
+pub trait FrameworkEvalWeb {
+    fn evaluate_web<'b>(&self, eval: WebDomainEvaluator<'b>);
+}
+
+impl<'a, E: FrameworkEval + FrameworkEvalWeb + Sync> ComponentProver<WebBackend>
+    for FrameworkComponent<E>
+{
     fn evaluate_constraint_quotients_on_domain(
         &self,
         trace: &Trace<'_, WebBackend>,
@@ -454,17 +461,6 @@ impl<E: FrameworkEval + Sync> ComponentProver<WebBackend> for FrameworkComponent
             .iter()
             .flatten()
             .any(|c| c.domain != eval_domain);
-        let trace: TreeVec<
-            Vec<Cow<'_, CircleEvaluation<WebBackend, BaseField, BitReversedOrder>>>,
-        > = if need_to_extend {
-            let _span = span!(Level::INFO, "Extension").entered();
-            let twiddles = WebBackend::precompute_twiddles(eval_domain.half_coset);
-            component_polys
-                .as_cols_ref()
-                .map_cols(|col| Cow::Owned(col.evaluate_with_twiddles(eval_domain, &twiddles)))
-        } else {
-            component_evals.clone().map_cols(|c| Cow::Borrowed(*c))
-        };
 
         // Denom inverses.
         let log_expand = eval_domain.log_size() - trace_domain.log_size();
@@ -480,34 +476,18 @@ impl<E: FrameworkEval + Sync> ComponentProver<WebBackend> for FrameworkComponent
 
         let _span = span!(Level::INFO, "Constraint point-wise eval").entered();
 
-        if trace_domain.log_size() < LOG_N_LANES + LOG_N_VERY_PACKED_ELEMS + 10 {
-            // Fall back to CPU if the trace is too small.
-            let mut col = accum.col.to_cpu();
+        let component_polys = component_polys.as_cols_ref().map_cols(|c| c.as_ref());
+        let component_evals = component_evals.as_cols_ref().map_cols(|c| c.as_ref());
 
-            for row in 0..(1 << eval_domain.log_size()) {
-                let trace_cols = trace.as_cols_ref().map_cols(|c| c.to_cpu());
-                let trace_cols = trace_cols.as_cols_ref();
-
-                // Evaluate constrains at row.
-                let eval = CpuDomainEvaluator::new(
-                    &trace_cols,
-                    row,
-                    &accum.random_coeff_powers,
-                    trace_domain.log_size(),
-                    eval_domain.log_size(),
-                    self.eval.log_size(),
-                    self.claimed_sum,
-                );
-                let row_res = self.eval.evaluate(eval).row_res;
-
-                // Finalize row.
-                let denom_inv = denom_inv[row >> trace_domain.log_size()];
-                col.set(row, col.at(row) + row_res * denom_inv)
-            }
-            let col = SecureColumnByCoords::<WebBackend>::from_cpu(col);
-            *accum.col = col;
-            return;
-        }
+        // Use WebGPU for heavy computations
+        let eval = WebDomainEvaluator::new(
+            &component_polys,
+            &component_evals,
+            need_to_extend,
+            self.eval.log_size(),
+            self.claimed_sum,
+        );
+        self.eval.evaluate_web(eval);
     }
 }
 
