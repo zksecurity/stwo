@@ -1,6 +1,6 @@
 // Note: depends on qm31.wgsl, fraction.wgsl, utils.wgsl
 // Define constants
-const N_ROWS: u32 = 256;
+const N_ROWS: u32 = 32;
 const N_EXTENDED_ROWS: u32 = N_ROWS * 4;
 const N_STATE: u32 = 16;
 const N_INSTANCES_PER_ROW: u32 = 8;
@@ -24,7 +24,7 @@ const N_EXTENDED_COLUMN_SIZE: u32 = N_LANES * N_EXTENDED_ROWS;
 const N_LINE_TWIDDLES_SIZE: u32 = N_EXTENDED_ROWS * N_LANES;
 const N_LINE_TWIDDLES_FLAT_SIZE: u32 = N_LINE_TWIDDLES_SIZE * 2;
 const N_CIRCLE_TWIDDLES_SIZE: u32 = N_LINE_TWIDDLES_SIZE * 2;
-const N_ORIGINAL_TRACE_COLUMNS: u32 = 1 + N_COLUMNS + N_INTERACTION_COLUMNS;
+const N_ORIGINAL_TRACE_COLUMNS: u32 = N_COLUMNS + N_INTERACTION_COLUMNS;
 
 fn butterfly(v0: ptr<function, M31>, v1: ptr<function, M31>, twid: M31) {
     let tmp = m31_mul(*v1, twid);

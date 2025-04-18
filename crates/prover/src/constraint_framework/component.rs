@@ -478,12 +478,19 @@ impl<'a, E: FrameworkEval + FrameworkEvalWeb + Sync> ComponentProver<WebBackend>
 
         let component_polys = component_polys.as_cols_ref().map_cols(|c| c.as_ref());
         let component_evals = component_evals.as_cols_ref().map_cols(|c| c.as_ref());
+        let col =
+            unsafe { VeryPackedSecureColumnByCoords::transform_under_mut(accum.col.as_mut()) };
 
         // Use WebGPU for heavy computations
         let eval = WebDomainEvaluator::new(
             &component_polys,
             &component_evals,
             need_to_extend,
+            col,
+            accum.random_coeff_powers.clone(),
+            eval_domain,
+            trace_domain.log_size(),
+            denom_inv,
             self.eval.log_size(),
             self.claimed_sum,
         );

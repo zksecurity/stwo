@@ -25,7 +25,7 @@ pub mod poseidon252;
 pub mod quotients;
 pub mod utils;
 // pub mod very_packed_m31;
-pub mod prove_poseidon;
+// pub mod prove_poseidon;
 pub mod webgpu;
 
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]

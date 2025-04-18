@@ -15,7 +15,7 @@ use crate::core::poly::circle::{CircleDomain, CirclePoly, PolyOps};
 use crate::core::poly::utils::domain_line_twiddles_from_tree;
 use crate::examples::poseidon::PoseidonElements;
 
-pub const N_ROWS: u32 = 512;
+pub const N_ROWS: u32 = 32;
 pub const N_STATE: u32 = 16;
 pub const N_LOG_INSTANCES_PER_ROW: u32 = 3;
 pub const N_INSTANCES_PER_ROW: u32 = 1 << N_LOG_INSTANCES_PER_ROW;
@@ -34,7 +34,7 @@ pub const N_PARTIAL_ROUNDS: u32 = 14;
 pub const N_LINE_TWIDDLES_SIZE: u32 = N_EXTENDED_ROWS * N_LANES;
 pub const N_LINE_TWIDDLES_FLAT_SIZE: u32 = N_LINE_TWIDDLES_SIZE * 2;
 pub const N_CIRCLE_TWIDDLES_SIZE: u32 = N_LINE_TWIDDLES_SIZE * 2;
-pub const N_ORIGINAL_TRACE_COLUMNS: u32 = 1 + N_COLUMNS + N_INTERACTION_COLUMNS;
+pub const N_ORIGINAL_TRACE_COLUMNS: u32 = N_COLUMNS + N_INTERACTION_COLUMNS;
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
@@ -65,8 +65,8 @@ pub struct Twiddles {
     pub line_twiddles_offsets: [u32; N_LINE_TWIDDLES_SIZE as usize],
 }
 
-impl From<&&&CirclePoly<WebBackend>> for GpuOriginalColumn {
-    fn from(value: &&&CirclePoly<WebBackend>) -> Self {
+impl From<&&CirclePoly<WebBackend>> for GpuOriginalColumn {
+    fn from(value: &&CirclePoly<WebBackend>) -> Self {
         let mut coeffs = [GpuM31 { data: 0 }; (N_LANES * N_ORIGINAL_ROWS) as usize];
         let coeffs_vec = value.coeffs.to_cpu();
         for (i, &coeff) in coeffs_vec.iter().enumerate() {
@@ -168,8 +168,8 @@ pub struct WgpuInstance {
     pub encoder: wgpu::CommandEncoder,
 }
 
-async fn init(
-    original_trace: TreeVec<Vec<&&CirclePoly<WebBackend>>>,
+async fn init<'a>(
+    original_trace: &TreeVec<Vec<&'a CirclePoly<WebBackend>>>,
     eval_domain: CircleDomain,
     denom_inv: Vec<M31>,
     random_coeff_powers: Vec<QM31>,
@@ -421,8 +421,8 @@ async fn init(
     }
 }
 
-fn create_composition_polynomial_gpu_input(
-    original_trace: TreeVec<Vec<&&CirclePoly<WebBackend>>>,
+fn create_composition_polynomial_gpu_input<'a>(
+    original_trace: &TreeVec<Vec<&'a CirclePoly<WebBackend>>>,
     eval_domain: CircleDomain,
     denom_inv: Vec<M31>,
     random_coeff_powers: Vec<QM31>,
@@ -499,7 +499,7 @@ fn create_composition_polynomial_gpu_input(
 }
 
 pub async fn compute_composition_polynomial_original_trace_gpu<'a>(
-    original_trace: TreeVec<Vec<&&CirclePoly<WebBackend>>>,
+    original_trace: &TreeVec<Vec<&'a CirclePoly<WebBackend>>>,
     eval_domain: CircleDomain,
     denom_inv: Vec<M31>,
     random_coeff_powers: Vec<QM31>,

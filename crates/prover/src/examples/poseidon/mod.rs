@@ -1,5 +1,6 @@
 //! AIR for Poseidon2 hash function from <https://eprint.iacr.org/2023/323.pdf>.
 
+mod lookup_elem;
 use std::ops::{Add, AddAssign, Mul, Sub};
 
 use itertools::Itertools;
@@ -15,11 +16,13 @@ use crate::core::backend::simd::column::BaseColumn;
 use crate::core::backend::simd::m31::{PackedBaseField, LOG_N_LANES};
 use crate::core::backend::simd::qm31::PackedSecureField;
 use crate::core::backend::simd::SimdBackend;
+use crate::core::backend::web::webgpu::compute_composition_polynomial_original_trace::compute_composition_polynomial_original_trace_gpu;
 use crate::core::backend::web::WebBackend;
 use crate::core::backend::{Col, Column};
 use crate::core::channel::Blake2sChannel;
+use crate::core::fields::cm31::CM31;
 use crate::core::fields::m31::BaseField;
-use crate::core::fields::qm31::SecureField;
+use crate::core::fields::qm31::{SecureField, QM31};
 use crate::core::fields::FieldExpOps;
 use crate::core::pcs::{CommitmentSchemeProver, PcsConfig};
 use crate::core::poly::circle::{CanonicCoset, CircleEvaluation, PolyOps};
@@ -66,9 +69,45 @@ impl FrameworkEval for PoseidonEval {
     }
 }
 impl FrameworkEvalWeb for PoseidonEval {
-    fn evaluate_web<'b>(&self, _eval: WebDomainEvaluator<'b>) {
-        println!("evaluate_web");
-        eval_poseidon_constraints_web(&self.lookup_elements);
+    fn evaluate_web<'b>(&self, eval: WebDomainEvaluator<'b>) {
+        let lookup_elements = PoseidonElements::with_lookup(eval.eval_domain.log_size());
+
+        let gpu_results = pollster::block_on(compute_composition_polynomial_original_trace_gpu(
+            eval.trace_poly,
+            eval.eval_domain,
+            eval.denom_inv,
+            eval.random_coeff_powers,
+            lookup_elements,
+            eval.trace_domain_log_size,
+            eval.eval_domain.log_size(),
+            eval.claimed_sum,
+        ));
+
+        let _gpu_vec: Vec<SecureField> = gpu_results
+            .output
+            .poly
+            .iter()
+            .flat_map(|inner| {
+                inner.iter().map(|&gpu_qm| {
+                    QM31(
+                        CM31::from_m31(gpu_qm.a.a.data.into(), gpu_qm.a.b.data.into()),
+                        CM31::from_m31(gpu_qm.b.a.data.into(), gpu_qm.b.b.data.into()),
+                    )
+                })
+            })
+            .collect();
+
+        // want to write this into eval.col
+        eval.col
+            .data
+            .iter_mut()
+            .zip(gpu_results.output.poly.iter())
+            .for_each(|(res, gpu_qm)| {
+                *res = QM31(
+                    CM31::from_m31(gpu_qm.a.a.data.into(), gpu_qm.a.b.data.into()),
+                    CM31::from_m31(gpu_qm.b.a.data.into(), gpu_qm.b.b.data.into()),
+                )
+            });
     }
 }
 
@@ -201,12 +240,6 @@ pub fn eval_poseidon_constraints<E: EvalAtRow>(eval: &mut E, lookup_elements: &P
     }
 
     eval.finalize_logup_in_pairs();
-}
-
-#[allow(unused_variables)]
-pub fn eval_poseidon_constraints_web(lookup_elements: &PoseidonElements) {
-    println!("eval_poseidon_constraints_web");
-    // TODO: call WebGPU code here.
 }
 
 pub struct LookupData {
@@ -605,5 +638,26 @@ mod tests {
         commitment_scheme.commit(proof.commitments[2], &sizes[2], channel);
 
         verify(&[&component], channel, commitment_scheme, proof).unwrap();
+    }
+
+    #[test]
+    fn test_web_poseidon_prove() {
+        // Note: To see time measurement, run test with
+        //   RUST_LOG_SPAN_EVENTS=enter,close RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS="
+        //   -C target-cpu=native -C target-feature=+avx512f -C opt-level=3" cargo test
+        //   test_simd_poseidon_prove -- --nocapture
+
+        // Get from environment variable:
+        let log_n_instances = env::var("LOG_N_INSTANCES")
+            .unwrap_or_else(|_| "12".to_string())
+            .parse::<u32>()
+            .unwrap();
+        let config = PcsConfig {
+            pow_bits: 10,
+            fri_config: FriConfig::new(5, 1, 64),
+        };
+
+        // Prove.
+        prove_poseidon_web(log_n_instances, config);
     }
 }
