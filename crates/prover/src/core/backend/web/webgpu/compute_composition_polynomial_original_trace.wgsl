@@ -254,7 +254,7 @@ fn finalize_logup_in_pairs(vec_index: u32, inner_vec_index: u32) {
     }
 
     var prev_col_cumsum = QM31(CM31(M31(0u), M31(0u)), CM31(M31(0u), M31(0u)));
-    var last_interaction_col_index = (N_INSTANCES_PER_ROW - 1u) * 4u;
+    var last_interaction_col_index = 0u;
 
     // All batches except the last are cumulatively summed in new interaction columns.
     for (var i = 0u; i < fracs_index - 2u; i += 2u) {
@@ -265,15 +265,17 @@ fn finalize_logup_in_pairs(vec_index: u32, inner_vec_index: u32) {
         prev_col_cumsum = cur_cumsum;
         var constraint = qm31_sub(qm31_mul(diff, cur_frac.denominator), cur_frac.numerator);
         add_constraint_qm31(constraint, vec_index, inner_vec_index);
+        last_interaction_col_index += 4u;
     }
 
+    // last batch
     let frac = fraction_add(fracs[fracs_index - 2u], fracs[fracs_index - 1u]);
     
     var cur_cumsum = next_interaction_trace_mask(last_interaction_col_index, vec_index, inner_vec_index);
     var prev_row_cumsum = next_interaction_trace_mask_offset(last_interaction_col_index, vec_index, inner_vec_index, -1);
 
     var diff = qm31_sub(qm31_sub(cur_cumsum, prev_row_cumsum), prev_col_cumsum);
-    var fixed_diff = qm31_sub(diff, input.cumsum_shift);
+    var fixed_diff = qm31_add(diff, input.cumsum_shift);
 
     var constraint = qm31_sub(qm31_mul(fixed_diff, frac.denominator), frac.numerator);
     add_constraint_qm31(constraint, vec_index, inner_vec_index);
