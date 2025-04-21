@@ -11,7 +11,7 @@ use crate::core::backend::simd::column::VeryPackedSecureColumnByCoords;
 use crate::core::backend::web::webgpu::qm31::GpuM31;
 use crate::core::backend::web::WebBackend;
 use crate::core::backend::{Column, CpuBackend};
-use crate::core::fields::m31::M31;
+use crate::core::fields::m31::{BaseField, M31};
 use crate::core::fields::qm31::QM31;
 // use crate::core::fields::secure_column::SECURE_EXTENSION_DEGREE;
 use crate::core::pcs::TreeVec;
@@ -116,7 +116,7 @@ pub struct ComputeCompositionPolynomialInput {
     pub lookup_elements: GpuLookupElements,
     pub trace_domain_log_size: u32,
     pub eval_domain_log_size: u32,
-    pub total_sum: GpuQM31,
+    pub cumsum_shift: GpuQM31,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -180,6 +180,7 @@ async fn init<'a>(
     lookup_elements: &PoseidonElements,
     trace_domain_log_size: u32,
     eval_domain_log_size: u32,
+    log_size: u32,
     total_sum: QM31,
 ) -> WgpuInstance {
     let instance = wgpu::Instance::default();
@@ -214,6 +215,7 @@ async fn init<'a>(
         lookup_elements,
         trace_domain_log_size,
         eval_domain_log_size,
+        log_size,
         total_sum,
     );
 
@@ -433,6 +435,7 @@ fn create_composition_polynomial_gpu_input<'a>(
     lookup_elements: &PoseidonElements,
     trace_domain_log_size: u32,
     eval_domain_log_size: u32,
+    log_size: u32,
     total_sum: QM31,
 ) -> ComputeCompositionPolynomialInput {
     let original_trace_gpu: [GpuOriginalColumn; N_ORIGINAL_TRACE_COLUMNS as usize] = original_trace
@@ -498,7 +501,7 @@ fn create_composition_polynomial_gpu_input<'a>(
         lookup_elements: lookup_elements_gpu,
         trace_domain_log_size,
         eval_domain_log_size,
-        total_sum: total_sum.into(),
+        cumsum_shift: (total_sum / BaseField::from_u32_unchecked(1 << log_size)).into(),
     }
 }
 
@@ -510,6 +513,7 @@ pub async fn compute_composition_polynomial_original_trace_gpu<'a>(
     lookup_elements: &PoseidonElements,
     trace_domain_log_size: u32,
     eval_domain_log_size: u32,
+    log_size: u32,
     total_sum: QM31,
     col: &mut VeryPackedSecureColumnByCoords,
 ) {
@@ -521,6 +525,7 @@ pub async fn compute_composition_polynomial_original_trace_gpu<'a>(
         lookup_elements,
         trace_domain_log_size,
         eval_domain_log_size,
+        log_size,
         total_sum,
     )
     .await;

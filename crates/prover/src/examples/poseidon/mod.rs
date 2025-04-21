@@ -76,6 +76,7 @@ impl FrameworkEvalWeb for PoseidonEval {
             &self.lookup_elements,
             eval.trace_domain_log_size,
             eval.eval_domain.log_size(),
+            eval.log_size,
             eval.claimed_sum,
             eval.col,
         ));
@@ -611,7 +612,7 @@ mod tests {
         verify(&[&component], channel, commitment_scheme, proof).unwrap();
     }
 
-    #[test]
+    #[test_log::test]
     fn test_web_poseidon_prove() {
         // Note: To see time measurement, run test with
         //   RUST_LOG_SPAN_EVENTS=enter,close RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS="

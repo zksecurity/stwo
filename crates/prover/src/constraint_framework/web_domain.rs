@@ -25,6 +25,7 @@ pub struct WebDomainEvaluator<'a> {
     pub trace_domain_log_size: u32,
     pub denom_inv: Vec<M31>,
     pub claimed_sum: SecureField,
+    pub log_size: u32,
     pub logup: LogupAtRow<Self>,
 }
 impl<'a> WebDomainEvaluator<'a> {
@@ -50,6 +51,7 @@ impl<'a> WebDomainEvaluator<'a> {
             trace_domain_log_size,
             denom_inv,
             claimed_sum,
+            log_size,
             logup: LogupAtRow::new(INTERACTION_TRACE_IDX, claimed_sum, log_size),
         }
     }

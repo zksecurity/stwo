@@ -4,6 +4,7 @@ const N_ROWS: u32 = 32;
 const N_EXTENDED_ROWS: u32 = N_ROWS * 4;
 const N_STATE: u32 = 16;
 const N_INSTANCES_PER_ROW: u32 = 8;
+const N_TOTAL_FRACS: u32 = N_INSTANCES_PER_ROW * 2;
 const N_COLUMNS: u32 = N_INSTANCES_PER_ROW * N_COLUMNS_PER_REP;
 const N_INTERACTION_COLUMNS: u32 = N_INSTANCES_PER_ROW * 4;
 const N_HALF_FULL_ROUNDS: u32 = 4;
@@ -84,7 +85,7 @@ struct ComputeCompositionPolynomialInput {
     lookup_elements: LookupElements,
     trace_domain_log_size: u32,
     eval_domain_log_size: u32,
-    total_sum: QM31,
+    cumsum_shift: QM31,
 }
 
 struct ComputeCompositionPolynomialOutput {
@@ -111,11 +112,20 @@ var<storage, read_write> extend_trace_output: ExtendTraceOutput;
 
 var<private> constraint_index: u32 = 0u;
 
-var<private> prev_col_cumsum: QM31 = QM31(CM31(M31(0u), M31(0u)), CM31(M31(0u), M31(0u)));
+var<private> fracs_index: u32 = 0u;
 
-var<private> cur_frac: Fraction = ZERO_FRACTION;
+var<private> fracs: array<Fraction, N_TOTAL_FRACS> = array<Fraction, N_TOTAL_FRACS>(
+    ZERO_FRACTION, ZERO_FRACTION, ZERO_FRACTION, ZERO_FRACTION,
+    ZERO_FRACTION, ZERO_FRACTION, ZERO_FRACTION, ZERO_FRACTION,
+    ZERO_FRACTION, ZERO_FRACTION, ZERO_FRACTION, ZERO_FRACTION,
+    ZERO_FRACTION, ZERO_FRACTION, ZERO_FRACTION, ZERO_FRACTION
+);
 
-var<private> is_first: M31 = M31(0u);
+//var<private> prev_col_cumsum: QM31 = QM31(CM31(M31(0u), M31(0u)), CM31(M31(0u), M31(0u)));
+
+// var<private> cur_frac: Fraction = ZERO_FRACTION;
+
+// var<private> is_first: M31 = M31(0u);
 
 var<private> is_finalized: bool = false;
 
@@ -193,17 +203,10 @@ fn compute_composition_polynomial(
                 col_index += 1u;
             }
         }
-
-        // Store the final relation constraints
-        let relation_constraint_1 = qm31_mul(ONE, QM31(CM31(state[0], M31(0u)), CM31(M31(0u), M31(0u))));
-        let relation_constraint_2 = qm31_mul(qm31_neg(ONE), QM31(CM31(state[0], M31(0u)), CM31(M31(0u), M31(0u))));
-
-        add_to_relation(array<RelationEntry, 2>(
-            RelationEntry(ONE, initial_state),
-            RelationEntry(qm31_neg(ONE), state)
-        ), vec_index, inner_vec_index, rep_i);
+        add_to_relation_single(RelationEntry(ONE, initial_state));
+        add_to_relation_single(RelationEntry(qm31_neg(ONE), state));
     }
-    finalize_logup(vec_index, inner_vec_index);
+    finalize_logup_in_pairs(vec_index, inner_vec_index);
 
     let row = vec_index * N_STATE + inner_vec_index;
     let denom_inv = input.denom_inv[row >> input.trace_domain_log_size];
@@ -224,54 +227,55 @@ fn add_constraint_qm31(constraint: QM31, vec_index: u32, inner_vec_index: u32) {
     constraint_index += 1u;
 }
 
-fn add_to_relation(entries: array<RelationEntry, 2>, vec_index: u32, inner_vec_index: u32, rep_i: u32) {
-    var frac_sum = Fraction(QM31(CM31(M31(0u), M31(0u)), CM31(M31(0u), M31(0u))), QM31(CM31(M31(1u), M31(0u)), CM31(M31(0u), M31(0u))));
-    for (var i = 0u; i < 2; i++) {
-        var combined_value = QM31(CM31(M31(0u), M31(0u)), CM31(M31(0u), M31(0u)));
-        for (var j = 0u; j < N_STATE; j++) {
-            let value = QM31(CM31(entries[i].values[j], M31(0u)), CM31(M31(0u), M31(0u)));
-            combined_value = qm31_add(combined_value, qm31_mul(input.lookup_elements.alpha_powers[j], value));
-        }
-
-        combined_value = qm31_sub(combined_value, input.lookup_elements.z);
-
-        frac_sum = fraction_add(frac_sum, Fraction(entries[i].multiplicity, combined_value));
+fn add_to_relation_single(entry: RelationEntry) {
+    var combined_value = QM31(CM31(M31(0u), M31(0u)), CM31(M31(0u), M31(0u)));
+    for (var j = 0u; j < N_STATE; j++) {
+        let value = QM31(CM31(entry.values[j], M31(0u)), CM31(M31(0u), M31(0u)));
+        combined_value = qm31_add(combined_value, qm31_mul(input.lookup_elements.alpha_powers[j], value));
     }
-    write_logup_frac(frac_sum, vec_index, inner_vec_index, rep_i);
+
+    combined_value = qm31_sub(combined_value, input.lookup_elements.z);
+    var frac = Fraction(entry.multiplicity, combined_value);
+    write_logup_frac_single(frac);
 }
 
-fn write_logup_frac(frac: Fraction, vec_index: u32, inner_vec_index: u32, rep_i: u32) {
-    if (!fraction_eq(cur_frac, ZERO_FRACTION)) {
-        var interaction_col_index = (rep_i - 1u) * 4; // TODO: Improve this.
-        var cur_cumsum = next_interaction_trace_mask(interaction_col_index, vec_index, inner_vec_index);
+fn write_logup_frac_single(frac: Fraction) {
+    if (fracs_index == 0u) {
+        is_finalized = false;
+    }
+    fracs[fracs_index] = frac;
+    fracs_index += 1u;
+}
+
+fn finalize_logup_in_pairs(vec_index: u32, inner_vec_index: u32) {
+    // let batches = (0..self.logup.fracs.len()).map(|n| n / 2).collect();
+    if (is_finalized) {
+        return;
+    }
+
+    var prev_col_cumsum = QM31(CM31(M31(0u), M31(0u)), CM31(M31(0u), M31(0u)));
+    var last_interaction_col_index = (N_INSTANCES_PER_ROW - 1u) * 4u;
+
+    // All batches except the last are cumulatively summed in new interaction columns.
+    for (var i = 0u; i < fracs_index - 2u; i += 2u) {
+        var cur_frac = fraction_add(fracs[i], fracs[i + 1u]);
+
+        var cur_cumsum = next_interaction_trace_mask(last_interaction_col_index, vec_index, inner_vec_index);
         var diff = qm31_sub(cur_cumsum, prev_col_cumsum);
         prev_col_cumsum = cur_cumsum;
         var constraint = qm31_sub(qm31_mul(diff, cur_frac.denominator), cur_frac.numerator);
         add_constraint_qm31(constraint, vec_index, inner_vec_index);
-    } else {
-        is_first = extend_trace_output.extended_trace[N_PREPROCESSED_TRACE_OFFSET].data[flatten_idx(vec_index, inner_vec_index)];
-        is_finalized = false;
     }
-    cur_frac = frac;
-}
 
-fn finalize_logup(vec_index: u32, inner_vec_index: u32) {
-    if (is_finalized) {
-        return;
-    }
-    // TODO: add support for when claimed_sum is not None.
-    var last_interaction_col_index = (N_INSTANCES_PER_ROW - 1u) * 4u;
-
+    let frac = fraction_add(fracs[fracs_index - 2u], fracs[fracs_index - 1u]);
+    
     var cur_cumsum = next_interaction_trace_mask(last_interaction_col_index, vec_index, inner_vec_index);
-
     var prev_row_cumsum = next_interaction_trace_mask_offset(last_interaction_col_index, vec_index, inner_vec_index, -1);
 
-    var total_sum_mod = qm31_mul(QM31(CM31(is_first, M31(0u)), CM31(M31(0u), M31(0u))), input.total_sum);
+    var diff = qm31_sub(qm31_sub(cur_cumsum, prev_row_cumsum), prev_col_cumsum);
+    var fixed_diff = qm31_sub(diff, input.cumsum_shift);
 
-    var fixed_prev_row_cumsum = qm31_sub(prev_row_cumsum, total_sum_mod);
-
-    var diff = qm31_sub(qm31_sub(cur_cumsum, fixed_prev_row_cumsum), prev_col_cumsum);
-    var constraint = qm31_sub(qm31_mul(diff, cur_frac.denominator), cur_frac.numerator);
+    var constraint = qm31_sub(qm31_mul(fixed_diff, frac.denominator), frac.numerator);
     add_constraint_qm31(constraint, vec_index, inner_vec_index);
     is_finalized = true;
 }
