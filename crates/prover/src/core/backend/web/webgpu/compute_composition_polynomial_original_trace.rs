@@ -20,13 +20,14 @@ use crate::core::poly::utils::domain_line_twiddles_from_tree;
 use crate::examples::poseidon::PoseidonElements;
 
 pub const N_ROWS: u32 = 32;
+pub const N_CONSTRAINTS: u32 = 1144;
+
 pub const N_STATE: u32 = 16;
 pub const N_LOG_INSTANCES_PER_ROW: u32 = 3;
 pub const N_INSTANCES_PER_ROW: u32 = 1 << N_LOG_INSTANCES_PER_ROW;
 pub const N_LANES: u32 = 16;
 pub const N_EXTENDED_ROWS: u32 = N_ROWS * 4;
 pub const N_ORIGINAL_ROWS: u32 = N_ROWS;
-pub const N_CONSTRAINTS: u32 = 1144;
 pub const N_COLUMNS: u32 = 1264;
 pub const N_INTERACTION_COLUMNS: u32 = N_INSTANCES_PER_ROW * 4;
 pub const N_WORKGROUPS: u32 = N_EXTENDED_ROWS * N_LANES / THREADS_PER_WORKGROUP;
@@ -243,6 +244,10 @@ async fn init<'a>(
     });
 
     // Load shader
+    let constants_shader = include_str!("constants.wgsl")
+        .replace("${N_ROWS}", &N_ROWS.to_string())
+        .replace("${N_CONSTRAINTS]", &N_CONSTRAINTS.to_string());
+
     let qm31_shader = include_str!("qm31.wgsl");
     let fraction_shader = include_str!("fraction.wgsl");
     let utils_shader = include_str!("utils.wgsl");
@@ -254,8 +259,9 @@ async fn init<'a>(
         "{}\n
         {}\n
         {}\n
+        {}\n
         {}",
-        qm31_shader, fraction_shader, utils_shader, extend_trace_shader
+        constants_shader, qm31_shader, fraction_shader, utils_shader, extend_trace_shader
     );
     let extend_trace_shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Extend Trace Shader"),
@@ -267,8 +273,9 @@ async fn init<'a>(
         "{}\n
         {}\n
         {}\n
+        {}\n
         {}",
-        qm31_shader, fraction_shader, utils_shader, composition_shader
+        constants_shader, qm31_shader, fraction_shader, utils_shader, composition_shader
     );
 
     let composition_polynomial_shader_module =

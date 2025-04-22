@@ -1,6 +1,4 @@
-use std::borrow::Cow;
-
-use super::gpu_common::{ByteSerialize, GpuComputeInstance, GpuOperation};
+use super::gpu_common::ByteSerialize;
 use crate::core::fields::cm31::CM31;
 use crate::core::fields::m31::M31;
 use crate::core::fields::qm31::QM31;
@@ -93,11 +91,25 @@ pub enum QM31Operation {
     Inverse,
 }
 
-impl GpuOperation for QM31Operation {
-    fn shader_source(&self) -> Cow<'static, str> {
-        let base_source = include_str!("qm31.wgsl");
+#[cfg(test)]
+mod tests {
+    use std::borrow::Cow;
 
-        let inputs = r#"
+    use num_traits::Zero;
+
+    use super::*;
+    use crate::core::backend::web::webgpu::gpu_common::{GpuComputeInstance, GpuOperation};
+    use crate::core::fields::cm31::CM31;
+    use crate::core::fields::m31::{M31, P};
+    use crate::core::fields::qm31::QM31;
+    use crate::core::fields::FieldExpOps;
+    use crate::{cm31, qm31};
+
+    impl GpuOperation for QM31Operation {
+        fn shader_source(&self) -> Cow<'static, str> {
+            let base_source = include_str!("qm31.wgsl");
+
+            let inputs = r#"
             struct ComputeInput {
                 first: QM31,
                 second: QM31,
@@ -106,7 +118,7 @@ impl GpuOperation for QM31Operation {
             @group(0) @binding(0) var<storage, read> input: ComputeInput;
         "#;
 
-        let output = r#"
+            let output = r#"
             struct ComputeOutput {
                 result: QM31,
             }
@@ -114,80 +126,73 @@ impl GpuOperation for QM31Operation {
             @group(0) @binding(1) var<storage, read_write> output: ComputeOutput;
         "#;
 
-        let operation = match self {
-            QM31Operation::Add => {
-                r#"
+            let operation = match self {
+                QM31Operation::Add => {
+                    r#"
                 @compute @workgroup_size(1)
                 fn main() {
                     output.result = qm31_add(input.first, input.second);
                 }
             "#
-            }
-            QM31Operation::Multiply => {
-                r#"
+                }
+                QM31Operation::Multiply => {
+                    r#"
                 @compute @workgroup_size(1)
                 fn main() {
                     output.result = qm31_mul(input.first, input.second);
                 }
             "#
-            }
-            QM31Operation::Subtract => {
-                r#"
+                }
+                QM31Operation::Subtract => {
+                    r#"
                 @compute @workgroup_size(1)
                 fn main() {
                     output.result = qm31_sub(input.first, input.second);
                 }
             "#
-            }
-            QM31Operation::Negate => {
-                r#"
+                }
+                QM31Operation::Negate => {
+                    r#"
                 @compute @workgroup_size(1)
                 fn main() {
                     output.result = qm31_neg(input.first);
                 }
             "#
-            }
-            QM31Operation::Inverse => {
-                r#"
+                }
+                QM31Operation::Inverse => {
+                    r#"
                 @compute @workgroup_size(1)
                 fn main() {
                     output.result = qm31_inverse(input.first);
                 }
             "#
-            }
+                }
+            };
+
+            format!("{base_source}\n{inputs}\n{output}\n{operation}").into()
+        }
+    }
+
+    pub async fn compute_field_operation(
+        operation: QM31Operation,
+        first: QM31,
+        second: QM31,
+    ) -> QM31 {
+        let input = ComputeInput {
+            first: first.into(),
+            second: second.into(),
         };
 
-        format!("{base_source}\n{inputs}\n{output}\n{operation}").into()
+        let instance = GpuComputeInstance::new(&input, std::mem::size_of::<ComputeOutput>()).await;
+        let (pipeline, bind_group) =
+            instance.create_pipeline(&operation.shader_source(), operation.entry_point());
+
+        let output = instance
+            .run_computation::<ComputeOutput>(&pipeline, &bind_group, (1, 1, 1))
+            .await;
+
+        output.result.into()
     }
-}
-
-pub async fn compute_field_operation(operation: QM31Operation, first: QM31, second: QM31) -> QM31 {
-    let input = ComputeInput {
-        first: first.into(),
-        second: second.into(),
-    };
-
-    let instance = GpuComputeInstance::new(&input, std::mem::size_of::<ComputeOutput>()).await;
-    let (pipeline, bind_group) =
-        instance.create_pipeline(&operation.shader_source(), operation.entry_point());
-
-    let output = instance
-        .run_computation::<ComputeOutput>(&pipeline, &bind_group, (1, 1, 1))
-        .await;
-
-    output.result.into()
-}
-
-#[cfg(test)]
-mod tests {
-    use num_traits::Zero;
-
-    use super::*;
-    use crate::core::fields::cm31::CM31;
-    use crate::core::fields::m31::{M31, P};
-    use crate::core::fields::qm31::QM31;
-    use crate::core::fields::FieldExpOps;
-    use crate::{cm31, qm31};
 
     #[test]
     fn test_gpu_field_values() {

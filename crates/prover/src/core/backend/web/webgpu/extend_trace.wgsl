@@ -1,30 +1,4 @@
-// Note: depends on qm31.wgsl, fraction.wgsl, utils.wgsl
-// Define constants
-const N_ROWS: u32 = 32;
-const N_EXTENDED_ROWS: u32 = N_ROWS * 4;
-const N_STATE: u32 = 16;
-const N_INSTANCES_PER_ROW: u32 = 8;
-const N_COLUMNS: u32 = N_INSTANCES_PER_ROW * N_COLUMNS_PER_REP;
-const N_INTERACTION_COLUMNS: u32 = N_INSTANCES_PER_ROW * 4;
-const N_HALF_FULL_ROUNDS: u32 = 4;
-const FULL_ROUNDS: u32 = 2u * N_HALF_FULL_ROUNDS;
-const N_PARTIAL_ROUNDS: u32 = 14;
-const N_LANES: u32 = 16;
-const N_COLUMNS_PER_REP: u32 = N_STATE * (1 + FULL_ROUNDS) + N_PARTIAL_ROUNDS;
-const LOG_N_LANES: u32 = 4;
-const N_WORKGROUPS: u32 = N_EXTENDED_ROWS * N_LANES / THREADS_PER_WORKGROUP;
-const THREADS_PER_WORKGROUP: u32 = 256;
-const N_CONSTRAINTS: u32 = 1144;
-const R: CM31 = CM31(M31(2u), M31(1u));
-const ONE = QM31(CM31(M31(1u), M31(0u)), CM31(M31(0u), M31(0u)));
-const DUMMY: u32 = 1004;
-const N_ORIGINAL_COLUMN_SIZE: u32 = N_LANES * N_ROWS;
-const N_EXTENDED_COLUMN_SIZE: u32 = N_LANES * N_EXTENDED_ROWS;
-
-const N_LINE_TWIDDLES_SIZE: u32 = N_EXTENDED_ROWS * N_LANES;
-const N_LINE_TWIDDLES_FLAT_SIZE: u32 = N_LINE_TWIDDLES_SIZE * 2;
-const N_CIRCLE_TWIDDLES_SIZE: u32 = N_LINE_TWIDDLES_SIZE * 2;
-const N_ORIGINAL_TRACE_COLUMNS: u32 = N_COLUMNS + N_INTERACTION_COLUMNS;
+// Note: depends on qm31.wgsl, fraction.wgsl, utils.wgsl constants.wgsl
 
 fn butterfly(v0: ptr<function, M31>, v1: ptr<function, M31>, twid: M31) {
     let tmp = m31_mul(*v1, twid);
