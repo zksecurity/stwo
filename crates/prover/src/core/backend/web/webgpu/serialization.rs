@@ -1,7 +1,7 @@
 use super::constants::*;
 use super::qm31::GpuM31;
 use super::{
-    ComputeCompositionPolynomialInput, ComputeCompositionPolynomialOutput, GpuExtended1DColumn,
+    ComputeCompositionPolynomialInput, ComputeCompositionPolynomialOutput, GpuExtendedColumn,
     GpuLookupElements, GpuOriginalColumn,
 };
 use crate::core::backend::web::WebBackend;
@@ -25,7 +25,7 @@ pub trait ByteSerialize: Sized {
     }
 }
 
-impl ByteSerialize for GpuExtended1DColumn {}
+impl ByteSerialize for GpuExtendedColumn {}
 impl ByteSerialize for GpuOriginalColumn {}
 impl ByteSerialize for ComputeCompositionPolynomialOutput {}
 impl ByteSerialize for ComputeCompositionPolynomialInput {}

@@ -18,10 +18,6 @@ const INTERNAL_ROUND_CONSTS: array<u32, N_PARTIAL_ROUNDS> = array<u32, N_PARTIAL
     1234, 1234, 1234, 1234, 1234, 1234, 1234, 1234, 1234, 1234, 1234, 1234, 1234, 1234
 );
 
-struct BaseColumn {
-    data: array<array<M31, N_LANES>, N_EXTENDED_ROWS>,
-}
-
 struct OriginalColumn {
     data: array<M31, N_ORIGINAL_COLUMN_SIZE>,
 }

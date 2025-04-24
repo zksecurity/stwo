@@ -9,7 +9,7 @@ pub struct GpuOriginalColumn {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
-pub struct GpuExtended1DColumn {
+pub struct GpuExtendedColumn {
     pub data: [GpuM31; (N_LANES * N_EXTENDED_ROWS) as usize],
 }
 
@@ -58,5 +58,5 @@ pub struct ComputationResults {
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct ExtendTraceOutput {
-    pub extended_trace: [GpuExtended1DColumn; N_ORIGINAL_TRACE_COLUMNS as usize],
+    pub extended_trace: [GpuExtendedColumn; N_ORIGINAL_TRACE_COLUMNS as usize],
 }

@@ -16,7 +16,9 @@ use crate::core::backend::simd::column::BaseColumn;
 use crate::core::backend::simd::m31::{PackedBaseField, LOG_N_LANES};
 use crate::core::backend::simd::qm31::PackedSecureField;
 use crate::core::backend::simd::SimdBackend;
-use crate::core::backend::web::webgpu::eval_composition_poly::compute_composition_polynomial_original_trace_gpu;
+use crate::core::backend::web::webgpu::eval_composition_poly::{
+    compute_composition_polynomial_original_trace_gpu, EvalCompositionPolynomialArgs,
+};
 use crate::core::backend::web::WebBackend;
 use crate::core::backend::{Col, Column};
 use crate::core::channel::Blake2sChannel;
@@ -49,20 +51,6 @@ pub type PoseidonComponent = FrameworkComponent<PoseidonEval>;
 
 relation!(PoseidonElements, N_STATE);
 
-pub trait HasDomainTypeId {
-    fn type_id(&self) -> usize;
-    fn as_ptr(&self) -> *const ();
-}
-
-impl<T> HasDomainTypeId for T {
-    fn type_id(&self) -> usize {
-        type_name::<T>().as_ptr() as usize
-    }
-    fn as_ptr(&self) -> *const () {
-        self as *const T as *const ()
-    }
-}
-
 #[derive(Clone)]
 pub struct PoseidonEval {
     pub log_n_rows: u32,
@@ -86,22 +74,44 @@ impl FrameworkEval for PoseidonEval {
             let raw = &mut eval as *mut E as *mut ();
             let web: &mut WebDomainEvaluator<'_> =
                 unsafe { &mut *(raw as *mut WebDomainEvaluator<'_>) };
+            let args = EvalCompositionPolynomialArgs::new(web, &self.lookup_elements);
             let _ = pollster::block_on(compute_composition_polynomial_original_trace_gpu(
-                web.trace_poly,
-                web.eval_domain,
-                web.denom_inv.clone(),
-                web.random_coeff_powers.clone(),
-                &self.lookup_elements,
-                web.trace_domain_log_size,
-                web.eval_domain.log_size(),
-                web.log_size,
-                web.claimed_sum,
-                web.col,
+                args, web.col,
             ));
         } else {
             eval_poseidon_constraints(&mut eval, &self.lookup_elements);
         }
         eval
+    }
+}
+
+pub trait HasDomainTypeId {
+    fn type_id(&self) -> usize;
+    fn as_ptr(&self) -> *const ();
+}
+
+impl<T> HasDomainTypeId for T {
+    fn type_id(&self) -> usize {
+        type_name::<T>().as_ptr() as usize
+    }
+    fn as_ptr(&self) -> *const () {
+        self as *const T as *const ()
+    }
+}
+
+impl<'a> EvalCompositionPolynomialArgs<'a> {
+    pub fn new(eval: &WebDomainEvaluator<'a>, lookup_elements: &'a PoseidonElements) -> Self {
+        Self {
+            original_trace: &eval.trace_poly,
+            eval_domain: eval.eval_domain,
+            denom_inv: eval.denom_inv.clone(),
+            random_coeff_powers: eval.random_coeff_powers.clone(),
+            lookup_elements,
+            trace_domain_log_size: eval.trace_domain_log_size,
+            eval_domain_log_size: eval.eval_domain.log_size(),
+            log_size: eval.log_size,
+            total_sum: eval.claimed_sum,
+        }
     }
 }
 

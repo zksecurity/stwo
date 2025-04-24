@@ -6,10 +6,6 @@ fn butterfly(v0: ptr<function, M31>, v1: ptr<function, M31>, twid: M31) {
     *v0 = m31_add(*v0, tmp);
 }
 
-struct BaseColumn {
-    data: array<array<M31, N_LANES>, N_EXTENDED_ROWS>,
-}
-
 struct OriginalColumn {
     data: array<M31, N_ORIGINAL_COLUMN_SIZE>,
 }

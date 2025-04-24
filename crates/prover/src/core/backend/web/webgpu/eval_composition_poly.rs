@@ -28,17 +28,60 @@ pub struct WgpuInstance {
     pub encoder: wgpu::CommandEncoder,
 }
 
-async fn init<'a>(
-    original_trace: &TreeVec<Vec<&'a CirclePoly<WebBackend>>>,
-    eval_domain: CircleDomain,
-    denom_inv: Vec<M31>,
-    random_coeff_powers: Vec<QM31>,
-    lookup_elements: &PoseidonElements,
-    trace_domain_log_size: u32,
-    eval_domain_log_size: u32,
-    log_size: u32,
-    total_sum: QM31,
-) -> WgpuInstance {
+pub struct EvalCompositionPolynomialArgs<'a> {
+    pub original_trace: &'a TreeVec<Vec<&'a CirclePoly<WebBackend>>>,
+    pub eval_domain: CircleDomain,
+    pub denom_inv: Vec<M31>,
+    pub random_coeff_powers: Vec<QM31>,
+    pub lookup_elements: &'a PoseidonElements,
+    pub trace_domain_log_size: u32,
+    pub eval_domain_log_size: u32,
+    pub log_size: u32,
+    pub total_sum: QM31,
+}
+
+pub async fn compute_composition_polynomial_original_trace_gpu<'a>(
+    args: EvalCompositionPolynomialArgs<'a>,
+    col: &mut VeryPackedSecureColumnByCoords,
+) {
+    let instance = init_wgpu_instance(args).await;
+    instance.queue.submit(Some(instance.encoder.finish()));
+    let output_slice = instance.staging_buffer.slice(..);
+    let (sender, receiver) = flume::bounded(1);
+    output_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
+    instance
+        .device
+        .poll(wgpu::Maintain::wait())
+        .panic_on_timeout();
+    let result = async {
+        receiver.recv_async().await.unwrap().unwrap();
+        let data = output_slice.get_mapped_range();
+        let output = ComputeCompositionPolynomialOutput::from_bytes(&data);
+        drop(data);
+        instance.staging_buffer.unmap();
+        output
+    };
+
+    let output = result.await;
+
+    #[cfg(not(feature = "parallel"))]
+    let enum_iter = output.poly.iter().enumerate();
+
+    #[cfg(feature = "parallel")]
+    let enum_iter = output.poly.into_par_iter().enumerate();
+
+    for (chunk_idx, chunk) in enum_iter {
+        for (inner_idx, &qm) in chunk.iter().enumerate() {
+            let idx = chunk_idx * N_LANES as usize + inner_idx;
+            col.columns[0].set(idx, qm.a.a.data.into());
+            col.columns[1].set(idx, qm.a.b.data.into());
+            col.columns[2].set(idx, qm.b.a.data.into());
+            col.columns[3].set(idx, qm.b.b.data.into());
+        }
+    }
+}
+
+async fn init_wgpu_instance<'a>(args: EvalCompositionPolynomialArgs<'a>) -> WgpuInstance {
     let instance = wgpu::Instance::default();
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
@@ -62,41 +105,6 @@ async fn init<'a>(
         )
         .await
         .unwrap();
-
-    let input_data = create_composition_polynomial_gpu_input(
-        original_trace,
-        eval_domain,
-        denom_inv,
-        random_coeff_powers,
-        lookup_elements,
-        trace_domain_log_size,
-        eval_domain_log_size,
-        log_size,
-        total_sum,
-    );
-
-    // Create buffers
-    let input_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Input Buffer"),
-        contents: input_data.as_bytes(),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-    });
-
-    let buffer_size = std::mem::size_of::<ComputeCompositionPolynomialOutput>();
-    let output_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Output Buffer"),
-        size: buffer_size as wgpu::BufferAddress,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    });
-
-    let extend_trace_buffer_size = std::mem::size_of::<ExtendTraceOutput>();
-    let extend_trace_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Extend Trace Buffer"),
-        size: extend_trace_buffer_size as wgpu::BufferAddress,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    });
 
     // Load shader
     let constants_shader = include_str!("constants.wgsl")
@@ -138,6 +146,31 @@ async fn init<'a>(
             label: Some("Compute Composition Polynomial Shader"),
             source: wgpu::ShaderSource::Wgsl(composition_polynomial_combined_shader.into()),
         });
+
+    // Create buffers
+    let input_data = create_composition_polynomial_gpu_input(args);
+
+    let input_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Input Buffer"),
+        contents: input_data.as_bytes(),
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+    });
+
+    let buffer_size = std::mem::size_of::<ComputeCompositionPolynomialOutput>();
+    let output_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Output Buffer"),
+        size: buffer_size as wgpu::BufferAddress,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+
+    let extend_trace_buffer_size = std::mem::size_of::<ExtendTraceOutput>();
+    let extend_trace_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Extend Trace Buffer"),
+        size: extend_trace_buffer_size as wgpu::BufferAddress,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
 
     // Bind group layout
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -290,17 +323,10 @@ async fn init<'a>(
 }
 
 fn create_composition_polynomial_gpu_input<'a>(
-    original_trace: &TreeVec<Vec<&'a CirclePoly<WebBackend>>>,
-    eval_domain: CircleDomain,
-    denom_inv: Vec<M31>,
-    random_coeff_powers: Vec<QM31>,
-    lookup_elements: &PoseidonElements,
-    trace_domain_log_size: u32,
-    eval_domain_log_size: u32,
-    log_size: u32,
-    total_sum: QM31,
+    args: EvalCompositionPolynomialArgs<'a>,
 ) -> ComputeCompositionPolynomialInput {
-    let original_trace_gpu: [GpuOriginalColumn; N_ORIGINAL_TRACE_COLUMNS as usize] = original_trace
+    let original_trace_gpu: [GpuOriginalColumn; N_ORIGINAL_TRACE_COLUMNS as usize] = args
+        .original_trace
         .iter()
         .flatten()
         .map(|eval| GpuOriginalColumn::from(eval))
@@ -309,8 +335,8 @@ fn create_composition_polynomial_gpu_input<'a>(
         .expect("Wrong length");
 
     // flatten twiddles
-    let twiddles = CpuBackend::precompute_twiddles(eval_domain.half_coset);
-    let line_twiddles = domain_line_twiddles_from_tree(eval_domain, &twiddles.twiddles);
+    let twiddles = CpuBackend::precompute_twiddles(args.eval_domain.half_coset);
+    let line_twiddles = domain_line_twiddles_from_tree(args.eval_domain, &twiddles.twiddles);
     let mut twiddle_input = Twiddles {
         line_twiddles_layer_count: line_twiddles.len() as u32,
         line_twiddles_sizes: [0; N_LINE_TWIDDLES_SIZE as usize],
@@ -339,21 +365,23 @@ fn create_composition_polynomial_gpu_input<'a>(
     twiddle_input.circle_twiddles[..circle_twiddles.len()].copy_from_slice(&circle_twiddles);
     twiddle_input.circle_twiddles_size = circle_twiddles.len() as u32;
 
-    let denom_inv_gpu: [GpuM31; 4] = denom_inv
+    let denom_inv_gpu: [GpuM31; 4] = args
+        .denom_inv
         .into_iter()
         .map(GpuM31::from)
         .collect::<Vec<_>>()
         .try_into()
         .expect("Wrong length");
 
-    let random_coeff_powers_gpu: [GpuQM31; N_CONSTRAINTS as usize] = random_coeff_powers
+    let random_coeff_powers_gpu: [GpuQM31; N_CONSTRAINTS as usize] = args
+        .random_coeff_powers
         .into_iter()
         .map(GpuQM31::from)
         .collect::<Vec<_>>()
         .try_into()
         .expect("Wrong length");
 
-    let lookup_elements_gpu = GpuLookupElements::from(lookup_elements);
+    let lookup_elements_gpu = GpuLookupElements::from(args.lookup_elements);
 
     ComputeCompositionPolynomialInput {
         original_trace: original_trace_gpu,
@@ -361,68 +389,8 @@ fn create_composition_polynomial_gpu_input<'a>(
         denom_inv: denom_inv_gpu,
         random_coeff_powers: random_coeff_powers_gpu,
         lookup_elements: lookup_elements_gpu,
-        trace_domain_log_size,
-        eval_domain_log_size,
-        cumsum_shift: (total_sum / BaseField::from_u32_unchecked(1 << log_size)).into(),
-    }
-}
-
-pub async fn compute_composition_polynomial_original_trace_gpu<'a>(
-    original_trace: &TreeVec<Vec<&'a CirclePoly<WebBackend>>>,
-    eval_domain: CircleDomain,
-    denom_inv: Vec<M31>,
-    random_coeff_powers: Vec<QM31>,
-    lookup_elements: &PoseidonElements,
-    trace_domain_log_size: u32,
-    eval_domain_log_size: u32,
-    log_size: u32,
-    total_sum: QM31,
-    col: &mut VeryPackedSecureColumnByCoords,
-) {
-    let instance = init(
-        original_trace,
-        eval_domain,
-        denom_inv,
-        random_coeff_powers,
-        lookup_elements,
-        trace_domain_log_size,
-        eval_domain_log_size,
-        log_size,
-        total_sum,
-    )
-    .await;
-    instance.queue.submit(Some(instance.encoder.finish()));
-    let output_slice = instance.staging_buffer.slice(..);
-    let (sender, receiver) = flume::bounded(1);
-    output_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
-    instance
-        .device
-        .poll(wgpu::Maintain::wait())
-        .panic_on_timeout();
-    let result = async {
-        receiver.recv_async().await.unwrap().unwrap();
-        let data = output_slice.get_mapped_range();
-        let output = ComputeCompositionPolynomialOutput::from_bytes(&data);
-        drop(data);
-        instance.staging_buffer.unmap();
-        output
-    };
-
-    let output = result.await;
-
-    #[cfg(not(feature = "parallel"))]
-    let enum_iter = output.poly.iter().enumerate();
-
-    #[cfg(feature = "parallel")]
-    let enum_iter = output.poly.into_par_iter().enumerate();
-
-    for (chunk_idx, chunk) in enum_iter {
-        for (inner_idx, &qm) in chunk.iter().enumerate() {
-            let idx = chunk_idx * N_LANES as usize + inner_idx;
-            col.columns[0].set(idx, qm.a.a.data.into());
-            col.columns[1].set(idx, qm.a.b.data.into());
-            col.columns[2].set(idx, qm.b.a.data.into());
-            col.columns[3].set(idx, qm.b.b.data.into());
-        }
+        trace_domain_log_size: args.trace_domain_log_size,
+        eval_domain_log_size: args.eval_domain_log_size,
+        cumsum_shift: (args.total_sum / BaseField::from_u32_unchecked(1 << args.log_size)).into(),
     }
 }
