@@ -1,5 +1,6 @@
 //! AIR for Poseidon2 hash function from <https://eprint.iacr.org/2023/323.pdf>.
 
+use std::any::type_name;
 use std::ops::{Add, AddAssign, Mul, Sub};
 
 use itertools::Itertools;
@@ -8,8 +9,8 @@ use tracing::{info, span, Level};
 
 use crate::constraint_framework::logup::LogupTraceGenerator;
 use crate::constraint_framework::{
-    relation, EvalAtRow, FrameworkComponent, FrameworkEval, FrameworkEvalWeb, Relation,
-    RelationEntry, TraceLocationAllocator, WebDomainEvaluator,
+    relation, EvalAtRow, FrameworkComponent, FrameworkEval, Relation, RelationEntry,
+    TraceLocationAllocator, WebDomainEvaluator,
 };
 use crate::core::backend::simd::column::BaseColumn;
 use crate::core::backend::simd::m31::{PackedBaseField, LOG_N_LANES};
@@ -48,6 +49,20 @@ pub type PoseidonComponent = FrameworkComponent<PoseidonEval>;
 
 relation!(PoseidonElements, N_STATE);
 
+pub trait HasDomainTypeId {
+    fn type_id(&self) -> usize;
+    fn as_ptr(&self) -> *const ();
+}
+
+impl<T> HasDomainTypeId for T {
+    fn type_id(&self) -> usize {
+        type_name::<T>().as_ptr() as usize
+    }
+    fn as_ptr(&self) -> *const () {
+        self as *const T as *const ()
+    }
+}
+
 #[derive(Clone)]
 pub struct PoseidonEval {
     pub log_n_rows: u32,
@@ -61,25 +76,32 @@ impl FrameworkEval for PoseidonEval {
     fn max_constraint_log_degree_bound(&self) -> u32 {
         self.log_n_rows + LOG_EXPAND
     }
-    fn evaluate<E: EvalAtRow>(&self, mut eval: E) -> E {
-        eval_poseidon_constraints(&mut eval, &self.lookup_elements);
+    fn evaluate<E: EvalAtRow>(&self, mut eval: E) -> E
+    where
+        E: HasDomainTypeId,
+    {
+        let web_id = type_name::<WebDomainEvaluator<'_>>().as_ptr() as usize;
+
+        if eval.type_id() == web_id {
+            let raw = &mut eval as *mut E as *mut ();
+            let web: &mut WebDomainEvaluator<'_> =
+                unsafe { &mut *(raw as *mut WebDomainEvaluator<'_>) };
+            let _ = pollster::block_on(compute_composition_polynomial_original_trace_gpu(
+                web.trace_poly,
+                web.eval_domain,
+                web.denom_inv.clone(),
+                web.random_coeff_powers.clone(),
+                &self.lookup_elements,
+                web.trace_domain_log_size,
+                web.eval_domain.log_size(),
+                web.log_size,
+                web.claimed_sum,
+                web.col,
+            ));
+        } else {
+            eval_poseidon_constraints(&mut eval, &self.lookup_elements);
+        }
         eval
-    }
-}
-impl FrameworkEvalWeb for PoseidonEval {
-    fn evaluate_web<'b>(&self, eval: WebDomainEvaluator<'b>) {
-        let _ = pollster::block_on(compute_composition_polynomial_original_trace_gpu(
-            eval.trace_poly,
-            eval.eval_domain,
-            eval.denom_inv,
-            eval.random_coeff_powers,
-            &self.lookup_elements,
-            eval.trace_domain_log_size,
-            eval.eval_domain.log_size(),
-            eval.log_size,
-            eval.claimed_sum,
-            eval.col,
-        ));
     }
 }
 

@@ -16,7 +16,7 @@ use std::fmt::Debug;
 use std::ops::{Add, AddAssign, Mul, Neg, Sub};
 
 pub use assert::{assert_constraints_on_polys, assert_constraints_on_trace, AssertEvaluator};
-pub use component::{FrameworkComponent, FrameworkEval, FrameworkEvalWeb, TraceLocationAllocator};
+pub use component::{FrameworkComponent, FrameworkEval, TraceLocationAllocator};
 pub use info::InfoEvaluator;
 use num_traits::{One, Zero};
 pub use point::PointEvaluator;

@@ -421,13 +421,7 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
     }
 }
 
-pub trait FrameworkEvalWeb {
-    fn evaluate_web<'b>(&self, eval: WebDomainEvaluator<'b>);
-}
-
-impl<'a, E: FrameworkEval + FrameworkEvalWeb + Sync> ComponentProver<WebBackend>
-    for FrameworkComponent<E>
-{
+impl<E: FrameworkEval + Sync> ComponentProver<WebBackend> for FrameworkComponent<E> {
     fn evaluate_constraint_quotients_on_domain(
         &self,
         trace: &Trace<'_, WebBackend>,
@@ -494,7 +488,7 @@ impl<'a, E: FrameworkEval + FrameworkEvalWeb + Sync> ComponentProver<WebBackend>
             self.eval.log_size(),
             self.claimed_sum,
         );
-        self.eval.evaluate_web(eval);
+        self.eval.evaluate(eval);
     }
 }
 
