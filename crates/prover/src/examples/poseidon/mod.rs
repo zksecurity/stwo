@@ -16,7 +16,7 @@ use crate::core::backend::simd::column::BaseColumn;
 use crate::core::backend::simd::m31::{PackedBaseField, LOG_N_LANES};
 use crate::core::backend::simd::qm31::PackedSecureField;
 use crate::core::backend::simd::SimdBackend;
-use crate::core::backend::web::webgpu::compute_composition_polynomial_original_trace::compute_composition_polynomial_original_trace_gpu;
+use crate::core::backend::web::webgpu::eval_composition_poly::compute_composition_polynomial_original_trace_gpu;
 use crate::core::backend::web::WebBackend;
 use crate::core::backend::{Col, Column};
 use crate::core::channel::Blake2sChannel;
@@ -514,7 +514,7 @@ mod tests {
     use crate::core::vcs::blake2_merkle::Blake2sMerkleChannel;
     use crate::examples::poseidon::{
         apply_internal_round_matrix, apply_m4, eval_poseidon_constraints, gen_interaction_trace,
-        gen_trace, prove_poseidon_web, PoseidonElements,
+        gen_trace, prove_poseidon, prove_poseidon_web, PoseidonElements,
     };
     use crate::math::matrix::{RowMajorMatrix, SquareMatrix};
 
@@ -609,7 +609,7 @@ mod tests {
         };
 
         // Prove.
-        let (component, proof) = prove_poseidon_web(log_n_instances, config);
+        let (component, proof) = prove_poseidon(log_n_instances, config);
 
         // Verify.
         // TODO: Create Air instance independently.
@@ -643,7 +643,7 @@ mod tests {
 
         // Get from environment variable:
         let log_n_instances = env::var("LOG_N_INSTANCES")
-            .unwrap_or_else(|_| "12".to_string())
+            .unwrap_or_else(|_| "16".to_string())
             .parse::<u32>()
             .unwrap();
         let config = PcsConfig {

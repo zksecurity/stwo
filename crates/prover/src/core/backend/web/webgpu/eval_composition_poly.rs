@@ -3,166 +3,21 @@ use std::collections::HashMap;
 use itertools::Itertools;
 use wgpu::util::DeviceExt;
 
+use super::constants::*;
+use super::gpu_types::*;
 use super::qm31::GpuQM31;
+use super::ByteSerialize;
 use crate::core::backend::cpu::circle::circle_twiddles_from_line_twiddles;
 use crate::core::backend::simd::column::VeryPackedSecureColumnByCoords;
-// use crate::core::backend::simd::m31::PackedM31;
-// use crate::core::backend::simd::very_packed_m31::{VeryPackedM31, N_VERY_PACKED_ELEMS};
 use crate::core::backend::web::webgpu::qm31::GpuM31;
 use crate::core::backend::web::WebBackend;
 use crate::core::backend::{Column, CpuBackend};
 use crate::core::fields::m31::{BaseField, M31};
 use crate::core::fields::qm31::QM31;
-// use crate::core::fields::secure_column::SECURE_EXTENSION_DEGREE;
 use crate::core::pcs::TreeVec;
 use crate::core::poly::circle::{CircleDomain, CirclePoly, PolyOps};
 use crate::core::poly::utils::domain_line_twiddles_from_tree;
 use crate::examples::poseidon::PoseidonElements;
-
-pub const N_ROWS: u32 = 32;
-pub const N_CONSTRAINTS: u32 = 1144;
-
-pub const N_STATE: u32 = 16;
-pub const N_LOG_INSTANCES_PER_ROW: u32 = 3;
-pub const N_INSTANCES_PER_ROW: u32 = 1 << N_LOG_INSTANCES_PER_ROW;
-pub const N_LANES: u32 = 16;
-pub const N_EXTENDED_ROWS: u32 = N_ROWS * 4;
-pub const N_ORIGINAL_ROWS: u32 = N_ROWS;
-pub const N_COLUMNS: u32 = 1264;
-pub const N_INTERACTION_COLUMNS: u32 = N_INSTANCES_PER_ROW * 4;
-pub const N_WORKGROUPS: u32 = N_EXTENDED_ROWS * N_LANES / THREADS_PER_WORKGROUP;
-pub const N_EXTEND_TRACE_WORKGROUPS: u32 = 256;
-pub const THREADS_PER_WORKGROUP: u32 = 256;
-pub const N_HALF_FULL_ROUNDS: u32 = 4;
-pub const N_PARTIAL_ROUNDS: u32 = 14;
-
-pub const N_LINE_TWIDDLES_SIZE: u32 = N_EXTENDED_ROWS * N_LANES;
-pub const N_LINE_TWIDDLES_FLAT_SIZE: u32 = N_LINE_TWIDDLES_SIZE * 2;
-pub const N_CIRCLE_TWIDDLES_SIZE: u32 = N_LINE_TWIDDLES_SIZE * 2;
-pub const N_ORIGINAL_TRACE_COLUMNS: u32 = N_COLUMNS + N_INTERACTION_COLUMNS;
-
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-pub struct GpuExtendedColumn {
-    pub data: [[GpuM31; N_LANES as usize]; N_EXTENDED_ROWS as usize],
-}
-
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-pub struct GpuOriginalColumn {
-    pub coeffs: [GpuM31; (N_LANES * N_ORIGINAL_ROWS) as usize],
-}
-
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-pub struct GpuExtended1DColumn {
-    pub data: [GpuM31; (N_LANES * N_EXTENDED_ROWS) as usize],
-}
-
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-pub struct Twiddles {
-    pub circle_twiddles: [GpuM31; N_CIRCLE_TWIDDLES_SIZE as usize],
-    pub circle_twiddles_size: u32,
-    pub line_twiddles_flat: [GpuM31; N_LINE_TWIDDLES_FLAT_SIZE as usize],
-    pub line_twiddles_layer_count: u32,
-    pub line_twiddles_sizes: [u32; N_LINE_TWIDDLES_SIZE as usize],
-    pub line_twiddles_offsets: [u32; N_LINE_TWIDDLES_SIZE as usize],
-}
-
-impl From<&&CirclePoly<WebBackend>> for GpuOriginalColumn {
-    fn from(value: &&CirclePoly<WebBackend>) -> Self {
-        let mut coeffs = [GpuM31 { data: 0 }; (N_LANES * N_ORIGINAL_ROWS) as usize];
-        let coeffs_vec = value.coeffs.to_cpu();
-        for (i, &coeff) in coeffs_vec.iter().enumerate() {
-            coeffs[i] = coeff.into();
-        }
-
-        GpuOriginalColumn { coeffs }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-pub struct GpuLookupElements {
-    pub z: GpuQM31,
-    pub alpha: GpuQM31,
-    pub alpha_powers: [GpuQM31; N_STATE as usize],
-}
-
-impl From<&PoseidonElements> for GpuLookupElements {
-    fn from(value: &PoseidonElements) -> Self {
-        GpuLookupElements {
-            z: value.0.z.into(),
-            alpha: value.0.alpha.into(),
-            alpha_powers: value
-                .0
-                .alpha_powers
-                .iter()
-                .map(|&x| x.into())
-                .collect::<Vec<_>>()
-                .try_into()
-                .unwrap(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-pub struct ComputeCompositionPolynomialInput {
-    pub original_trace: [GpuOriginalColumn; N_ORIGINAL_TRACE_COLUMNS as usize],
-    pub twiddles: Twiddles,
-    pub denom_inv: [GpuM31; 4],
-    pub random_coeff_powers: [GpuQM31; N_CONSTRAINTS as usize],
-    pub lookup_elements: GpuLookupElements,
-    pub trace_domain_log_size: u32,
-    pub eval_domain_log_size: u32,
-    pub cumsum_shift: GpuQM31,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct ComputeCompositionPolynomialOutput {
-    pub poly: [[GpuQM31; N_LANES as usize]; N_EXTENDED_ROWS as usize],
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy)]
-pub struct ExtendTraceOutput {
-    pub extended_trace: [GpuExtended1DColumn; N_ORIGINAL_TRACE_COLUMNS as usize],
-}
-
-#[derive(Debug, Clone)]
-pub struct ComputationResults {
-    pub output: ComputeCompositionPolynomialOutput,
-}
-
-pub trait ByteSerialize: Sized {
-    fn as_bytes(&self) -> &[u8] {
-        unsafe {
-            std::slice::from_raw_parts(
-                (self as *const Self) as *const u8,
-                std::mem::size_of::<Self>(),
-            )
-        }
-    }
-
-    fn from_bytes(bytes: &[u8]) -> &Self {
-        assert!(bytes.len() >= std::mem::size_of::<Self>());
-        unsafe { &*(bytes.as_ptr() as *const Self) }
-    }
-}
-
-impl ByteSerialize for GpuExtendedColumn {}
-impl ByteSerialize for GpuExtended1DColumn {}
-impl ByteSerialize for GpuOriginalColumn {}
-impl ByteSerialize for ComputeCompositionPolynomialOutput {}
-impl ByteSerialize for ComputeCompositionPolynomialInput {}
-
-impl ComputeCompositionPolynomialOutput {
-    fn from_bytes(bytes: &[u8]) -> Self {
-        unsafe { *(bytes.as_ptr() as *const Self) }
-    }
-}
 
 pub struct WgpuInstance {
     pub instance: wgpu::Instance,
@@ -252,7 +107,7 @@ async fn init<'a>(
     let fraction_shader = include_str!("fraction.wgsl");
     let utils_shader = include_str!("utils.wgsl");
     let extend_trace_shader = include_str!("extend_trace.wgsl");
-    let composition_shader = include_str!("compute_composition_polynomial_original_trace.wgsl");
+    let composition_shader = include_str!("eval_composition_poly.wgsl");
 
     // Load extend trace shader
     let extend_trace_combined_shader = format!(
@@ -554,7 +409,14 @@ pub async fn compute_composition_polynomial_original_trace_gpu<'a>(
     };
 
     let output = result.await;
-    for (chunk_idx, chunk) in output.poly.iter().enumerate() {
+
+    #[cfg(not(feature = "parallel"))]
+    let enum_iter = output.poly.iter().enumerate();
+
+    #[cfg(feature = "parallel")]
+    let enum_iter = output.poly.into_par_iter().enumerate();
+
+    for (chunk_idx, chunk) in enum_iter {
         for (inner_idx, &qm) in chunk.iter().enumerate() {
             let idx = chunk_idx * N_LANES as usize + inner_idx;
             col.columns[0].set(idx, qm.a.a.data.into());

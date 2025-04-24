@@ -1,5 +1,7 @@
 use wgpu::util::DeviceExt;
 
+use super::ByteSerialize;
+
 /// Input data for the GPU computation
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -20,22 +22,6 @@ pub struct ComputeOutput {
 impl From<ComputeOutput> for usize {
     fn from(output: ComputeOutput) -> Self {
         output.result as usize
-    }
-}
-
-pub trait ByteSerialize: Sized {
-    fn as_bytes(&self) -> &[u8] {
-        unsafe {
-            std::slice::from_raw_parts(
-                (self as *const Self) as *const u8,
-                std::mem::size_of::<Self>(),
-            )
-        }
-    }
-
-    fn from_bytes(bytes: &[u8]) -> &Self {
-        assert!(bytes.len() >= std::mem::size_of::<Self>());
-        unsafe { &*(bytes.as_ptr() as *const Self) }
     }
 }
 
