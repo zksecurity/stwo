@@ -1605,6 +1605,7 @@ dependencies = [
  "thiserror",
  "tracing",
  "tracing-subscriber",
+ "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "wgpu",
 ]

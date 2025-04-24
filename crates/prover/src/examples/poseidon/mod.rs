@@ -17,7 +17,8 @@ use crate::core::backend::simd::m31::{PackedBaseField, LOG_N_LANES};
 use crate::core::backend::simd::qm31::PackedSecureField;
 use crate::core::backend::simd::SimdBackend;
 use crate::core::backend::web::webgpu::eval_composition_poly::{
-    compute_composition_polynomial_original_trace_gpu, EvalCompositionPolynomialArgs,
+    compute_composition_polynomial_original_trace_gpu, create_composition_polynomial_gpu_input,
+    EvalCompositionPolynomialArgs,
 };
 use crate::core::backend::web::WebBackend;
 use crate::core::backend::{Col, Column};
@@ -75,9 +76,16 @@ impl FrameworkEval for PoseidonEval {
             let web: &mut WebDomainEvaluator<'_> =
                 unsafe { &mut *(raw as *mut WebDomainEvaluator<'_>) };
             let args = EvalCompositionPolynomialArgs::new(web, &self.lookup_elements);
+            #[cfg(not(target_family = "wasm"))]
+            let web_input = create_composition_polynomial_gpu_input(args);
             let _ = pollster::block_on(compute_composition_polynomial_original_trace_gpu(
-                args, web.col,
+                web_input, web.col,
             ));
+
+            // #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+            // wasm_bindgen_futures::spawn_local(async move {
+            //     compute_composition_polynomial_original_trace_gpu(args, web.col).await;
+            // });
         } else {
             eval_poseidon_constraints(&mut eval, &self.lookup_elements);
         }
@@ -438,6 +446,7 @@ pub fn prove_poseidon(
     (component, proof)
 }
 
+#[allow(dead_code)]
 pub fn prove_poseidon_web(
     log_n_instances: u32,
     config: PcsConfig,
@@ -512,6 +521,9 @@ mod tests {
 
     use itertools::Itertools;
     use num_traits::One;
+    #[allow(unused_imports)]
+    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+    use wasm_bindgen_test::*;
 
     use crate::constraint_framework::assert_constraints_on_polys;
     use crate::core::air::Component;
@@ -522,11 +534,16 @@ mod tests {
     use crate::core::poly::circle::CanonicCoset;
     use crate::core::prover::verify;
     use crate::core::vcs::blake2_merkle::Blake2sMerkleChannel;
+    //#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+    use crate::examples::poseidon::prove_poseidon_web;
     use crate::examples::poseidon::{
         apply_internal_round_matrix, apply_m4, eval_poseidon_constraints, gen_interaction_trace,
-        gen_trace, prove_poseidon, prove_poseidon_web, PoseidonElements,
+        gen_trace, prove_poseidon, PoseidonElements,
     };
     use crate::math::matrix::{RowMajorMatrix, SquareMatrix};
+
+    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+    wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
     #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
     #[wasm_bindgen_test::wasm_bindgen_test]
@@ -610,10 +627,10 @@ mod tests {
 
         // Get from environment variable:
         let log_n_instances = env::var("LOG_N_INSTANCES")
-            .unwrap_or_else(|_| "12".to_string())
+            .unwrap_or_else(|_| "16".to_string())
             .parse::<u32>()
             .unwrap();
-        let config = PcsConfig {
+        let config: PcsConfig = PcsConfig {
             pow_bits: 10,
             fri_config: FriConfig::new(5, 1, 64),
         };
@@ -644,6 +661,9 @@ mod tests {
         verify(&[&component], channel, commitment_scheme, proof).unwrap();
     }
 
+    // #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+    #[allow(dead_code)]
+    // #[wasm_bindgen_test::wasm_bindgen_test]
     #[test_log::test]
     fn test_web_poseidon_prove() {
         // Note: To see time measurement, run test with
@@ -661,7 +681,29 @@ mod tests {
             fri_config: FriConfig::new(5, 1, 64),
         };
 
-        // Prove.
-        prove_poseidon_web(log_n_instances, config);
+        // Prove.;
+        let (component, proof) = prove_poseidon_web(log_n_instances, config);
+
+        // Verify.
+        // TODO: Create Air instance independently.
+        let channel = &mut Blake2sChannel::default();
+        let commitment_scheme =
+            &mut CommitmentSchemeVerifier::<Blake2sMerkleChannel>::new(proof.config);
+
+        // Decommit.
+        // Retrieve the expected column sizes in each commitment interaction, from the AIR.
+        let sizes = component.trace_log_degree_bounds();
+
+        // Preprocessed columns.
+        commitment_scheme.commit(proof.commitments[0], &sizes[0], channel);
+        // Trace columns.
+        commitment_scheme.commit(proof.commitments[1], &sizes[1], channel);
+        // Draw lookup element.
+        let lookup_elements = PoseidonElements::draw(channel);
+        assert_eq!(lookup_elements, component.lookup_elements);
+        // Interaction columns.
+        commitment_scheme.commit(proof.commitments[2], &sizes[2], channel);
+
+        verify(&[&component], channel, commitment_scheme, proof).unwrap();
     }
 }

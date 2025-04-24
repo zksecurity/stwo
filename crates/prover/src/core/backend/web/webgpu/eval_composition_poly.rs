@@ -40,11 +40,11 @@ pub struct EvalCompositionPolynomialArgs<'a> {
     pub total_sum: QM31,
 }
 
-pub async fn compute_composition_polynomial_original_trace_gpu<'a>(
-    args: EvalCompositionPolynomialArgs<'a>,
+pub async fn compute_composition_polynomial_original_trace_gpu(
+    input: Box<ComputeCompositionPolynomialInput>,
     col: &mut VeryPackedSecureColumnByCoords,
 ) {
-    let instance = init_wgpu_instance(args).await;
+    let instance = init_wgpu_instance(input).await;
     instance.queue.submit(Some(instance.encoder.finish()));
     let output_slice = instance.staging_buffer.slice(..);
     let (sender, receiver) = flume::bounded(1);
@@ -81,7 +81,80 @@ pub async fn compute_composition_polynomial_original_trace_gpu<'a>(
     }
 }
 
-async fn init_wgpu_instance<'a>(args: EvalCompositionPolynomialArgs<'a>) -> WgpuInstance {
+pub fn create_composition_polynomial_gpu_input<'a>(
+    args: EvalCompositionPolynomialArgs<'a>,
+) -> Box<ComputeCompositionPolynomialInput> {
+    let original_trace_gpu: [GpuOriginalColumn; N_ORIGINAL_TRACE_COLUMNS as usize] = args
+        .original_trace
+        .iter()
+        .flatten()
+        .map(|eval| GpuOriginalColumn::from(eval))
+        .collect_vec()
+        .try_into()
+        .expect("Wrong length");
+
+    // flatten twiddles
+    let twiddles = CpuBackend::precompute_twiddles(args.eval_domain.half_coset);
+    let line_twiddles = domain_line_twiddles_from_tree(args.eval_domain, &twiddles.twiddles);
+    let mut twiddle_input = Twiddles {
+        line_twiddles_layer_count: line_twiddles.len() as u32,
+        line_twiddles_sizes: [0; N_LINE_TWIDDLES_SIZE as usize],
+        line_twiddles_offsets: [0; N_LINE_TWIDDLES_SIZE as usize],
+        line_twiddles_flat: [GpuM31 { data: 0 }; N_LINE_TWIDDLES_FLAT_SIZE as usize],
+        circle_twiddles: [GpuM31 { data: 0 }; N_CIRCLE_TWIDDLES_SIZE as usize],
+        circle_twiddles_size: 0,
+    };
+    for (i, twiddle) in line_twiddles.iter().enumerate() {
+        twiddle_input.line_twiddles_sizes[i] = twiddle.len() as u32;
+        twiddle_input.line_twiddles_offsets[i] = if i == 0 {
+            0
+        } else {
+            twiddle_input.line_twiddles_offsets[i - 1] + twiddle_input.line_twiddles_sizes[i - 1]
+        };
+        for (j, &twiddle) in twiddle.iter().enumerate() {
+            twiddle_input.line_twiddles_flat[twiddle_input.line_twiddles_offsets[i] as usize + j] =
+                twiddle.into();
+        }
+    }
+
+    // circle twiddles
+    let circle_twiddles: Vec<GpuM31> = circle_twiddles_from_line_twiddles(line_twiddles[0])
+        .map(|twiddle| twiddle.into())
+        .collect();
+    twiddle_input.circle_twiddles[..circle_twiddles.len()].copy_from_slice(&circle_twiddles);
+    twiddle_input.circle_twiddles_size = circle_twiddles.len() as u32;
+
+    let denom_inv_gpu: [GpuM31; 4] = args
+        .denom_inv
+        .into_iter()
+        .map(GpuM31::from)
+        .collect::<Vec<_>>()
+        .try_into()
+        .expect("Wrong length");
+
+    let random_coeff_powers_gpu: [GpuQM31; N_CONSTRAINTS as usize] = args
+        .random_coeff_powers
+        .into_iter()
+        .map(GpuQM31::from)
+        .collect::<Vec<_>>()
+        .try_into()
+        .expect("Wrong length");
+
+    let lookup_elements_gpu = GpuLookupElements::from(args.lookup_elements);
+
+    Box::new(ComputeCompositionPolynomialInput {
+        original_trace: original_trace_gpu,
+        twiddles: twiddle_input,
+        denom_inv: denom_inv_gpu,
+        random_coeff_powers: random_coeff_powers_gpu,
+        lookup_elements: lookup_elements_gpu,
+        trace_domain_log_size: args.trace_domain_log_size,
+        eval_domain_log_size: args.eval_domain_log_size,
+        cumsum_shift: (args.total_sum / BaseField::from_u32_unchecked(1 << args.log_size)).into(),
+    })
+}
+
+async fn init_wgpu_instance(input: Box<ComputeCompositionPolynomialInput>) -> WgpuInstance {
     let instance = wgpu::Instance::default();
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
@@ -148,11 +221,9 @@ async fn init_wgpu_instance<'a>(args: EvalCompositionPolynomialArgs<'a>) -> Wgpu
         });
 
     // Create buffers
-    let input_data = create_composition_polynomial_gpu_input(args);
-
     let input_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Input Buffer"),
-        contents: input_data.as_bytes(),
+        contents: input.as_bytes(),
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
     });
 
@@ -319,78 +390,5 @@ async fn init_wgpu_instance<'a>(args: EvalCompositionPolynomialArgs<'a>) -> Wgpu
         queue,
         staging_buffer,
         encoder,
-    }
-}
-
-fn create_composition_polynomial_gpu_input<'a>(
-    args: EvalCompositionPolynomialArgs<'a>,
-) -> ComputeCompositionPolynomialInput {
-    let original_trace_gpu: [GpuOriginalColumn; N_ORIGINAL_TRACE_COLUMNS as usize] = args
-        .original_trace
-        .iter()
-        .flatten()
-        .map(|eval| GpuOriginalColumn::from(eval))
-        .collect_vec()
-        .try_into()
-        .expect("Wrong length");
-
-    // flatten twiddles
-    let twiddles = CpuBackend::precompute_twiddles(args.eval_domain.half_coset);
-    let line_twiddles = domain_line_twiddles_from_tree(args.eval_domain, &twiddles.twiddles);
-    let mut twiddle_input = Twiddles {
-        line_twiddles_layer_count: line_twiddles.len() as u32,
-        line_twiddles_sizes: [0; N_LINE_TWIDDLES_SIZE as usize],
-        line_twiddles_offsets: [0; N_LINE_TWIDDLES_SIZE as usize],
-        line_twiddles_flat: [GpuM31 { data: 0 }; N_LINE_TWIDDLES_FLAT_SIZE as usize],
-        circle_twiddles: [GpuM31 { data: 0 }; N_CIRCLE_TWIDDLES_SIZE as usize],
-        circle_twiddles_size: 0,
-    };
-    for (i, twiddle) in line_twiddles.iter().enumerate() {
-        twiddle_input.line_twiddles_sizes[i] = twiddle.len() as u32;
-        twiddle_input.line_twiddles_offsets[i] = if i == 0 {
-            0
-        } else {
-            twiddle_input.line_twiddles_offsets[i - 1] + twiddle_input.line_twiddles_sizes[i - 1]
-        };
-        for (j, &twiddle) in twiddle.iter().enumerate() {
-            twiddle_input.line_twiddles_flat[twiddle_input.line_twiddles_offsets[i] as usize + j] =
-                twiddle.into();
-        }
-    }
-
-    // circle twiddles
-    let circle_twiddles: Vec<GpuM31> = circle_twiddles_from_line_twiddles(line_twiddles[0])
-        .map(|twiddle| twiddle.into())
-        .collect();
-    twiddle_input.circle_twiddles[..circle_twiddles.len()].copy_from_slice(&circle_twiddles);
-    twiddle_input.circle_twiddles_size = circle_twiddles.len() as u32;
-
-    let denom_inv_gpu: [GpuM31; 4] = args
-        .denom_inv
-        .into_iter()
-        .map(GpuM31::from)
-        .collect::<Vec<_>>()
-        .try_into()
-        .expect("Wrong length");
-
-    let random_coeff_powers_gpu: [GpuQM31; N_CONSTRAINTS as usize] = args
-        .random_coeff_powers
-        .into_iter()
-        .map(GpuQM31::from)
-        .collect::<Vec<_>>()
-        .try_into()
-        .expect("Wrong length");
-
-    let lookup_elements_gpu = GpuLookupElements::from(args.lookup_elements);
-
-    ComputeCompositionPolynomialInput {
-        original_trace: original_trace_gpu,
-        twiddles: twiddle_input,
-        denom_inv: denom_inv_gpu,
-        random_coeff_powers: random_coeff_powers_gpu,
-        lookup_elements: lookup_elements_gpu,
-        trace_domain_log_size: args.trace_domain_log_size,
-        eval_domain_log_size: args.eval_domain_log_size,
-        cumsum_shift: (args.total_sum / BaseField::from_u32_unchecked(1 << args.log_size)).into(),
     }
 }
