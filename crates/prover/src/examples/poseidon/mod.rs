@@ -2,8 +2,12 @@
 
 use std::any::type_name;
 use std::ops::{Add, AddAssign, Mul, Sub};
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+use std::rc::Rc;
 
 use itertools::Itertools;
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+use js_sys::{Int32Array, SharedArrayBuffer};
 use num_traits::One;
 use tracing::{info, span, Level};
 
@@ -77,10 +81,12 @@ impl FrameworkEval for PoseidonEval {
                 unsafe { &mut *(raw as *mut WebDomainEvaluator<'_>) };
             let args = EvalCompositionPolynomialArgs::new(web, &self.lookup_elements);
             #[cfg(not(target_family = "wasm"))]
-            let web_input = create_composition_polynomial_gpu_input(args);
-            let _ = pollster::block_on(compute_composition_polynomial_original_trace_gpu(
-                web_input, web.col,
-            ));
+            {
+                let web_input = create_composition_polynomial_gpu_input(args);
+                let _ = pollster::block_on(compute_composition_polynomial_original_trace_gpu(
+                    web_input, web.col,
+                ));
+            }
 
             // #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
             // wasm_bindgen_futures::spawn_local(async move {
@@ -90,6 +96,17 @@ impl FrameworkEval for PoseidonEval {
             eval_poseidon_constraints(&mut eval, &self.lookup_elements);
         }
         eval
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+async fn wait_for_flag(arr: Rc<Int32Array>, index: u32, expected: i32) {
+    loop {
+        let val = arr.get_index(index);
+        if val != expected {
+            break;
+        }
+        TimeoutFuture::new(1).await; // 1ms sleep (non-blocking)
     }
 }
 
@@ -542,8 +559,8 @@ mod tests {
     };
     use crate::math::matrix::{RowMajorMatrix, SquareMatrix};
 
-    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
-    wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
+    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+    wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_dedicated_worker);
 
     #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
     #[wasm_bindgen_test::wasm_bindgen_test]
@@ -661,10 +678,10 @@ mod tests {
         verify(&[&component], channel, commitment_scheme, proof).unwrap();
     }
 
-    // #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
     #[allow(dead_code)]
-    // #[wasm_bindgen_test::wasm_bindgen_test]
-    #[test_log::test]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    //#[test_log::test]
     fn test_web_poseidon_prove() {
         // Note: To see time measurement, run test with
         //   RUST_LOG_SPAN_EVENTS=enter,close RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS="
@@ -673,7 +690,7 @@ mod tests {
 
         // Get from environment variable:
         let log_n_instances = env::var("LOG_N_INSTANCES")
-            .unwrap_or_else(|_| "16".to_string())
+            .unwrap_or_else(|_| "14".to_string())
             .parse::<u32>()
             .unwrap();
         let config = PcsConfig {
