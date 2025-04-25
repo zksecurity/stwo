@@ -198,9 +198,7 @@ pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
     let _web_input = create_composition_polynomial_gpu_input(args);
     #[cfg(not(target_family = "wasm"))]
     {
-        let output = pollster::block_on(compute_composition_polynomial_original_trace_gpu(
-            _web_input,
-        ));
+        let output = compute_composition_polynomial_original_trace_gpu(_web_input);
 
         #[cfg(not(feature = "parallel"))]
         let enum_iter = output.poly.iter().enumerate();
@@ -551,6 +549,7 @@ mod tests {
 
     use crate::constraint_framework::assert_constraints_on_polys;
     use crate::core::air::Component;
+    use crate::core::backend::web::webgpu::eval_composition_poly::init_wgpu_device;
     use crate::core::channel::Blake2sChannel;
     use crate::core::fields::m31::BaseField;
     use crate::core::fri::FriConfig;
@@ -694,6 +693,7 @@ mod tests {
         //   RUST_LOG_SPAN_EVENTS=enter,close RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS="
         //   -C target-cpu=native -C target-feature=+avx512f -C opt-level=3" cargo test
         //   test_simd_poseidon_prove -- --nocapture
+        let _ = pollster::block_on(init_wgpu_device());
 
         // Get from environment variable:
         let log_n_instances = env::var("LOG_N_INSTANCES")

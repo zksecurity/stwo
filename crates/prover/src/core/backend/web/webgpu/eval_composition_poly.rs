@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use itertools::Itertools;
 use wgpu::util::DeviceExt;
@@ -19,11 +19,60 @@ use crate::core::poly::circle::{CircleDomain, CirclePoly, PolyOps};
 use crate::core::poly::utils::domain_line_twiddles_from_tree;
 use crate::examples::poseidon::PoseidonElements;
 
+static WGPU_INSTANCE: OnceLock<WgpuInstance> = OnceLock::new();
+
+fn get_wgpu_instance() -> &'static WgpuInstance {
+    WGPU_INSTANCE
+        .get()
+        .expect("WGPU_INSTANCE not initialized; make sure to call init_wgpu_device() first")
+}
+
+pub async fn init_wgpu_device() -> Result<(), WgpuInstance> {
+    let instance = wgpu::Instance::default();
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        })
+        .await
+        .unwrap();
+    let mut limit = wgpu::Limits::default();
+    limit.max_storage_buffer_binding_size = 128 << 22; // (512 MiB)
+    let (device, queue) = adapter
+        .request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("Device"),
+                required_features: wgpu::Features::SHADER_INT64,
+                required_limits: limit,
+                memory_hints: wgpu::MemoryHints::Performance,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    WGPU_INSTANCE.set(WgpuInstance {
+        instance,
+        adapter,
+        device,
+        queue,
+    })
+}
+
+// pub struct
 pub struct WgpuInstance {
     pub instance: wgpu::Instance,
     pub adapter: wgpu::Adapter,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
+}
+
+pub struct WgpuEvalUnit {
+    // make instance, adapter, device, queue all static references
+    pub instance: &'static wgpu::Instance,
+    pub adapter: &'static wgpu::Adapter,
+    pub device: &'static wgpu::Device,
+    pub queue: &'static wgpu::Queue,
     pub staging_buffer: wgpu::Buffer,
     pub encoder: wgpu::CommandEncoder,
 }
@@ -40,29 +89,26 @@ pub struct EvalCompositionPolynomialArgs<'a> {
     pub total_sum: QM31,
 }
 
-pub async fn compute_composition_polynomial_original_trace_gpu(
+pub fn compute_composition_polynomial_original_trace_gpu(
     input: Arc<ComputeCompositionPolynomialInput>,
 ) -> Arc<ComputeCompositionPolynomialOutput> {
-    let instance = init_wgpu_instance(input).await;
-    instance.queue.submit(Some(instance.encoder.finish()));
-    let output_slice = instance.staging_buffer.slice(..);
+    let eval_unit = init_wgpu_eval_unit(input);
+    eval_unit.queue.submit(Some(eval_unit.encoder.finish()));
+    let output_slice = eval_unit.staging_buffer.slice(..);
     let (sender, receiver) = flume::bounded(1);
     output_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
-    instance
+    eval_unit
         .device
         .poll(wgpu::Maintain::wait())
         .panic_on_timeout();
-    let result = async {
-        receiver.recv_async().await.unwrap().unwrap();
-        let data = output_slice.get_mapped_range();
-        let output = ComputeCompositionPolynomialOutput::from_bytes(&data);
-        drop(data);
-        instance.staging_buffer.unmap();
-        output
-    };
 
-    // let output = result.await;
-    return Arc::new(result.await);
+    receiver.recv().unwrap().unwrap();
+    let data = output_slice.get_mapped_range();
+    let output = ComputeCompositionPolynomialOutput::from_bytes(&data);
+    drop(data);
+    eval_unit.staging_buffer.unmap();
+
+    Arc::new(output)
 }
 
 pub fn create_composition_polynomial_gpu_input<'a>(
@@ -138,30 +184,9 @@ pub fn create_composition_polynomial_gpu_input<'a>(
     })
 }
 
-async fn init_wgpu_instance(input: Arc<ComputeCompositionPolynomialInput>) -> WgpuInstance {
-    let instance = wgpu::Instance::default();
-    let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: None,
-            force_fallback_adapter: false,
-        })
-        .await
-        .unwrap();
-    let mut limit = wgpu::Limits::default();
-    limit.max_storage_buffer_binding_size = 128 << 22; // (512 MiB)
-    let (device, queue) = adapter
-        .request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("Device"),
-                required_features: wgpu::Features::SHADER_INT64,
-                required_limits: limit,
-                memory_hints: wgpu::MemoryHints::Performance,
-            },
-            None,
-        )
-        .await
-        .unwrap();
+fn init_wgpu_eval_unit(input: Arc<ComputeCompositionPolynomialInput>) -> WgpuEvalUnit {
+    let static_instance = get_wgpu_instance();
+    let device = &static_instance.device;
 
     // Load shader
     let constants_shader = include_str!("constants.wgsl")
@@ -367,11 +392,11 @@ async fn init_wgpu_instance(input: Arc<ComputeCompositionPolynomialInput>) -> Wg
     });
     encoder.copy_buffer_to_buffer(&output_buffer, 0, &staging_buffer, 0, staging_buffer.size());
 
-    WgpuInstance {
-        instance,
-        adapter,
-        device,
-        queue,
+    WgpuEvalUnit {
+        instance: &static_instance.instance,
+        adapter: &static_instance.adapter,
+        device: &static_instance.device,
+        queue: &static_instance.queue,
         staging_buffer,
         encoder,
     }
