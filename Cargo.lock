@@ -1594,7 +1594,6 @@ dependencies = [
  "flume",
  "hex",
  "itertools 0.12.1",
- "js-sys",
  "num-traits",
  "pollster",
  "rand",
@@ -1606,9 +1605,9 @@ dependencies = [
  "thiserror",
  "tracing",
  "tracing-subscriber",
- "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
+ "web-sys",
  "wgpu",
 ]
 

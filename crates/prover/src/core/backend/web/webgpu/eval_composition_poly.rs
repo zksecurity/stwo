@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::ptr::null_mut;
+use std::sync::Arc;
 
 use itertools::Itertools;
 use wgpu::util::DeviceExt;
@@ -19,15 +20,20 @@ use crate::core::poly::circle::{CircleDomain, CirclePoly, PolyOps};
 use crate::core::poly::utils::domain_line_twiddles_from_tree;
 use crate::examples::poseidon::PoseidonElements;
 
-static WGPU_INSTANCE: OnceLock<WgpuInstance> = OnceLock::new();
+static mut GLOBAL_WGPU_INSTANCE: *mut WgpuInstance = null_mut();
 
-fn get_wgpu_instance() -> &'static WgpuInstance {
-    WGPU_INSTANCE
-        .get()
-        .expect("WGPU_INSTANCE not initialized; make sure to call init_wgpu_device() first")
+pub fn get_wgpu_instance() -> &'static WgpuInstance {
+    unsafe {
+        if GLOBAL_WGPU_INSTANCE.is_null() {
+            panic!("WGPU_INSTANCE not initialized; call init_wgpu_device() first");
+        }
+        &*GLOBAL_WGPU_INSTANCE
+    }
 }
 
-pub async fn init_wgpu_device() -> Result<(), WgpuInstance> {
+pub async fn init_wgpu_device() -> Result<(), ()> {
+    web_sys::console::log_1(&format!("init_wgpu_device").into());
+
     let instance = wgpu::Instance::default();
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
@@ -38,7 +44,7 @@ pub async fn init_wgpu_device() -> Result<(), WgpuInstance> {
         .await
         .unwrap();
     let mut limit = wgpu::Limits::default();
-    limit.max_storage_buffer_binding_size = 128 << 22; // (512 MiB)
+    limit.max_storage_buffer_binding_size = 128 << 22; // 512 MiB
     let (device, queue) = adapter
         .request_device(
             &wgpu::DeviceDescriptor {
@@ -51,12 +57,30 @@ pub async fn init_wgpu_device() -> Result<(), WgpuInstance> {
         )
         .await
         .unwrap();
-    WGPU_INSTANCE.set(WgpuInstance {
+    let new_box = Box::new(WgpuInstance {
         instance,
         adapter,
         device,
         queue,
-    })
+    });
+    let new_raw = Box::into_raw(new_box);
+
+    unsafe {
+        if !GLOBAL_WGPU_INSTANCE.is_null() {
+            Err(())
+        } else {
+            GLOBAL_WGPU_INSTANCE = new_raw;
+            Ok(())
+        }
+    }
+}
+
+pub async fn cleanup_wgpu_device() {
+    unsafe {
+        if !GLOBAL_WGPU_INSTANCE.is_null() {
+            drop(Box::from_raw(GLOBAL_WGPU_INSTANCE));
+        }
+    }
 }
 
 // pub struct
@@ -101,13 +125,11 @@ pub fn compute_composition_polynomial_original_trace_gpu(
         .device
         .poll(wgpu::Maintain::wait())
         .panic_on_timeout();
-
     receiver.recv().unwrap().unwrap();
     let data = output_slice.get_mapped_range();
     let output = ComputeCompositionPolynomialOutput::from_bytes(&data);
     drop(data);
     eval_unit.staging_buffer.unmap();
-
     Arc::new(output)
 }
 

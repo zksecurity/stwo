@@ -29,8 +29,7 @@ wgpu.workspace = true
 flume.workspace = true
 pollster.workspace = true
 [target.'cfg(all(target_family = "wasm", not(target_os = "wasi")))'.dependencies]
-js-sys = "0.3.66"
-wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["console", "Performance", "Window"] }
 
 [dev-dependencies]
 aligned = "0.4.2"

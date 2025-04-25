@@ -4,9 +4,6 @@ use std::any::type_name;
 use std::ops::{Add, AddAssign, Mul, Sub};
 
 use itertools::Itertools;
-#[allow(unused_imports)]
-#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
-use js_sys::{Int32Array, SharedArrayBuffer};
 use num_traits::One;
 use tracing::{info, span, Level};
 
@@ -19,7 +16,6 @@ use crate::core::backend::simd::column::BaseColumn;
 use crate::core::backend::simd::m31::{PackedBaseField, LOG_N_LANES, N_LANES};
 use crate::core::backend::simd::qm31::PackedSecureField;
 use crate::core::backend::simd::SimdBackend;
-#[allow(unused_imports)]
 use crate::core::backend::web::webgpu::eval_composition_poly::{
     compute_composition_polynomial_original_trace_gpu, create_composition_polynomial_gpu_input,
     EvalCompositionPolynomialArgs,
@@ -193,27 +189,21 @@ pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
 ) {
     let web: &mut WebDomainEvaluator<'_> =
         unsafe { &mut *(eval as *mut E as *mut WebDomainEvaluator<'_>) };
+    web_sys::console::log_1(&format!("eval_poseidon_constraints_web").into());
 
     let args = EvalCompositionPolynomialArgs::new(web, lookup_elements);
-    let _web_input = create_composition_polynomial_gpu_input(args);
-    #[cfg(not(target_family = "wasm"))]
-    {
-        let output = compute_composition_polynomial_original_trace_gpu(_web_input);
+    let web_input = create_composition_polynomial_gpu_input(args);
+    let output = compute_composition_polynomial_original_trace_gpu(web_input);
 
-        #[cfg(not(feature = "parallel"))]
-        let enum_iter = output.poly.iter().enumerate();
+    let enum_iter = output.poly.iter().enumerate();
 
-        #[cfg(feature = "parallel")]
-        let enum_iter = output.poly.into_par_iter().enumerate();
-
-        for (chunk_idx, chunk) in enum_iter {
-            for (inner_idx, &qm) in chunk.iter().enumerate() {
-                let idx = chunk_idx * N_LANES as usize + inner_idx;
-                web.col.columns[0].set(idx, qm.a.a.data.into());
-                web.col.columns[1].set(idx, qm.a.b.data.into());
-                web.col.columns[2].set(idx, qm.b.a.data.into());
-                web.col.columns[3].set(idx, qm.b.b.data.into());
-            }
+    for (chunk_idx, chunk) in enum_iter {
+        for (inner_idx, &qm) in chunk.iter().enumerate() {
+            let idx = chunk_idx * N_LANES as usize + inner_idx;
+            web.col.columns[0].set(idx, qm.a.a.data.into());
+            web.col.columns[1].set(idx, qm.a.b.data.into());
+            web.col.columns[2].set(idx, qm.b.a.data.into());
+            web.col.columns[3].set(idx, qm.b.b.data.into());
         }
     }
 }
@@ -549,7 +539,6 @@ mod tests {
 
     use crate::constraint_framework::assert_constraints_on_polys;
     use crate::core::air::Component;
-    use crate::core::backend::web::webgpu::eval_composition_poly::init_wgpu_device;
     use crate::core::channel::Blake2sChannel;
     use crate::core::fields::m31::BaseField;
     use crate::core::fri::FriConfig;
@@ -684,20 +673,25 @@ mod tests {
         verify(&[&component], channel, commitment_scheme, proof).unwrap();
     }
 
-    // #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
-    // #[allow(dead_code)]
-    // #[wasm_bindgen_test::wasm_bindgen_test]
-    #[test_log::test]
-    fn test_web_poseidon_prove() {
+    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+    #[allow(dead_code)]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    //#[test_log::test]
+    async fn test_web_poseidon_prove() {
         // Note: To see time measurement, run test with
         //   RUST_LOG_SPAN_EVENTS=enter,close RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS="
         //   -C target-cpu=native -C target-feature=+avx512f -C opt-level=3" cargo test
         //   test_simd_poseidon_prove -- --nocapture
-        let _ = pollster::block_on(init_wgpu_device());
+
+        use crate::core::backend::web::webgpu::eval_composition_poly::{
+            cleanup_wgpu_device, init_wgpu_device,
+        };
+        let _ = init_wgpu_device().await;
+        web_sys::console::log_1(&format!("init_wgpu_device").into());
 
         // Get from environment variable:
         let log_n_instances = env::var("LOG_N_INSTANCES")
-            .unwrap_or_else(|_| "14".to_string())
+            .unwrap_or_else(|_| "12".to_string())
             .parse::<u32>()
             .unwrap();
         let config = PcsConfig {
@@ -708,6 +702,7 @@ mod tests {
         // Prove.;
         let (component, proof) = prove_poseidon_web(log_n_instances, config);
 
+        web_sys::console::log_1(&format!("prove_poseidon_web done").into());
         // Verify.
         // TODO: Create Air instance independently.
         let channel = &mut Blake2sChannel::default();
@@ -729,5 +724,8 @@ mod tests {
         commitment_scheme.commit(proof.commitments[2], &sizes[2], channel);
 
         verify(&[&component], channel, commitment_scheme, proof).unwrap();
+        web_sys::console::log_1(&format!("verify done").into());
+
+        let _ = cleanup_wgpu_device().await;
     }
 }

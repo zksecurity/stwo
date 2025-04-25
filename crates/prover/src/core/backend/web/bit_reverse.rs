@@ -1,6 +1,4 @@
 #[cfg(feature = "parallel")]
-use rayon::prelude::*;
-
 use super::WebBackend;
 use crate::core::backend::cpu::bit_reverse as cpu_bit_reverse;
 use crate::core::backend::simd::bit_reverse::bit_reverse_m31;
