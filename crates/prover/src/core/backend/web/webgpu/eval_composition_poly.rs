@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use itertools::Itertools;
 use wgpu::util::DeviceExt;
@@ -8,10 +9,9 @@ use super::gpu_types::*;
 use super::qm31::GpuQM31;
 use super::ByteSerialize;
 use crate::core::backend::cpu::circle::circle_twiddles_from_line_twiddles;
-use crate::core::backend::simd::column::VeryPackedSecureColumnByCoords;
 use crate::core::backend::web::webgpu::qm31::GpuM31;
 use crate::core::backend::web::WebBackend;
-use crate::core::backend::{Column, CpuBackend};
+use crate::core::backend::CpuBackend;
 use crate::core::fields::m31::{BaseField, M31};
 use crate::core::fields::qm31::QM31;
 use crate::core::pcs::TreeVec;
@@ -41,9 +41,8 @@ pub struct EvalCompositionPolynomialArgs<'a> {
 }
 
 pub async fn compute_composition_polynomial_original_trace_gpu(
-    input: Box<ComputeCompositionPolynomialInput>,
-    col: &mut VeryPackedSecureColumnByCoords,
-) {
+    input: Arc<ComputeCompositionPolynomialInput>,
+) -> Arc<ComputeCompositionPolynomialOutput> {
     let instance = init_wgpu_instance(input).await;
     instance.queue.submit(Some(instance.encoder.finish()));
     let output_slice = instance.staging_buffer.slice(..);
@@ -62,28 +61,13 @@ pub async fn compute_composition_polynomial_original_trace_gpu(
         output
     };
 
-    let output = result.await;
-
-    #[cfg(not(feature = "parallel"))]
-    let enum_iter = output.poly.iter().enumerate();
-
-    #[cfg(feature = "parallel")]
-    let enum_iter = output.poly.into_par_iter().enumerate();
-
-    for (chunk_idx, chunk) in enum_iter {
-        for (inner_idx, &qm) in chunk.iter().enumerate() {
-            let idx = chunk_idx * N_LANES as usize + inner_idx;
-            col.columns[0].set(idx, qm.a.a.data.into());
-            col.columns[1].set(idx, qm.a.b.data.into());
-            col.columns[2].set(idx, qm.b.a.data.into());
-            col.columns[3].set(idx, qm.b.b.data.into());
-        }
-    }
+    // let output = result.await;
+    return Arc::new(result.await);
 }
 
 pub fn create_composition_polynomial_gpu_input<'a>(
     args: EvalCompositionPolynomialArgs<'a>,
-) -> Box<ComputeCompositionPolynomialInput> {
+) -> Arc<ComputeCompositionPolynomialInput> {
     let original_trace_gpu: [GpuOriginalColumn; N_ORIGINAL_TRACE_COLUMNS as usize] = args
         .original_trace
         .iter()
@@ -142,7 +126,7 @@ pub fn create_composition_polynomial_gpu_input<'a>(
 
     let lookup_elements_gpu = GpuLookupElements::from(args.lookup_elements);
 
-    Box::new(ComputeCompositionPolynomialInput {
+    Arc::new(ComputeCompositionPolynomialInput {
         original_trace: original_trace_gpu,
         twiddles: twiddle_input,
         denom_inv: denom_inv_gpu,
@@ -154,7 +138,7 @@ pub fn create_composition_polynomial_gpu_input<'a>(
     })
 }
 
-async fn init_wgpu_instance(input: Box<ComputeCompositionPolynomialInput>) -> WgpuInstance {
+async fn init_wgpu_instance(input: Arc<ComputeCompositionPolynomialInput>) -> WgpuInstance {
     let instance = wgpu::Instance::default();
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {

@@ -50,11 +50,6 @@ pub struct ComputeCompositionPolynomialOutput {
     pub poly: [[GpuQM31; N_LANES as usize]; N_EXTENDED_ROWS as usize],
 }
 
-#[derive(Debug, Clone)]
-pub struct ComputationResults {
-    pub output: ComputeCompositionPolynomialOutput,
-}
-
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct ExtendTraceOutput {

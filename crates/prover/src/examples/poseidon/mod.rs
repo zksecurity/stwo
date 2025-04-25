@@ -2,10 +2,9 @@
 
 use std::any::type_name;
 use std::ops::{Add, AddAssign, Mul, Sub};
-#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
-use std::rc::Rc;
 
 use itertools::Itertools;
+#[allow(unused_imports)]
 #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
 use js_sys::{Int32Array, SharedArrayBuffer};
 use num_traits::One;
@@ -17,9 +16,10 @@ use crate::constraint_framework::{
     TraceLocationAllocator, WebDomainEvaluator,
 };
 use crate::core::backend::simd::column::BaseColumn;
-use crate::core::backend::simd::m31::{PackedBaseField, LOG_N_LANES};
+use crate::core::backend::simd::m31::{PackedBaseField, LOG_N_LANES, N_LANES};
 use crate::core::backend::simd::qm31::PackedSecureField;
 use crate::core::backend::simd::SimdBackend;
+#[allow(unused_imports)]
 use crate::core::backend::web::webgpu::eval_composition_poly::{
     compute_composition_polynomial_original_trace_gpu, create_composition_polynomial_gpu_input,
     EvalCompositionPolynomialArgs,
@@ -76,37 +76,11 @@ impl FrameworkEval for PoseidonEval {
         let web_id = type_name::<WebDomainEvaluator<'_>>().as_ptr() as usize;
 
         if eval.type_id() == web_id {
-            let raw = &mut eval as *mut E as *mut ();
-            let web: &mut WebDomainEvaluator<'_> =
-                unsafe { &mut *(raw as *mut WebDomainEvaluator<'_>) };
-            let args = EvalCompositionPolynomialArgs::new(web, &self.lookup_elements);
-            #[cfg(not(target_family = "wasm"))]
-            {
-                let web_input = create_composition_polynomial_gpu_input(args);
-                let _ = pollster::block_on(compute_composition_polynomial_original_trace_gpu(
-                    web_input, web.col,
-                ));
-            }
-
-            // #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
-            // wasm_bindgen_futures::spawn_local(async move {
-            //     compute_composition_polynomial_original_trace_gpu(args, web.col).await;
-            // });
+            eval_poseidon_constraints_web(&mut eval, &self.lookup_elements);
         } else {
             eval_poseidon_constraints(&mut eval, &self.lookup_elements);
         }
         eval
-    }
-}
-
-#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
-async fn wait_for_flag(arr: Rc<Int32Array>, index: u32, expected: i32) {
-    loop {
-        let val = arr.get_index(index);
-        if val != expected {
-            break;
-        }
-        TimeoutFuture::new(1).await; // 1ms sleep (non-blocking)
     }
 }
 
@@ -211,6 +185,39 @@ fn pow5<F: FieldExpOps>(x: F) -> F {
     let x2 = x.clone() * x.clone();
     let x4 = x2.clone() * x2.clone();
     x4 * x.clone()
+}
+
+pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
+    eval: &mut E,
+    lookup_elements: &PoseidonElements,
+) {
+    let web: &mut WebDomainEvaluator<'_> =
+        unsafe { &mut *(eval as *mut E as *mut WebDomainEvaluator<'_>) };
+
+    let args = EvalCompositionPolynomialArgs::new(web, lookup_elements);
+    let _web_input = create_composition_polynomial_gpu_input(args);
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let output = pollster::block_on(compute_composition_polynomial_original_trace_gpu(
+            _web_input,
+        ));
+
+        #[cfg(not(feature = "parallel"))]
+        let enum_iter = output.poly.iter().enumerate();
+
+        #[cfg(feature = "parallel")]
+        let enum_iter = output.poly.into_par_iter().enumerate();
+
+        for (chunk_idx, chunk) in enum_iter {
+            for (inner_idx, &qm) in chunk.iter().enumerate() {
+                let idx = chunk_idx * N_LANES as usize + inner_idx;
+                web.col.columns[0].set(idx, qm.a.a.data.into());
+                web.col.columns[1].set(idx, qm.a.b.data.into());
+                web.col.columns[2].set(idx, qm.b.a.data.into());
+                web.col.columns[3].set(idx, qm.b.b.data.into());
+            }
+        }
+    }
 }
 
 pub fn eval_poseidon_constraints<E: EvalAtRow>(eval: &mut E, lookup_elements: &PoseidonElements) {
@@ -678,10 +685,10 @@ mod tests {
         verify(&[&component], channel, commitment_scheme, proof).unwrap();
     }
 
-    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
-    #[allow(dead_code)]
-    #[wasm_bindgen_test::wasm_bindgen_test]
-    //#[test_log::test]
+    // #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+    // #[allow(dead_code)]
+    // #[wasm_bindgen_test::wasm_bindgen_test]
+    #[test_log::test]
     fn test_web_poseidon_prove() {
         // Note: To see time measurement, run test with
         //   RUST_LOG_SPAN_EVENTS=enter,close RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS="
