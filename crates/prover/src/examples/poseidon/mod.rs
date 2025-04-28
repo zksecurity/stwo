@@ -1,11 +1,17 @@
 //! AIR for Poseidon2 hash function from <https://eprint.iacr.org/2023/323.pdf>.
 
 use std::any::type_name;
+use std::cell::UnsafeCell;
 use std::ops::{Add, AddAssign, Mul, Sub};
+use std::sync::Arc;
 
 use itertools::Itertools;
+use js_sys::{Atomics, Int32Array, SharedArrayBuffer};
 use num_traits::One;
 use tracing::{info, span, Level};
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+use wasm_bindgen::prelude::wasm_bindgen;
+use wasm_bindgen::prelude::Closure;
 
 use crate::constraint_framework::logup::LogupTraceGenerator;
 use crate::constraint_framework::{
@@ -20,6 +26,7 @@ use crate::core::backend::web::webgpu::eval_composition_poly::{
     compute_composition_polynomial_original_trace_gpu, create_composition_polynomial_gpu_input,
     EvalCompositionPolynomialArgs,
 };
+use crate::core::backend::web::webgpu::ComputeCompositionPolynomialOutput;
 use crate::core::backend::web::WebBackend;
 use crate::core::backend::{Col, Column};
 use crate::core::channel::Blake2sChannel;
@@ -69,7 +76,7 @@ impl FrameworkEval for PoseidonEval {
     where
         E: HasDomainTypeId,
     {
-        let web_id = type_name::<WebDomainEvaluator<'_>>().as_ptr() as usize;
+        let web_id = type_name::<WebDomainEvaluator<'_>>();
 
         if eval.type_id() == web_id {
             eval_poseidon_constraints_web(&mut eval, &self.lookup_elements);
@@ -81,13 +88,13 @@ impl FrameworkEval for PoseidonEval {
 }
 
 pub trait HasDomainTypeId {
-    fn type_id(&self) -> usize;
+    fn type_id(&self) -> &str;
     fn as_ptr(&self) -> *const ();
 }
 
 impl<T> HasDomainTypeId for T {
-    fn type_id(&self) -> usize {
-        type_name::<T>().as_ptr() as usize
+    fn type_id(&self) -> &str {
+        type_name::<T>()
     }
     fn as_ptr(&self) -> *const () {
         self as *const T as *const ()
@@ -189,11 +196,73 @@ pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
 ) {
     let web: &mut WebDomainEvaluator<'_> =
         unsafe { &mut *(eval as *mut E as *mut WebDomainEvaluator<'_>) };
+    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
     web_sys::console::log_1(&format!("eval_poseidon_constraints_web").into());
 
     let args = EvalCompositionPolynomialArgs::new(web, lookup_elements);
     let web_input = create_composition_polynomial_gpu_input(args);
-    let output = compute_composition_polynomial_original_trace_gpu(web_input);
+    // 이거를 독립 워커로 잘 감쌈
+
+    // make atomic
+    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+    let sab = SharedArrayBuffer::new(4);
+    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+    let state = Int32Array::new(&sab);
+    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+    state.fill(0, 0, 1);
+
+    // let (sender, receiver) = flume::bounded(1);
+    // rayon::spawn(move || {
+    //     let result =
+    //         pollster::block_on(compute_composition_polynomial_original_trace_gpu(web_input));
+    //     sender.send(result).unwrap();
+    // });
+
+    let slot: Arc<UnsafeCell<Option<Arc<ComputeCompositionPolynomialOutput>>>> =
+        Arc::new(UnsafeCell::new(None));
+    let slot_clone = slot.clone();
+
+    let fut = async move { compute_composition_polynomial_original_trace_gpu(web_input).await };
+    // this schedules it on the main thread’s event loop
+
+    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+    web_sys::console::log_1(&format!("spawn_local").into());
+    wasm_bindgen_futures::spawn_local({
+        let state_clone = state.clone();
+        async move {
+            #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+            web_sys::console::log_1(&format!("spawned_local_async").into());
+            let result = fut.await;
+            // … deliver result back to JS or wherever …
+            unsafe {
+                *slot_clone.get() = Some(result.clone());
+            }
+
+            state_clone.set_index(0, 1);
+            let _ = Atomics::notify(&state_clone, 0);
+        }
+    });
+
+    // 4) 워커 스레드에서 동기 블록
+    // Atomics::wait(&state, 0, 0).unwrap();
+
+    // 2) schedule the blocking wait _after_ this function returns
+    let cb = Closure::once_into_js(move || {
+        // now the micro-task has had a chance to enqueue
+        let _ = Atomics::wait(&state, 0, 0);
+        // … continue …
+    });
+    web_sys::window()
+        .unwrap()
+        .set_timeout_with_callback_and_timeout_and_arguments_0(cb.unchecked_ref(), 0)
+        .unwrap();
+
+    // 5) 깨어나면 슬롯에서 꺼내서 반환
+    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+    web_sys::console::log_1(&format!("now we try get slot").into());
+    let output = unsafe { (*slot.get()).take().unwrap() };
+    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+    web_sys::console::log_1(&format!("now we get slot").into());
 
     let enum_iter = output.poly.iter().enumerate();
 
@@ -527,6 +596,117 @@ pub fn prove_poseidon_web(
     (component, proof)
 }
 
+// pub use wasm_bindgen_rayon::
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+use js_sys::wasm_bindgen::{JsCast, JsValue};
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+use js_sys::{Array, Reflect};
+#[allow(unused_imports)]
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+use wasm_bindgen_futures::JsFuture;
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+pub use wasm_bindgen_rayon::init_thread_pool;
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+use web_sys::console;
+
+#[allow(unused_imports)]
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+use crate::core::backend::web::webgpu::eval_composition_poly::{
+    cleanup_wgpu_device, init_wgpu_device,
+};
+
+#[allow(dead_code)]
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+#[wasm_bindgen]
+pub async fn web_poseidon_prove() {
+    // Note: To see time measurement, run test with
+    //   RUST_LOG_SPAN_EVENTS=enter,close RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS="
+    //   test_simd_poseidon_prove -- --nocapture
+
+    use crate::core::air::Component;
+    use crate::core::fri::FriConfig;
+    use crate::core::pcs::CommitmentSchemeVerifier;
+    use crate::core::prover::verify;
+    let global = js_sys::global();
+
+    // 2. crossOriginIsolated 체크
+    let is_isolated = Reflect::get(&global, &JsValue::from_str("crossOriginIsolated"))
+        .ok()
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if is_isolated {
+        console::log_1(&"✅ crossOriginIsolated: true".into());
+    } else {
+        console::warn_1(&"❌ crossOriginIsolated: false".into());
+    }
+
+    match Reflect::get(&global, &JsValue::from_str("SharedArrayBuffer")) {
+        Ok(sab_val) if !sab_val.is_undefined() => {
+            // 생성자 함수로 변환
+            if let Ok(sab_ctor) = sab_val.dyn_into::<js_sys::Function>() {
+                // new SharedArrayBuffer(1)을 흉내낼 인자 배열 생성
+                let args = Array::new();
+                args.push(&JsValue::from(1u32));
+
+                // Reflect.construct로 인스턴스 생성
+                match Reflect::construct(&sab_ctor, &args) {
+                    Ok(_) => console::log_1(&"✅ SharedArrayBuffer 생성 성공".into()),
+                    Err(err) => console::warn_1(&format!("❌ SAB 생성 실패: {:?}", err).into()),
+                }
+            } else {
+                console::warn_1(&"❌ SAB 생성자를 함수로 변환하지 못함".into());
+            }
+        }
+        _ => {
+            console::warn_1(&"❌ SharedArrayBuffer 정의되지 않음".into());
+        }
+    }
+
+    let fut = JsFuture::from(init_thread_pool(4));
+    web_sys::console::log_1(&format!("init_thread_pool done").into());
+    fut.await.unwrap();
+    web_sys::console::log_1(&format!("init_thread_pool done2").into());
+
+    // let _ = init_wgpu_device().await;
+    // web_sys::console::log_1(&format!("init_wgpu_device").into());
+
+    // Get from environment variable:
+    let log_n_instances = 12;
+    let config = PcsConfig {
+        pow_bits: 10,
+        fri_config: FriConfig::new(5, 1, 64),
+    };
+
+    // Prove.;
+    let (component, proof) = prove_poseidon_web(log_n_instances, config);
+
+    web_sys::console::log_1(&format!("prove_poseidon_web done").into());
+    // Verify.
+    // TODO: Create Air instance independently.
+    let channel = &mut Blake2sChannel::default();
+    let commitment_scheme =
+        &mut CommitmentSchemeVerifier::<Blake2sMerkleChannel>::new(proof.config);
+
+    // Decommit.
+    // Retrieve the expected column sizes in each commitment interaction, from the AIR.
+    let sizes = component.trace_log_degree_bounds();
+
+    // Preprocessed columns.
+    commitment_scheme.commit(proof.commitments[0], &sizes[0], channel);
+    // Trace columns.
+    commitment_scheme.commit(proof.commitments[1], &sizes[1], channel);
+    // Draw lookup element.
+    let lookup_elements = PoseidonElements::draw(channel);
+    assert_eq!(lookup_elements, component.lookup_elements);
+    // Interaction columns.
+    commitment_scheme.commit(proof.commitments[2], &sizes[2], channel);
+
+    verify(&[&component], channel, commitment_scheme, proof).unwrap();
+    web_sys::console::log_1(&format!("verify done").into());
+
+    let _ = cleanup_wgpu_device().await;
+}
+
 #[cfg(test)]
 mod tests {
     use std::env;
@@ -539,6 +719,9 @@ mod tests {
 
     use crate::constraint_framework::assert_constraints_on_polys;
     use crate::core::air::Component;
+    use crate::core::backend::web::webgpu::eval_composition_poly::{
+        cleanup_wgpu_device, init_wgpu_device,
+    };
     use crate::core::channel::Blake2sChannel;
     use crate::core::fields::m31::BaseField;
     use crate::core::fri::FriConfig;
@@ -555,7 +738,8 @@ mod tests {
     use crate::math::matrix::{RowMajorMatrix, SquareMatrix};
 
     #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
-    wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_dedicated_worker);
+    // wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_worker);
+    wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
     #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
     #[wasm_bindgen_test::wasm_bindgen_test]
@@ -673,6 +857,61 @@ mod tests {
         verify(&[&component], channel, commitment_scheme, proof).unwrap();
     }
 
+    #[test_log::test]
+    fn test_poseidon_prove_webbackend() {
+        // Note: To see time measurement, run test with
+        //   RUST_LOG_SPAN_EVENTS=enter,close RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS="
+        //   -C target-cpu=native -C target-feature=+avx512f -C opt-level=3" cargo test
+        //   test_simd_poseidon_prove -- --nocapture
+
+        pollster::block_on(async {
+            let _ = init_wgpu_device().await;
+        });
+
+        // Get from environment variable:
+        let log_n_instances = env::var("LOG_N_INSTANCES")
+            .unwrap_or_else(|_| "13".to_string())
+            .parse::<u32>()
+            .unwrap();
+        let config = PcsConfig {
+            pow_bits: 10,
+            fri_config: FriConfig::new(5, 1, 64),
+        };
+
+        // Prove.;
+        let (component, proof) = prove_poseidon_web(log_n_instances, config);
+
+        // Verify.
+        // TODO: Create Air instance independently.
+        let channel = &mut Blake2sChannel::default();
+        let commitment_scheme =
+            &mut CommitmentSchemeVerifier::<Blake2sMerkleChannel>::new(proof.config);
+
+        // Decommit.
+        // Retrieve the expected column sizes in each commitment interaction, from the AIR.
+        let sizes = component.trace_log_degree_bounds();
+
+        // Preprocessed columns.
+        commitment_scheme.commit(proof.commitments[0], &sizes[0], channel);
+        // Trace columns.
+        commitment_scheme.commit(proof.commitments[1], &sizes[1], channel);
+        // Draw lookup element.
+        let lookup_elements = PoseidonElements::draw(channel);
+        assert_eq!(lookup_elements, component.lookup_elements);
+        // Interaction columns.
+        commitment_scheme.commit(proof.commitments[2], &sizes[2], channel);
+
+        verify(&[&component], channel, commitment_scheme, proof).unwrap();
+
+        pollster::block_on(async {
+            let _ = cleanup_wgpu_device().await;
+        });
+    }
+
+    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+    pub use wasm_bindgen_rayon::init_thread_pool;
+    // pub use wasm_bindgen_rayon::
+
     #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
     #[allow(dead_code)]
     #[wasm_bindgen_test::wasm_bindgen_test]
@@ -682,6 +921,50 @@ mod tests {
         //   RUST_LOG_SPAN_EVENTS=enter,close RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS="
         //   -C target-cpu=native -C target-feature=+avx512f -C opt-level=3" cargo test
         //   test_simd_poseidon_prove -- --nocapture
+        let global = js_sys::global();
+
+        // 2. crossOriginIsolated 체크
+        let is_isolated = Reflect::get(&global, &JsValue::from_str("crossOriginIsolated"))
+            .ok()
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if is_isolated {
+            console::log_1(&"✅ crossOriginIsolated: true".into());
+        } else {
+            console::warn_1(&"❌ crossOriginIsolated: false".into());
+        }
+
+        match Reflect::get(&global, &JsValue::from_str("SharedArrayBuffer")) {
+            Ok(sab_val) if !sab_val.is_undefined() => {
+                // 생성자 함수로 변환
+                if let Ok(sab_ctor) = sab_val.dyn_into::<js_sys::Function>() {
+                    // new SharedArrayBuffer(1)을 흉내낼 인자 배열 생성
+                    let args = Array::new();
+                    args.push(&JsValue::from(1u32));
+
+                    // Reflect.construct로 인스턴스 생성
+                    match Reflect::construct(&sab_ctor, &args) {
+                        Ok(_) => console::log_1(&"✅ SharedArrayBuffer 생성 성공".into()),
+                        Err(err) => console::warn_1(&format!("❌ SAB 생성 실패: {:?}", err).into()),
+                    }
+                } else {
+                    console::warn_1(&"❌ SAB 생성자를 함수로 변환하지 못함".into());
+                }
+            }
+            _ => {
+                console::warn_1(&"❌ SharedArrayBuffer 정의되지 않음".into());
+            }
+        }
+
+        let fut = JsFuture::from(init_thread_pool(4));
+        web_sys::console::log_1(&format!("init_thread_pool done").into());
+        fut.await.unwrap();
+        web_sys::console::log_1(&format!("init_thread_pool done2").into());
+
+        use js_sys::wasm_bindgen::{JsCast, JsValue};
+        use js_sys::{Array, Reflect};
+        use wasm_bindgen_futures::JsFuture;
+        use web_sys::console;
 
         use crate::core::backend::web::webgpu::eval_composition_poly::{
             cleanup_wgpu_device, init_wgpu_device,

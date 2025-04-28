@@ -32,9 +32,11 @@ pub fn get_wgpu_instance() -> &'static WgpuInstance {
 }
 
 pub async fn init_wgpu_device() -> Result<(), ()> {
+    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
     web_sys::console::log_1(&format!("init_wgpu_device").into());
 
     let instance = wgpu::Instance::default();
+    web_sys::console::log_1(&format!("init_wgpu_device instance").into());
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -43,6 +45,7 @@ pub async fn init_wgpu_device() -> Result<(), ()> {
         })
         .await
         .unwrap();
+    web_sys::console::log_1(&format!("init_wgpu_device adapter").into());
     let mut limit = wgpu::Limits::default();
     limit.max_storage_buffer_binding_size = 128 << 22; // 512 MiB
     let (device, queue) = adapter
@@ -64,6 +67,8 @@ pub async fn init_wgpu_device() -> Result<(), ()> {
         queue,
     });
     let new_raw = Box::into_raw(new_box);
+    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+    web_sys::console::log_1(&format!("init_wgpu_device done").into());
 
     unsafe {
         if !GLOBAL_WGPU_INSTANCE.is_null() {
@@ -78,6 +83,8 @@ pub async fn init_wgpu_device() -> Result<(), ()> {
 pub async fn cleanup_wgpu_device() {
     unsafe {
         if !GLOBAL_WGPU_INSTANCE.is_null() {
+            let instance = get_wgpu_instance();
+            instance.device.destroy();
             drop(Box::from_raw(GLOBAL_WGPU_INSTANCE));
         }
     }
@@ -113,24 +120,32 @@ pub struct EvalCompositionPolynomialArgs<'a> {
     pub total_sum: QM31,
 }
 
-pub fn compute_composition_polynomial_original_trace_gpu(
+pub async fn compute_composition_polynomial_original_trace_gpu(
     input: Arc<ComputeCompositionPolynomialInput>,
 ) -> Arc<ComputeCompositionPolynomialOutput> {
+    init_wgpu_device().await.unwrap();
     let eval_unit = init_wgpu_eval_unit(input);
     eval_unit.queue.submit(Some(eval_unit.encoder.finish()));
+
+    web_sys::console::log_1(&format!("compute_composition_polynomial_original_trace_gpu").into());
+    let output: Arc<ComputeCompositionPolynomialOutput>;
     let output_slice = eval_unit.staging_buffer.slice(..);
     let (sender, receiver) = flume::bounded(1);
     output_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
+    web_sys::console::log_1(&format!("map async called").into());
+
     eval_unit
         .device
-        .poll(wgpu::Maintain::wait())
+        .poll(wgpu::Maintain::Wait)
         .panic_on_timeout();
-    receiver.recv().unwrap().unwrap();
+
+    receiver.recv_async().await.unwrap().unwrap();
+    web_sys::console::log_1(&format!("recv async done").into());
     let data = output_slice.get_mapped_range();
-    let output = ComputeCompositionPolynomialOutput::from_bytes(&data);
+    output = Arc::new(ComputeCompositionPolynomialOutput::from_bytes(&data));
     drop(data);
     eval_unit.staging_buffer.unmap();
-    Arc::new(output)
+    output
 }
 
 pub fn create_composition_polynomial_gpu_input<'a>(
