@@ -8,6 +8,8 @@ use itertools::Itertools;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 use tracing::{span, Level};
+#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+use web_sys::console;
 
 use super::cpu_domain::CpuDomainEvaluator;
 use super::preprocessed_columns::PreProcessedColumnId;
@@ -308,6 +310,9 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
             .map(|idx| &trace.evals[PREPROCESSED_TRACE_IDX][*idx])
             .collect();
 
+        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+        console::time_with_label("simd-work-timer");
+
         // Extend trace if necessary.
         // TODO: Don't extend when eval_size < committed_size. Instead, pick a good
         // subdomain. (For larger blowup factors).
@@ -418,6 +423,9 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
                 }
             }
         });
+
+        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+        console::time_end_with_label("simd-work-timer");
     }
 }
 

@@ -31,11 +31,13 @@ pub async fn runner_eval_composition_polynomial(
         console::log_1(&format!("runner: Atomics.wait returned {:?}", outcome).into());
 
         // start timer here wasm
+        console::time_with_label("runner-timer");
         input_view.copy_to(&mut input_buf);
         let input_data = Arc::new(ComputeCompositionPolynomialInput::from_bytes(&input_buf));
 
         let output_data = compute_composition_polynomial_wgpu(input_data, &instance).await;
         output_view.copy_from(&output_data.as_bytes());
+        console::time_end_with_label("runner-timer");
 
         Atomics::store(&request_flag, 0, 0).unwrap();
         console::log_1(&"runner: request_flag set to 0".into());

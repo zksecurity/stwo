@@ -1,7 +1,6 @@
 //! AIR for Poseidon2 hash function from <https://eprint.iacr.org/2023/323.pdf>.
 
 use std::any::type_name;
-use std::cell::RefCell;
 use std::ops::{Add, AddAssign, Mul, Sub};
 use std::sync::Arc;
 
@@ -228,27 +227,12 @@ pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
         let input_bytes = Uint8Array::new(&input_sab);
         let output_bytes = Uint8Array::new(&output_sab);
 
-        let buf = request_flag.buffer();
-        let ctor = js_sys::Reflect::get(&buf, &"constructor".into()).unwrap();
-        let name = js_sys::Reflect::get(&ctor, &"name".into()).unwrap();
-        console::log_1(&format!("buffer.constructor.name = {:?}", name).into());
-
         let args = EvalCompositionPolynomialArgs::new(web, lookup_elements);
         let web_input = create_composition_polynomial_gpu_input(args);
         let buf = web_input.as_bytes();
 
         unsafe {
             let slice = Uint8Array::view(buf);
-            let slice_len = slice.length();
-            let sab_len = input_bytes.length();
-            console::log_1(
-                &format!(
-                    "🔍 slice.length = {}, input_bytes.length = {}",
-                    slice_len, sab_len
-                )
-                .into(),
-            );
-
             input_bytes.set(&slice, 0);
         }
 
@@ -268,11 +252,11 @@ pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
         console::log_1(&format!("process_data: result_buf: {:?}", result_buf.len()).into());
         output = Arc::new(ComputeCompositionPolynomialOutput::from_bytes(&result_buf));
 
-        // Reset receiver state
-        console::log_1(&format!("before wait: flag[0] = {}", request_flag.get_index(0)).into());
+        Atomics::store(&request_flag, 0, 0).unwrap();
 
-        Atomics::store(&response_flag, 0, 0).expect("Failed to reset receiver state");
-        console::log_1(&format!("after wait: flag[0] = {}", request_flag.get_index(0)).into());
+        // Reset receiver state and notify sender
+        Atomics::store(&response_flag, 0, 1).unwrap();
+        Atomics::notify(&response_flag, 0).unwrap();
 
         console::time_end_with_label("work-timer");
     }
@@ -612,6 +596,9 @@ pub fn prove_poseidon_web(
 // use js_sys::wasm_bindgen::{JsCast, JsValue};
 // #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
 // use js_sys::{Array, Reflect};
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+use std::cell::RefCell;
+
 #[allow(unused_imports)]
 #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
 use wasm_bindgen::prelude::*;
@@ -636,7 +623,7 @@ use crate::core::prover::verify;
 
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
 #[wasm_bindgen]
-pub async fn test_poseidon_web(
+pub fn test_poseidon_web(
     input_sab: &js_sys::SharedArrayBuffer,
     output_sab: &js_sys::SharedArrayBuffer,
     receiver_sab: &js_sys::SharedArrayBuffer,
@@ -649,7 +636,7 @@ pub async fn test_poseidon_web(
 
     console::time_with_label("global-timer");
 
-    let log_n_instances = 16;
+    let log_n_instances = 17;
     let config = PcsConfig {
         pow_bits: 10,
         fri_config: FriConfig::new(5, 1, 64),
@@ -682,43 +669,41 @@ pub async fn test_poseidon_web(
     console::log_1(&"verify success".into());
     console::time_end_with_label("global-timer");
 
-    test_simd_poseidon_prove_wasm();
-}
+    {
+        console::time_with_label("global-simd-timer");
+        // Get from environment variable:
+        let log_n_instances = 17;
+        let config: PcsConfig = PcsConfig {
+            pow_bits: 10,
+            fri_config: FriConfig::new(5, 1, 64),
+        };
 
-fn test_simd_poseidon_prove_wasm() {
-    console::time_with_label("global-simd-timer");
-    // Get from environment variable:
-    let log_n_instances = 16;
-    let config: PcsConfig = PcsConfig {
-        pow_bits: 10,
-        fri_config: FriConfig::new(5, 1, 64),
-    };
+        // Prove.
+        let (component, proof) = prove_poseidon(log_n_instances, config);
 
-    // Prove.
-    let (component, proof) = prove_poseidon(log_n_instances, config);
+        // Verify.
+        // TODO: Create Air instance independently.
+        let channel = &mut Blake2sChannel::default();
+        let commitment_scheme =
+            &mut CommitmentSchemeVerifier::<Blake2sMerkleChannel>::new(proof.config);
 
-    // Verify.
-    // TODO: Create Air instance independently.
-    let channel = &mut Blake2sChannel::default();
-    let commitment_scheme =
-        &mut CommitmentSchemeVerifier::<Blake2sMerkleChannel>::new(proof.config);
+        // Decommit.
+        // Retrieve the expected column sizes in each commitment interaction, from the AIR.
+        let sizes = component.trace_log_degree_bounds();
 
-    // Decommit.
-    // Retrieve the expected column sizes in each commitment interaction, from the AIR.
-    let sizes = component.trace_log_degree_bounds();
+        // Preprocessed columns.
+        commitment_scheme.commit(proof.commitments[0], &sizes[0], channel);
+        // Trace columns.
+        commitment_scheme.commit(proof.commitments[1], &sizes[1], channel);
+        // Draw lookup element.
+        let lookup_elements = PoseidonElements::draw(channel);
+        assert_eq!(lookup_elements, component.lookup_elements);
+        // Interaction columns.
+        commitment_scheme.commit(proof.commitments[2], &sizes[2], channel);
 
-    // Preprocessed columns.
-    commitment_scheme.commit(proof.commitments[0], &sizes[0], channel);
-    // Trace columns.
-    commitment_scheme.commit(proof.commitments[1], &sizes[1], channel);
-    // Draw lookup element.
-    let lookup_elements = PoseidonElements::draw(channel);
-    assert_eq!(lookup_elements, component.lookup_elements);
-    // Interaction columns.
-    commitment_scheme.commit(proof.commitments[2], &sizes[2], channel);
-
-    verify(&[&component], channel, commitment_scheme, proof).unwrap();
-    console::time_end_with_label("global-simd-timer");
+        verify(&[&component], channel, commitment_scheme, proof).unwrap();
+        console::time_end_with_label("global-simd-timer");
+    }
 }
 
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
@@ -886,7 +871,7 @@ mod tests {
         //   test_simd_poseidon_prove -- --nocapture
         // Get from environment variable:
         let log_n_instances = env::var("LOG_N_INSTANCES")
-            .unwrap_or_else(|_| "14".to_string())
+            .unwrap_or_else(|_| "17".to_string())
             .parse::<u32>()
             .unwrap();
         let config = PcsConfig {

@@ -152,14 +152,23 @@ pub async fn init_wgpu_instance() -> WgpuInstance {
         })
         .await
         .unwrap();
-    let mut limit = wgpu::Limits::default();
-    limit.max_storage_buffer_binding_size = 128 << 22; // 512 MiB
+    // let mut limit = wgpu::Limits::default();
+    let adapter_limits = adapter.limits();
+
+    let limits = wgpu::Limits {
+        // bump storage‐binding to 512 MiB
+        max_storage_buffer_binding_size: 512 * 1024 * 1024,
+        // bump overall buffer size to 4 GiB (adapter reports it supports this)
+        max_buffer_size: adapter_limits.max_buffer_size / 2, // or hard‑code 4 GiB if you’ve checked
+        ..adapter_limits
+    };
+
     let (device, queue) = adapter
         .request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("Device"),
                 required_features: wgpu::Features::SHADER_INT64,
-                required_limits: limit,
+                required_limits: limits,
                 memory_hints: wgpu::MemoryHints::Performance,
             },
             None,
