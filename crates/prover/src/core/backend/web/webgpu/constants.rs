@@ -1,4 +1,4 @@
-pub const N_ROWS: u32 = 128;
+pub const N_ROWS: u32 = 512;
 pub const N_CONSTRAINTS: u32 = 1144;
 
 pub const N_STATE: u32 = 16;

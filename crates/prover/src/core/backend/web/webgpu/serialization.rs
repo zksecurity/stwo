@@ -30,9 +30,17 @@ impl ByteSerialize for GpuOriginalColumn {}
 impl ByteSerialize for ComputeCompositionPolynomialOutput {}
 impl ByteSerialize for ComputeCompositionPolynomialInput {}
 
+impl ComputeCompositionPolynomialInput {
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        assert_eq!(bytes.len(), std::mem::size_of::<Self>());
+        unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const Self) }
+    }
+}
+
 impl ComputeCompositionPolynomialOutput {
     pub fn from_bytes(bytes: &[u8]) -> Self {
-        unsafe { *(bytes.as_ptr() as *const Self) }
+        assert_eq!(bytes.len(), std::mem::size_of::<Self>());
+        unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const Self) }
     }
 }
 

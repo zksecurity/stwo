@@ -1,11 +1,19 @@
 //! AIR for Poseidon2 hash function from <https://eprint.iacr.org/2023/323.pdf>.
 
 use std::any::type_name;
+use std::cell::RefCell;
 use std::ops::{Add, AddAssign, Mul, Sub};
+use std::sync::Arc;
 
 use itertools::Itertools;
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+use js_sys::SharedArrayBuffer;
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+use js_sys::{Atomics, Int32Array, Uint8Array};
 use num_traits::One;
 use tracing::{info, span, Level};
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+use web_sys::console;
 
 use crate::constraint_framework::logup::LogupTraceGenerator;
 use crate::constraint_framework::{
@@ -16,10 +24,14 @@ use crate::core::backend::simd::column::BaseColumn;
 use crate::core::backend::simd::m31::{PackedBaseField, LOG_N_LANES, N_LANES};
 use crate::core::backend::simd::qm31::PackedSecureField;
 use crate::core::backend::simd::SimdBackend;
+#[allow(unused_imports)]
 use crate::core::backend::web::webgpu::eval_composition_poly::{
     compute_composition_polynomial_wgpu, create_composition_polynomial_gpu_input,
     init_wgpu_instance, EvalCompositionPolynomialArgs,
 };
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+use crate::core::backend::web::webgpu::ByteSerialize;
+use crate::core::backend::web::webgpu::ComputeCompositionPolynomialOutput;
 use crate::core::backend::web::WebBackend;
 use crate::core::backend::{Col, Column};
 use crate::core::channel::Blake2sChannel;
@@ -67,12 +79,11 @@ impl FrameworkEval for PoseidonEval {
     }
     fn evaluate<E: EvalAtRow>(&self, mut eval: E) -> E
     where
-        E: HasDomainTypeId,
+        E: HasDomainTypeName,
     {
-        let web_id = type_name::<WebDomainEvaluator<'_>>();
+        let web_name = type_name::<WebDomainEvaluator<'_>>();
 
-        if eval.type_id() == web_id {
-            println!("eval_poseidon_constraints_web");
+        if eval.type_name() == web_name {
             eval_poseidon_constraints_web(&mut eval, &self.lookup_elements);
         } else {
             eval_poseidon_constraints(&mut eval, &self.lookup_elements);
@@ -81,13 +92,13 @@ impl FrameworkEval for PoseidonEval {
     }
 }
 
-pub trait HasDomainTypeId {
-    fn type_id(&self) -> &str;
+pub trait HasDomainTypeName {
+    fn type_name(&self) -> &str;
     fn as_ptr(&self) -> *const ();
 }
 
-impl<T> HasDomainTypeId for T {
-    fn type_id(&self) -> &str {
+impl<T> HasDomainTypeName for T {
+    fn type_name(&self) -> &str {
         type_name::<T>()
     }
     fn as_ptr(&self) -> *const () {
@@ -191,10 +202,80 @@ pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
     let web: &mut WebDomainEvaluator<'_> =
         unsafe { &mut *(eval as *mut E as *mut WebDomainEvaluator<'_>) };
 
-    let instance = pollster::block_on(init_wgpu_instance());
-    let args = EvalCompositionPolynomialArgs::new(web, lookup_elements);
-    let web_input = create_composition_polynomial_gpu_input(args);
-    let output = pollster::block_on(compute_composition_polynomial_wgpu(web_input, instance));
+    let output: Arc<ComputeCompositionPolynomialOutput>;
+    // if not wasm32
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let instance = pollster::block_on(init_wgpu_instance());
+        let args = EvalCompositionPolynomialArgs::new(web, lookup_elements);
+        let web_input = create_composition_polynomial_gpu_input(args);
+        output = pollster::block_on(compute_composition_polynomial_wgpu(web_input, &instance));
+    }
+
+    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+    {
+        console::time_with_label("work-timer");
+
+        let (input_sab, output_sab, recv_sab, send_sab) = (
+            INPUT_SAB.with(|c| c.borrow().as_ref().unwrap().clone()),
+            OUTPUT_SAB.with(|c| c.borrow().as_ref().unwrap().clone()),
+            RECEIVER_SAB.with(|c| c.borrow().as_ref().unwrap().clone()),
+            SENDER_SAB.with(|c| c.borrow().as_ref().unwrap().clone()),
+        );
+
+        let request_flag = Int32Array::new(&send_sab);
+        let response_flag = Int32Array::new(&recv_sab);
+        let input_bytes = Uint8Array::new(&input_sab);
+        let output_bytes = Uint8Array::new(&output_sab);
+
+        let buf = request_flag.buffer();
+        let ctor = js_sys::Reflect::get(&buf, &"constructor".into()).unwrap();
+        let name = js_sys::Reflect::get(&ctor, &"name".into()).unwrap();
+        console::log_1(&format!("buffer.constructor.name = {:?}", name).into());
+
+        let args = EvalCompositionPolynomialArgs::new(web, lookup_elements);
+        let web_input = create_composition_polynomial_gpu_input(args);
+        let buf = web_input.as_bytes();
+
+        unsafe {
+            let slice = Uint8Array::view(buf);
+            let slice_len = slice.length();
+            let sab_len = input_bytes.length();
+            console::log_1(
+                &format!(
+                    "🔍 slice.length = {}, input_bytes.length = {}",
+                    slice_len, sab_len
+                )
+                .into(),
+            );
+
+            input_bytes.set(&slice, 0);
+        }
+
+        // 1) Write value to send to GPU worker
+        Atomics::store(&request_flag, 0, 1).unwrap();
+        // 2) Wake up worker with notify
+        Atomics::notify(&request_flag, 0).unwrap();
+
+        console::log_1(&"process_data: Atomics.wait on receiver_state".into());
+        let outcome = Atomics::wait(&response_flag, 0, 0).unwrap();
+        console::log_1(&format!("process_data: Atomics.wait returned {:?}", outcome).into());
+
+        let out_len = output_bytes.length() as usize;
+        let mut result_buf = vec![0u8; out_len];
+        output_bytes.copy_to(&mut result_buf);
+
+        console::log_1(&format!("process_data: result_buf: {:?}", result_buf.len()).into());
+        output = Arc::new(ComputeCompositionPolynomialOutput::from_bytes(&result_buf));
+
+        // Reset receiver state
+        console::log_1(&format!("before wait: flag[0] = {}", request_flag.get_index(0)).into());
+
+        Atomics::store(&response_flag, 0, 0).expect("Failed to reset receiver state");
+        console::log_1(&format!("after wait: flag[0] = {}", request_flag.get_index(0)).into());
+
+        console::time_end_with_label("work-timer");
+    }
 
     let enum_iter = output.poly.iter().enumerate();
 
@@ -459,7 +540,6 @@ pub fn prove_poseidon(
     (component, proof)
 }
 
-#[allow(dead_code)]
 pub fn prove_poseidon_web(
     log_n_instances: u32,
     config: PcsConfig,
@@ -526,6 +606,132 @@ pub fn prove_poseidon_web(
     let proof = prove(&[&component], channel, commitment_scheme).unwrap();
 
     (component, proof)
+}
+
+// #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+// use js_sys::wasm_bindgen::{JsCast, JsValue};
+// #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+// use js_sys::{Array, Reflect};
+#[allow(unused_imports)]
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+use wasm_bindgen::prelude::*;
+#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+thread_local! {
+    static INPUT_SAB:    RefCell<Option<SharedArrayBuffer>> = RefCell::new(None);
+    static OUTPUT_SAB:   RefCell<Option<SharedArrayBuffer>> = RefCell::new(None);
+    static RECEIVER_SAB: RefCell<Option<SharedArrayBuffer>> = RefCell::new(None);
+    static SENDER_SAB:   RefCell<Option<SharedArrayBuffer>> = RefCell::new(None);
+}
+
+#[allow(unused_imports)]
+#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+use crate::core::air::Component;
+#[allow(unused_imports)]
+#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+use crate::core::fri::FriConfig;
+#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+use crate::core::pcs::CommitmentSchemeVerifier;
+#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+use crate::core::prover::verify;
+
+#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+#[wasm_bindgen]
+pub async fn test_poseidon_web(
+    input_sab: &js_sys::SharedArrayBuffer,
+    output_sab: &js_sys::SharedArrayBuffer,
+    receiver_sab: &js_sys::SharedArrayBuffer,
+    sender_sab: &js_sys::SharedArrayBuffer,
+) {
+    INPUT_SAB.with(|c| *c.borrow_mut() = Some(input_sab.clone()));
+    OUTPUT_SAB.with(|c| *c.borrow_mut() = Some(output_sab.clone()));
+    RECEIVER_SAB.with(|c| *c.borrow_mut() = Some(receiver_sab.clone()));
+    SENDER_SAB.with(|c| *c.borrow_mut() = Some(sender_sab.clone()));
+
+    console::time_with_label("global-timer");
+
+    let log_n_instances = 16;
+    let config = PcsConfig {
+        pow_bits: 10,
+        fri_config: FriConfig::new(5, 1, 64),
+    };
+
+    // Prove.;
+    let (component, proof) = prove_poseidon_web(log_n_instances, config);
+
+    // Verify.
+    // TODO: Create Air instance independently.
+    let channel = &mut Blake2sChannel::default();
+    let commitment_scheme =
+        &mut CommitmentSchemeVerifier::<Blake2sMerkleChannel>::new(proof.config);
+
+    // Decommit.
+    // Retrieve the expected column sizes in each commitment interaction, from the AIR.
+    let sizes = component.trace_log_degree_bounds();
+
+    // Preprocessed columns.
+    commitment_scheme.commit(proof.commitments[0], &sizes[0], channel);
+    // Trace columns.
+    commitment_scheme.commit(proof.commitments[1], &sizes[1], channel);
+    // Draw lookup element.
+    let lookup_elements = PoseidonElements::draw(channel);
+    assert_eq!(lookup_elements, component.lookup_elements);
+    // Interaction columns.
+    commitment_scheme.commit(proof.commitments[2], &sizes[2], channel);
+
+    verify(&[&component], channel, commitment_scheme, proof).unwrap();
+    console::log_1(&"verify success".into());
+    console::time_end_with_label("global-timer");
+
+    test_simd_poseidon_prove_wasm();
+}
+
+fn test_simd_poseidon_prove_wasm() {
+    console::time_with_label("global-simd-timer");
+    // Get from environment variable:
+    let log_n_instances = 16;
+    let config: PcsConfig = PcsConfig {
+        pow_bits: 10,
+        fri_config: FriConfig::new(5, 1, 64),
+    };
+
+    // Prove.
+    let (component, proof) = prove_poseidon(log_n_instances, config);
+
+    // Verify.
+    // TODO: Create Air instance independently.
+    let channel = &mut Blake2sChannel::default();
+    let commitment_scheme =
+        &mut CommitmentSchemeVerifier::<Blake2sMerkleChannel>::new(proof.config);
+
+    // Decommit.
+    // Retrieve the expected column sizes in each commitment interaction, from the AIR.
+    let sizes = component.trace_log_degree_bounds();
+
+    // Preprocessed columns.
+    commitment_scheme.commit(proof.commitments[0], &sizes[0], channel);
+    // Trace columns.
+    commitment_scheme.commit(proof.commitments[1], &sizes[1], channel);
+    // Draw lookup element.
+    let lookup_elements = PoseidonElements::draw(channel);
+    assert_eq!(lookup_elements, component.lookup_elements);
+    // Interaction columns.
+    commitment_scheme.commit(proof.commitments[2], &sizes[2], channel);
+
+    verify(&[&component], channel, commitment_scheme, proof).unwrap();
+    console::time_end_with_label("global-simd-timer");
+}
+
+#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+#[wasm_bindgen]
+pub async fn test_run_wgpu_runner(
+    input_sab: &js_sys::SharedArrayBuffer,
+    output_sab: &js_sys::SharedArrayBuffer,
+    receiver_sab: &js_sys::SharedArrayBuffer,
+    sender_sab: &js_sys::SharedArrayBuffer,
+) {
+    use crate::core::backend::web::webgpu::runner::runner_eval_composition_polynomial;
+
+    runner_eval_composition_polynomial(input_sab, output_sab, receiver_sab, sender_sab).await;
 }
 
 #[cfg(test)]
@@ -672,9 +878,6 @@ mod tests {
         verify(&[&component], channel, commitment_scheme, proof).unwrap();
     }
 
-    // #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
-    // #[allow(dead_code)]
-    // #[wasm_bindgen_test::wasm_bindgen_test]
     #[test_log::test]
     fn test_web_poseidon_prove() {
         // Note: To see time measurement, run test with

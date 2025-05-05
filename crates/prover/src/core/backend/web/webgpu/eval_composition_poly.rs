@@ -24,8 +24,12 @@ pub struct WgpuInstance {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub input_buffer: wgpu::Buffer,
+    pub output_buffer: wgpu::Buffer,
     pub staging_buffer: wgpu::Buffer,
-    pub encoder: wgpu::CommandEncoder,
+    pub bind_group: wgpu::BindGroup,
+    pub evaluate_line_twiddle_pipeline: wgpu::ComputePipeline,
+    pub evaluate_circle_twiddle_pipeline: wgpu::ComputePipeline,
+    pub composition_polynomial_compute_pipeline: wgpu::ComputePipeline,
 }
 
 pub struct EvalCompositionPolynomialArgs<'a> {
@@ -40,16 +44,15 @@ pub struct EvalCompositionPolynomialArgs<'a> {
     pub total_sum: QM31,
 }
 
-pub fn coompute_composition_polynomal() {}
-
 pub async fn compute_composition_polynomial_wgpu(
     input: Arc<ComputeCompositionPolynomialInput>,
-    instance: WgpuInstance,
+    instance: &WgpuInstance,
 ) -> Arc<ComputeCompositionPolynomialOutput> {
+    let encoder = init_encoder(&instance);
     instance
         .queue
-        .write_buffer(&instance.input_buffer, 0, &input.as_bytes());
-    instance.queue.submit(Some(instance.encoder.finish()));
+        .write_buffer(&instance.input_buffer, 0, input.as_bytes());
+    instance.queue.submit(Some(encoder.finish()));
     let output_slice = instance.staging_buffer.slice(..);
     let (sender, receiver) = flume::bounded(1);
     output_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
@@ -222,6 +225,14 @@ pub async fn init_wgpu_instance() -> WgpuInstance {
         mapped_at_creation: false,
     });
 
+    // Copy output to staging buffer for read access
+    let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Staging Buffer"),
+        size: buffer_size as u64,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
     let extend_trace_buffer_size = std::mem::size_of::<ExtendTraceOutput>();
     let extend_trace_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Extend Trace Buffer"),
@@ -337,10 +348,27 @@ pub async fn init_wgpu_instance() -> WgpuInstance {
             },
         });
 
-    // Create encoder
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("Compute Composition Polynomial Command Encoder"),
-    });
+    WgpuInstance {
+        instance,
+        adapter,
+        device,
+        queue,
+        input_buffer,
+        output_buffer,
+        staging_buffer,
+        bind_group,
+        evaluate_line_twiddle_pipeline,
+        evaluate_circle_twiddle_pipeline,
+        composition_polynomial_compute_pipeline,
+    }
+}
+
+pub fn init_encoder(instance: &WgpuInstance) -> wgpu::CommandEncoder {
+    let mut encoder = instance
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Compute Composition Polynomial Command Encoder"),
+        });
     // Dispatch the compute shader
     {
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -348,34 +376,26 @@ pub async fn init_wgpu_instance() -> WgpuInstance {
             timestamp_writes: None,
         });
 
-        compute_pass.set_bind_group(0, &bind_group, &[]);
+        compute_pass.set_bind_group(0, &instance.bind_group, &[]);
 
-        compute_pass.set_pipeline(&evaluate_line_twiddle_pipeline);
+        compute_pass.set_pipeline(&instance.evaluate_line_twiddle_pipeline);
         compute_pass.dispatch_workgroups(1, N_EXTEND_TRACE_WORKGROUPS, 1);
 
-        compute_pass.set_pipeline(&evaluate_circle_twiddle_pipeline);
+        compute_pass.set_pipeline(&instance.evaluate_circle_twiddle_pipeline);
         compute_pass.dispatch_workgroups(1, N_EXTEND_TRACE_WORKGROUPS, 1);
 
-        compute_pass.set_pipeline(&composition_polynomial_compute_pipeline);
+        compute_pass.set_pipeline(&instance.composition_polynomial_compute_pipeline);
         compute_pass.dispatch_workgroups(N_WORKGROUPS, 1, 1);
     }
 
     // Copy output to staging buffer for read access
-    let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Staging Buffer"),
-        size: buffer_size as u64,
-        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    encoder.copy_buffer_to_buffer(&output_buffer, 0, &staging_buffer, 0, staging_buffer.size());
+    encoder.copy_buffer_to_buffer(
+        &instance.output_buffer,
+        0,
+        &instance.staging_buffer,
+        0,
+        instance.staging_buffer.size(),
+    );
 
-    WgpuInstance {
-        instance,
-        adapter,
-        device,
-        queue,
-        input_buffer,
-        staging_buffer,
-        encoder,
-    }
+    encoder
 }
