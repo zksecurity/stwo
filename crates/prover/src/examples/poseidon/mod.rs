@@ -17,8 +17,8 @@ use crate::core::backend::simd::m31::{PackedBaseField, LOG_N_LANES, N_LANES};
 use crate::core::backend::simd::qm31::PackedSecureField;
 use crate::core::backend::simd::SimdBackend;
 use crate::core::backend::web::webgpu::eval_composition_poly::{
-    compute_composition_polynomial_original_trace_gpu, create_composition_polynomial_gpu_input,
-    EvalCompositionPolynomialArgs,
+    compute_composition_polynomial_wgpu, create_composition_polynomial_gpu_input,
+    init_wgpu_instance, EvalCompositionPolynomialArgs,
 };
 use crate::core::backend::web::WebBackend;
 use crate::core::backend::{Col, Column};
@@ -69,9 +69,10 @@ impl FrameworkEval for PoseidonEval {
     where
         E: HasDomainTypeId,
     {
-        let web_id = type_name::<WebDomainEvaluator<'_>>().as_ptr() as usize;
+        let web_id = type_name::<WebDomainEvaluator<'_>>();
 
         if eval.type_id() == web_id {
+            println!("eval_poseidon_constraints_web");
             eval_poseidon_constraints_web(&mut eval, &self.lookup_elements);
         } else {
             eval_poseidon_constraints(&mut eval, &self.lookup_elements);
@@ -81,13 +82,13 @@ impl FrameworkEval for PoseidonEval {
 }
 
 pub trait HasDomainTypeId {
-    fn type_id(&self) -> usize;
+    fn type_id(&self) -> &str;
     fn as_ptr(&self) -> *const ();
 }
 
 impl<T> HasDomainTypeId for T {
-    fn type_id(&self) -> usize {
-        type_name::<T>().as_ptr() as usize
+    fn type_id(&self) -> &str {
+        type_name::<T>()
     }
     fn as_ptr(&self) -> *const () {
         self as *const T as *const ()
@@ -189,11 +190,11 @@ pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
 ) {
     let web: &mut WebDomainEvaluator<'_> =
         unsafe { &mut *(eval as *mut E as *mut WebDomainEvaluator<'_>) };
-    web_sys::console::log_1(&format!("eval_poseidon_constraints_web").into());
 
+    let instance = pollster::block_on(init_wgpu_instance());
     let args = EvalCompositionPolynomialArgs::new(web, lookup_elements);
     let web_input = create_composition_polynomial_gpu_input(args);
-    let output = compute_composition_polynomial_original_trace_gpu(web_input);
+    let output = pollster::block_on(compute_composition_polynomial_wgpu(web_input, instance));
 
     let enum_iter = output.poly.iter().enumerate();
 
@@ -546,11 +547,9 @@ mod tests {
     use crate::core::poly::circle::CanonicCoset;
     use crate::core::prover::verify;
     use crate::core::vcs::blake2_merkle::Blake2sMerkleChannel;
-    //#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
-    use crate::examples::poseidon::prove_poseidon_web;
     use crate::examples::poseidon::{
         apply_internal_round_matrix, apply_m4, eval_poseidon_constraints, gen_interaction_trace,
-        gen_trace, prove_poseidon, PoseidonElements,
+        gen_trace, prove_poseidon, prove_poseidon_web, PoseidonElements,
     };
     use crate::math::matrix::{RowMajorMatrix, SquareMatrix};
 
@@ -673,25 +672,18 @@ mod tests {
         verify(&[&component], channel, commitment_scheme, proof).unwrap();
     }
 
-    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
-    #[allow(dead_code)]
-    #[wasm_bindgen_test::wasm_bindgen_test]
-    //#[test_log::test]
-    async fn test_web_poseidon_prove() {
+    // #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+    // #[allow(dead_code)]
+    // #[wasm_bindgen_test::wasm_bindgen_test]
+    #[test_log::test]
+    fn test_web_poseidon_prove() {
         // Note: To see time measurement, run test with
         //   RUST_LOG_SPAN_EVENTS=enter,close RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS="
         //   -C target-cpu=native -C target-feature=+avx512f -C opt-level=3" cargo test
         //   test_simd_poseidon_prove -- --nocapture
-
-        use crate::core::backend::web::webgpu::eval_composition_poly::{
-            cleanup_wgpu_device, init_wgpu_device,
-        };
-        let _ = init_wgpu_device().await;
-        web_sys::console::log_1(&format!("init_wgpu_device").into());
-
         // Get from environment variable:
         let log_n_instances = env::var("LOG_N_INSTANCES")
-            .unwrap_or_else(|_| "12".to_string())
+            .unwrap_or_else(|_| "14".to_string())
             .parse::<u32>()
             .unwrap();
         let config = PcsConfig {
@@ -702,7 +694,6 @@ mod tests {
         // Prove.;
         let (component, proof) = prove_poseidon_web(log_n_instances, config);
 
-        web_sys::console::log_1(&format!("prove_poseidon_web done").into());
         // Verify.
         // TODO: Create Air instance independently.
         let channel = &mut Blake2sChannel::default();
@@ -724,8 +715,5 @@ mod tests {
         commitment_scheme.commit(proof.commitments[2], &sizes[2], channel);
 
         verify(&[&component], channel, commitment_scheme, proof).unwrap();
-        web_sys::console::log_1(&format!("verify done").into());
-
-        let _ = cleanup_wgpu_device().await;
     }
 }

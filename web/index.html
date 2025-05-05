@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebGPU Example</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .container {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .input-group {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        input[type="number"] {
+            width: 100px;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        #status {
+            padding: 10px;
+            border-radius: 4px;
+            background-color: #f0f0f0;
+        }
+        #result {
+            white-space: pre-wrap;
+            font-family: monospace;
+            padding: 10px;
+            background-color: #f8f8f8;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>WebGPU Example</h1>
+        <div class="input-group">
+            <input type="number" id="input1" placeholder="First number" value="1">
+            <input type="number" id="input2" placeholder="Second number" value="2">
+            <button id="processButton">Process</button>
+        </div>
+        <div id="status">Status: Ready</div>
+        <div id="result"></div>
+    </div>
+
+    <script type="module">
+        import init, { run } from './pkg/wgpu_examples.js';
+
+        const startButton = document.getElementById('processButton');
+        const statusDiv = document.getElementById('status');
+        const resultDiv = document.getElementById('result');
+        const input1 = document.getElementById('input1');
+        const input2 = document.getElementById('input2');
+
+        // Create SharedArrayBuffer
+        const inputDataSAB = new SharedArrayBuffer(8); // 2 u32 values
+        const outputDataSAB = new SharedArrayBuffer(4); // 1 u32 value
+        const receiverSAB = new SharedArrayBuffer(4); // 1 i32
+        const senderSAB = new SharedArrayBuffer(4); // 1 i32
+
+        // Convert SharedArrayBuffer to Uint32Array
+        const receiverState = new Int32Array(receiverSAB);
+        const senderState = new Int32Array(senderSAB);
+
+        // Initialize states
+        receiverState[0] = 0;
+        senderState[0] = 0;
+
+        console.log('main: inputDataSAB', inputDataSAB);
+        console.log('main: outputDataSAB', outputDataSAB);
+        console.log('main: receiverSAB', receiverSAB);
+        console.log('main: senderSAB', senderSAB);
+
+        // Create web workers
+        const processWorker = new Worker(new URL("./src/process_worker.js", import.meta.url), { type: "module" });
+        const computeWorker = new Worker(new URL("./src/compute_worker.js", import.meta.url), { type: "module" });
+
+        // kick off compute worker
+        computeWorker.postMessage({
+            type: 'init',
+            input_data_sab: inputDataSAB,
+            output_data_sab: outputDataSAB,
+            receiver_sab: receiverSAB,
+            sender_sab: senderSAB
+        });
+
+        // kick off process worker
+        processWorker.postMessage({
+            type: 'init'
+        });
+
+        // Handle process worker messages
+        processWorker.onmessage = (e) => {
+            if (e.data.type === 'init') {
+                // Confirm worker initialization
+                console.log('Worker initialized');
+            } else if (e.data.type === 'result') {
+                resultDiv.textContent = `Result: ${e.data.result}`;
+                statusDiv.textContent = 'Status: Completed';
+                startButton.disabled = false;
+            } else if (e.data.type === 'error') {
+                resultDiv.textContent = 'Error occurred during computation';
+                statusDiv.textContent = 'Status: Error';
+                startButton.disabled = false;
+            }
+        };
+
+        // Start button click event
+        startButton.addEventListener('click', () => {
+            statusDiv.textContent = 'Status: Running...';
+            resultDiv.textContent = '';
+            startButton.disabled = true;
+
+            // Transfer SharedArrayBuffer to worker
+            processWorker.postMessage({
+                type: 'process',
+                input_values: {
+                    input1: parseInt(input1.value) || 0,
+                    input2: parseInt(input2.value) || 0
+                },
+                input_data_sab: inputDataSAB,
+                output_data_sab: outputDataSAB,
+                receiver_sab: receiverSAB,
+                sender_sab: senderSAB
+            });
+        });
+    </script>
+</body>
+</html>
