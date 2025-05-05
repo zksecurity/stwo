@@ -1,13 +1,13 @@
 #!/bin/bash
 
-rustup target add wasm32-unknown-unknown
-cargo install wasm-bindgen-cli
+# go to crates/prover
+cd crates/prover
 
-wasm-pack build --target web --release
+wasm-pack build --target web --release -- --features parallel
 
-rm -rf web/pkg
-cp -r pkg web/pkg
+rm -rf ../../web/pkg
+cp -r pkg ../../web/pkg
 rm -rf pkg
 
-cd web
+cd ../../web
 npm run dev

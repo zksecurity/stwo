@@ -1,4 +1,4 @@
-import init, { run } from '../pkg/wgpu_examples.js';
+import init, { test_run_wgpu_runner } from '../pkg/stwo_prover.js';
 
 // Handle web worker messages
 onmessage = async (e) => {
@@ -12,7 +12,7 @@ onmessage = async (e) => {
 
             // Execute WebGPU work
             console.log('Running WebGPU compute worker');
-            await run(input_data_sab, output_data_sab, receiver_sab, sender_sab);
+            await test_run_wgpu_runner(input_data_sab, output_data_sab, receiver_sab, sender_sab);
         } catch (error) {
             console.error('Error:', error);
         }
