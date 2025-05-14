@@ -1,4 +1,4 @@
-import init, { test_run_wgpu_runner } from '../pkg/stwo_prover.js';
+import init, { test_run_wgpu_runner, initThreadPool } from '../pkg/stwo_prover.js';
 
 // Handle web worker messages
 onmessage = async (e) => {
@@ -7,6 +7,7 @@ onmessage = async (e) => {
             // Initialize WebAssembly module
             console.log('Initializing WebGPU compute worker');
             await init();
+            await initThreadPool(navigator.hardwareConcurrency);
 
             const { input_data_sab, output_data_sab, receiver_sab, sender_sab } = e.data;
 

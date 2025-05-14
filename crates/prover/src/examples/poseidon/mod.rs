@@ -610,6 +610,9 @@ thread_local! {
     static SENDER_SAB:   RefCell<Option<SharedArrayBuffer>> = RefCell::new(None);
 }
 
+#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+pub use wasm_bindgen_rayon::init_thread_pool;
+
 #[allow(unused_imports)]
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
 use crate::core::air::Component;

@@ -1,9 +1,10 @@
-import init, { test_poseidon_web } from '../pkg/stwo_prover.js';
+import init, { test_poseidon_web, initThreadPool } from '../pkg/stwo_prover.js';
 
 // Handle messages from main thread
 self.onmessage = async (e) => {
     if (e.data.type === 'init') {
         await init();
+        await initThreadPool(navigator.hardwareConcurrency);
         console.log('Process worker initialized');
     }
     if (e.data.type === 'process') {
