@@ -1,30 +1,25 @@
 // This shader contains implementations for fraction operations.
 // It is stateless and can be used as a library in other shaders.
 
-const ZERO_FRACTION: Fraction = Fraction(QM31(CM31(M31(0u), M31(0u)), CM31(M31(0u), M31(0u))), QM31(CM31(M31(1u), M31(0u)), CM31(M31(0u), M31(0u))));
+const ZERO_FRACTION: Fraction =
+    Fraction(vec4<u32>(0u), vec4<u32>(1u, 0u, 0u, 0u));
 
 struct Fraction {
-    numerator: QM31,
+    numerator  : QM31,      // vec4<u32>
     denominator: QM31,
 }
 
 // Add two fractions: (a/b + c/d) = (ad + bc)/(bd)
-fn fraction_add(a: Fraction, b: Fraction) -> Fraction {
-    let numerator = qm31_add(
-        qm31_mul(a.numerator, b.denominator),
-        qm31_mul(b.numerator, a.denominator)
+fn fraction_add(x: Fraction, y: Fraction) -> Fraction {
+    let num = qm31_add(
+        qm31_mul(x.numerator,   y.denominator),
+        qm31_mul(y.numerator,   x.denominator)
     );
-    let denominator = qm31_mul(a.denominator, b.denominator);
-    return Fraction(numerator, denominator);
+    let den = qm31_mul(x.denominator, y.denominator);
+    return Fraction(num, den);
 }
 
-fn fraction_eq(a: Fraction, b: Fraction) -> bool {
-    return a.numerator.a.a.data == b.numerator.a.a.data
-        && a.numerator.a.b.data == b.numerator.a.b.data
-        && a.numerator.b.a.data == b.numerator.b.a.data
-        && a.numerator.b.b.data == b.numerator.b.b.data
-        && a.denominator.a.a.data == b.denominator.a.a.data
-        && a.denominator.a.b.data == b.denominator.a.b.data
-        && a.denominator.b.a.data == b.denominator.b.a.data
-        && a.denominator.b.b.data == b.denominator.b.b.data;
+fn fraction_eq(x: Fraction, y: Fraction) -> bool {
+    return all(x.numerator   == y.numerator) &&
+           all(x.denominator == y.denominator);
 }

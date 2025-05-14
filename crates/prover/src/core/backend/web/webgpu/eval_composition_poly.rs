@@ -143,7 +143,14 @@ pub fn create_composition_polynomial_gpu_input<'a>(
 }
 
 pub async fn init_wgpu_instance() -> WgpuInstance {
-    let instance = wgpu::Instance::default();
+    let mut instance_desc: wgpu::InstanceDescriptor = Default::default();
+    instance_desc.backends = wgpu::Backends::DX12;
+    instance_desc.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::DynamicDxc {
+        dxil_path: String::from("C:\\Users\\admin\\Downloads\\dxc_2025_02_20\\bin\\x64\\dxil.dll"),
+        dxc_path: String::from("C:\\Users\\admin\\Downloads\\dxc_2025_02_20\\bin\\x64\\dxcompiler.dll"),
+    };
+    let instance = wgpu::Instance::new(&instance_desc);
+
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -163,11 +170,32 @@ pub async fn init_wgpu_instance() -> WgpuInstance {
         ..adapter_limits
     };
 
+    let feature1 = wgpu::Features::TIMESTAMP_QUERY;
+    let feature2 = wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+    let feature3 = wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES;
+
+    let adapter_features = adapter.features();
+    println!(
+        "TIMESTAMP_QUERY Features: {:#?}",
+        adapter_features.contains(feature1)
+    );
+    println!(
+        "TIMESTAMP_QUERY_INSIDE_ENCODERS Features: {:#?}",
+        adapter_features.contains(feature2)
+    );
+    println!(
+        "TIMESTAMP_QUERY_INSIDE_PASSES Features: {:#?}",
+        adapter_features.contains(feature3)
+    );
+
     let (device, queue) = adapter
         .request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("Device"),
-                required_features: wgpu::Features::SHADER_INT64,
+                required_features: wgpu::Features::empty()
+                    | wgpu::Features::TIMESTAMP_QUERY
+                    | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
+                    | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES,
                 required_limits: limits,
                 memory_hints: wgpu::MemoryHints::Performance,
             },

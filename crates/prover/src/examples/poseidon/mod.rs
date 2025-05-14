@@ -610,6 +610,9 @@ thread_local! {
     static SENDER_SAB:   RefCell<Option<SharedArrayBuffer>> = RefCell::new(None);
 }
 
+#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+pub use wasm_bindgen_rayon::init_thread_pool;
+
 #[allow(unused_imports)]
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
 use crate::core::air::Component;
@@ -829,13 +832,14 @@ mod tests {
 
         // Get from environment variable:
         let log_n_instances = env::var("LOG_N_INSTANCES")
-            .unwrap_or_else(|_| "16".to_string())
+            .unwrap_or_else(|_| "13".to_string())
             .parse::<u32>()
             .unwrap();
         let config: PcsConfig = PcsConfig {
             pow_bits: 10,
             fri_config: FriConfig::new(5, 1, 64),
         };
+        println!("log_n_instances: {}", log_n_instances);
 
         // Prove.
         let (component, proof) = prove_poseidon(log_n_instances, config);
@@ -871,7 +875,7 @@ mod tests {
         //   test_simd_poseidon_prove -- --nocapture
         // Get from environment variable:
         let log_n_instances = env::var("LOG_N_INSTANCES")
-            .unwrap_or_else(|_| "17".to_string())
+            .unwrap_or_else(|_| "13".to_string())
             .parse::<u32>()
             .unwrap();
         let config = PcsConfig {

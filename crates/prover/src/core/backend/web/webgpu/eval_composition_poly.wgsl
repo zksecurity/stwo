@@ -204,6 +204,7 @@ fn add_to_relation_single(entry: RelationEntry) {
 }
 
 fn write_logup_frac_single(frac: Fraction) {
+    // 565
     if (fracs_index == 0u) {
         is_finalized = false;
     }
@@ -247,40 +248,46 @@ fn finalize_logup_in_pairs(vec_index: u32, inner_vec_index: u32) {
 }
 
 fn next_trace_mask(col_index: u32, vec_index: u32, inner_vec_index: u32) -> M31 {
-    return extend_trace_output.extended_trace[col_index + N_EXTENDED_TRACE_OFFSET].data[flatten_idx(vec_index, inner_vec_index)];
+    let v0: M31 = extend_trace_output.extended_trace[col_index + N_EXTENDED_TRACE_OFFSET].data[flatten_idx(vec_index, inner_vec_index)];
+
+    return v0;
 }
 
 fn next_interaction_trace_mask(col_index: u32, vec_index: u32, inner_vec_index: u32) -> QM31 {
     // get the next 4 values in the interaction trace columns
-    return QM31(
-        CM31(
-            extend_trace_output.extended_trace[col_index + N_INTERACTION_TRACE_OFFSET].data[flatten_idx(vec_index, inner_vec_index)],
-            extend_trace_output.extended_trace[col_index + N_INTERACTION_TRACE_OFFSET + 1].data[flatten_idx(vec_index, inner_vec_index)]
-        ),
-        CM31(
-            extend_trace_output.extended_trace[col_index + N_INTERACTION_TRACE_OFFSET + 2].data[flatten_idx(vec_index, inner_vec_index)],
-            extend_trace_output.extended_trace[col_index + N_INTERACTION_TRACE_OFFSET + 3].data[flatten_idx(vec_index, inner_vec_index)]
-        )
-    );
+    // 614
+    let base = col_index + N_INTERACTION_TRACE_OFFSET;
+    let i = flatten_idx(vec_index, inner_vec_index);
+    let v0: M31 = extend_trace_output.extended_trace[base].data[i];
+    let v1: M31 = extend_trace_output.extended_trace[base + 1].data[i];
+    let v2: M31 = extend_trace_output.extended_trace[base + 2].data[i];//620
+    let v3: M31 = extend_trace_output.extended_trace[base + 3].data[i];//621
+
+    let c0: CM31 = CM31(v0, v1); // 623
+    let c1: CM31 = CM31(v2, v3); // 624
+
+    let ret_val: QM31 = QM31(c0, c1); // 622
+    return ret_val; // 626
 }
 
 fn next_interaction_trace_mask_offset(col_index: u32, vec_index: u32, inner_vec_index: u32, offset: i32) -> QM31 {
+    // 628
     var curr_row = vec_index * N_STATE + inner_vec_index;
 
     var row = offset_bit_reversed_circle_domain_index(curr_row, input.trace_domain_log_size, input.eval_domain_log_size, offset);
 
     var new_vec_index = row / N_LANES;
     var new_inner_vec_index = row % N_LANES;
-    return QM31(
-        CM31(
-            extend_trace_output.extended_trace[col_index + N_INTERACTION_TRACE_OFFSET].data[flatten_idx(new_vec_index, new_inner_vec_index)],
-            extend_trace_output.extended_trace[col_index + N_INTERACTION_TRACE_OFFSET + 1].data[flatten_idx(new_vec_index, new_inner_vec_index)]
-        ),
-        CM31(
-            extend_trace_output.extended_trace[col_index + N_INTERACTION_TRACE_OFFSET + 2].data[flatten_idx(new_vec_index, new_inner_vec_index)],
-            extend_trace_output.extended_trace[col_index + N_INTERACTION_TRACE_OFFSET + 3].data[flatten_idx(new_vec_index, new_inner_vec_index)]
-        )
-    );
+
+    let base = col_index + N_INTERACTION_TRACE_OFFSET;
+    let i = flatten_idx(new_vec_index, new_inner_vec_index);
+    let v0: M31 = extend_trace_output.extended_trace[base].data[i];
+    let v1: M31 = extend_trace_output.extended_trace[base + 1].data[i];
+    let v2: M31 = extend_trace_output.extended_trace[base + 2].data[i];
+    let v3: M31 = extend_trace_output.extended_trace[base + 3].data[i];
+
+    let ret_val = QM31(CM31(v0, v1), CM31(v2, v3));
+    return ret_val;
 }
 
 /// Applies the external round matrix.
@@ -289,17 +296,28 @@ fn apply_external_round_matrix(state: array<M31, N_STATE>) -> array<M31, N_STATE
     // Applies circ(2M4, M4, M4, M4).
     var modified_state = state;
     for (var i = 0u; i < 4u; i++) {
-        let partial_state = array<M31, 4>(
+        var x = array<M31, 4>(
             state[4 * i],
             state[4 * i + 1],
             state[4 * i + 2],
             state[4 * i + 3],
         );
-        let modified_partial_state = apply_m4(partial_state);
-        modified_state[4 * i] = modified_partial_state[0];
-        modified_state[4 * i + 1] = modified_partial_state[1];
-        modified_state[4 * i + 2] = modified_partial_state[2];
-        modified_state[4 * i + 3] = modified_partial_state[3];
+
+        let t0 = m31_add(x[0], x[1]);
+        let t02 = m31_add(t0, t0);
+        let t1 = m31_add(x[2], x[3]);
+        let t12 = m31_add(t1, t1);
+        let t2 = m31_add(m31_add(x[1], x[1]), t1);
+        let t3 = m31_add(m31_add(x[3], x[3]), t0);
+        let t4 = m31_add(m31_add(t12, t12), t3);
+        let t5 = m31_add(m31_add(t02, t02), t2);
+        let t6 = m31_add(t3, t5);
+        let t7 = m31_add(t2, t4);
+
+        modified_state[4 * i] = t6;
+        modified_state[4 * i + 1] = t5;
+        modified_state[4 * i + 2] = t7;
+        modified_state[4 * i + 3] = t4;
     }
     for (var j = 0u; j < 4u; j++) {
         let s = m31_add(m31_add(modified_state[j], modified_state[j + 4]), m31_add(modified_state[j + 8], modified_state[j + 12]));
