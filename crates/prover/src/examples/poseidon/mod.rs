@@ -394,6 +394,7 @@ mod tests {
 
     use itertools::Itertools;
     use num_traits::One;
+    #[cfg(feature = "parallel")]
     #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
     pub use wasm_bindgen_rayon::init_thread_pool;
 
@@ -415,6 +416,7 @@ mod tests {
     #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
+    #[cfg(feature = "parallel")]
     #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
     fn get_hardware_concurrency_js_sys() -> usize {
         use js_sys::wasm_bindgen::{JsCast, JsValue};
@@ -431,6 +433,7 @@ mod tests {
         hc as usize
     }
 
+    #[cfg(feature = "parallel")]
     #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
     pub async fn start_pool() {
         let num_threads = get_hardware_concurrency_js_sys();
@@ -442,7 +445,10 @@ mod tests {
     #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
     #[wasm_bindgen_test::wasm_bindgen_test]
     async fn test_poseidon_prove_wasm() {
-        start_pool().await;
+        #[cfg(feature = "parallel")]
+        {
+            start_pool().await;
+        }
 
         const LOG_N_INSTANCES: u32 = 10;
         let config = PcsConfig {
