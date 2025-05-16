@@ -80,9 +80,9 @@ jobs:
       - uses: jetli/wasm-pack-action@v0.4.0
         with:
           version: "latest"
-      - run: cd crates/prover && wasm-pack test --chrome --headless -- --features parallel
+      - run: cd crates/prover && wasm-pack test --chrome --headless -- -Z build-std=std,panic_abort --features parallel
         env:
-          RUSTFLAGS: -C target-feature=+simd128
+          RUSTFLAGS: "-C target-feature=+simd128,+atomics,+bulk-memory"
 
   run-neon-tests:
     runs-on: macos-latest-xlarge

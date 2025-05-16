@@ -1,9 +1,3 @@
 [build]
 # Configuration for these lints should be placed in `.clippy.toml` at the crate root.
 rustflags = ["-Dwarnings"]
-
-[target.wasm32-unknown-unknown]
-rustflags = ["-C", "target-feature=+atomics,+bulk-memory"]
-
-[unstable]
-build-std = ["panic_abort", "std"]
