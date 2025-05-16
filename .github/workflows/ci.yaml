@@ -79,7 +79,7 @@ jobs:
       - uses: jetli/wasm-pack-action@v0.4.0
         with:
           version: "latest"
-      - run: cd crates/prover && wasm-pack test --node
+      - run: cd crates/prover && wasm-pack test --chrome --headless -- --features parallel
         env:
           RUSTFLAGS: -C target-feature=+simd128
 
