@@ -1113,7 +1113,6 @@ dependencies = [
  "hex",
  "indexmap",
  "itertools 0.12.1",
- "js-sys",
  "num-traits",
  "rand",
  "rayon",
@@ -1127,6 +1126,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-bindgen-rayon",
  "wasm-bindgen-test",
+ "web-sys",
 ]
 
 [[package]]

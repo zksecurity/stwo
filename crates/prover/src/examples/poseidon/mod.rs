@@ -394,9 +394,6 @@ mod tests {
 
     use itertools::Itertools;
     use num_traits::One;
-    #[cfg(feature = "parallel")]
-    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
-    pub use wasm_bindgen_rayon::init_thread_pool;
 
     use crate::constraint_framework::assert_constraints_on_polys;
     use crate::core::air::Component;
@@ -412,43 +409,16 @@ mod tests {
         gen_trace, prove_poseidon, PoseidonElements,
     };
     use crate::math::matrix::{RowMajorMatrix, SquareMatrix};
+    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+    use crate::wasm_multithread::init_wasm_mt;
 
     #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
-    #[cfg(feature = "parallel")]
-    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
-    fn get_hardware_concurrency_js_sys() -> usize {
-        use js_sys::wasm_bindgen::{JsCast, JsValue};
-
-        let global = js_sys::global().unchecked_into::<js_sys::Object>();
-        let nav = js_sys::Reflect::get(&global, &JsValue::from_str("navigator"))
-            .ok()
-            .and_then(|v| v.dyn_into::<js_sys::Object>().ok())
-            .unwrap_or_default();
-        let hc = js_sys::Reflect::get(&nav, &JsValue::from_str("hardwareConcurrency"))
-            .ok()
-            .and_then(|v| v.as_f64())
-            .unwrap_or(1.0);
-        hc as usize
-    }
-
-    #[cfg(feature = "parallel")]
-    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
-    pub async fn start_pool() {
-        let num_threads = get_hardware_concurrency_js_sys();
-        let promise: js_sys::Promise = init_thread_pool(num_threads);
-        let future = wasm_bindgen_futures::JsFuture::from(promise);
-        let _result = future.await.unwrap();
-    }
-
     #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
     #[wasm_bindgen_test::wasm_bindgen_test]
     async fn test_poseidon_prove_wasm() {
-        #[cfg(feature = "parallel")]
-        {
-            start_pool().await;
-        }
+        init_wasm_mt().await;
 
         const LOG_N_INSTANCES: u32 = 10;
         let config = PcsConfig {
