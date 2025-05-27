@@ -150,6 +150,10 @@ fn qm31(a: CM31, b: CM31) -> QM31 {
     return vec4<u32>(a.x, a.y, b.x, b.y);
 }
 
+fn qm31_4(a: M31, b: M31, c: M31, d: M31) -> QM31 {
+    return vec4<u32>(a, b, c, d);
+}
+
 // Quadratic extension field operations for QM31
 fn qm31_add(u: QM31, v: QM31) -> QM31 {
     let a = cm31_add(vec2<u32>(u.x, u.y), vec2<u32>(v.x, v.y));

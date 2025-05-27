@@ -266,10 +266,10 @@ pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
     for (chunk_idx, chunk) in enum_iter {
         for (inner_idx, &qm) in chunk.iter().enumerate() {
             let idx = chunk_idx * N_LANES as usize + inner_idx;
-            web.col.columns[0].set(idx, qm.a.a.data.into());
-            web.col.columns[1].set(idx, qm.a.b.data.into());
-            web.col.columns[2].set(idx, qm.b.a.data.into());
-            web.col.columns[3].set(idx, qm.b.b.data.into());
+            web.col.columns[0].set(idx, qm.0[0].into());
+            web.col.columns[1].set(idx, qm.0[1].into());
+            web.col.columns[2].set(idx, qm.0[2].into());
+            web.col.columns[3].set(idx, qm.0[3].into());
         }
     }
 }
@@ -832,7 +832,7 @@ mod tests {
 
         // Get from environment variable:
         let log_n_instances = env::var("LOG_N_INSTANCES")
-            .unwrap_or_else(|_| "13".to_string())
+            .unwrap_or_else(|_| "12".to_string())
             .parse::<u32>()
             .unwrap();
         let config: PcsConfig = PcsConfig {
@@ -867,15 +867,14 @@ mod tests {
         verify(&[&component], channel, commitment_scheme, proof).unwrap();
     }
 
-    #[test_log::test]
-    fn test_web_poseidon_prove() {
-        // Note: To see time measurement, run test with
+    fn test_web() {
+// Note: To see time measurement, run test with
         //   RUST_LOG_SPAN_EVENTS=enter,close RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS="
         //   -C target-cpu=native -C target-feature=+avx512f -C opt-level=3" cargo test
         //   test_simd_poseidon_prove -- --nocapture
         // Get from environment variable:
         let log_n_instances = env::var("LOG_N_INSTANCES")
-            .unwrap_or_else(|_| "13".to_string())
+            .unwrap_or_else(|_| "12".to_string())
             .parse::<u32>()
             .unwrap();
         let config = PcsConfig {
@@ -907,5 +906,21 @@ mod tests {
         commitment_scheme.commit(proof.commitments[2], &sizes[2], channel);
 
         verify(&[&component], channel, commitment_scheme, proof).unwrap();
+    }
+
+    use std::thread::Builder;
+    #[test_log::test]
+    fn test_web_poseidon_prove() {
+    let handle = Builder::new()
+        .name("big_stack_worker".into())
+        .stack_size(512 * 1024 * 1024)
+        .spawn(|| {
+            test_web();
+        })
+        .expect("thread spawn failed");
+
+    handle
+        .join()
+        .expect("thread panicked");
     }
 }

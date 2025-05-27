@@ -65,6 +65,10 @@ struct ExtendTraceOutput {
     extended_trace: array<Extended1DColumn, N_ORIGINAL_TRACE_COLUMNS>,
 }
 
+struct State16 { 
+    data: array<M31, N_STATE> 
+}
+
 @group(0) @binding(0)
 var<storage, read> input: ComputeCompositionPolynomialInput;
 
@@ -113,9 +117,10 @@ fn compute_composition_polynomial(
     var col_index = 0u;
 
     for (var rep_i = 0u; rep_i < N_INSTANCES_PER_ROW; rep_i++) {
-        var state: array<M31, N_STATE>;
+        //var state: array<M31, N_STATE>;
+        var state: State16 = State16(array<M31, N_STATE>());
         for (var j = 0u; j < N_STATE; j++) {
-            state[j] = next_trace_mask(col_index, vec_index, inner_vec_index);
+            state.data[j] = next_trace_mask(col_index, vec_index, inner_vec_index);
             col_index += 1u;
         }
         var initial_state = state;
@@ -123,52 +128,52 @@ fn compute_composition_polynomial(
         // 4 full rounds
         for (var i = 0u; i < N_HALF_FULL_ROUNDS; i++) {
             for (var j = 0u; j < N_STATE; j++) {
-                state[j] = m31_add(state[j], M31(EXTERNAL_ROUND_CONSTS[i][j]));
+                state.data[j] = m31_add(state.data[j], M31(EXTERNAL_ROUND_CONSTS[i][j]));
             }
-            state = apply_external_round_matrix(state);
+            state = apply_external_round_matrix_state16(state);
             for (var j = 0u; j < N_STATE; j++) {
-                state[j] = m31_pow5(state[j]);
+                state.data[j] = m31_pow5(state.data[j]);
             }
             for (var j = 0u; j < N_STATE; j++) {
                 var m_1 = next_trace_mask(col_index, vec_index, inner_vec_index);
-                let constraint = m31_sub(state[j], m_1);
+                let constraint = m31_sub(state.data[j], m_1);
                 add_constraint(constraint, vec_index, inner_vec_index);
 
-                state[j] = m_1;
+                state.data[j] = m_1;
                 col_index += 1u;
             }
         }
         // Partial rounds
         for (var i = 0u; i < N_PARTIAL_ROUNDS; i++) {
-            state[0] = m31_add(state[0], M31(INTERNAL_ROUND_CONSTS[i]));
-            state = apply_internal_round_matrix(state);
-            state[0] = m31_pow5(state[0]);
+            state.data[0] = m31_add(state.data[0], M31(INTERNAL_ROUND_CONSTS[i]));
+            state = apply_internal_round_matrix_state16(state);
+            state.data[0] = m31_pow5(state.data[0]);
             var m_1 = next_trace_mask(col_index, vec_index, inner_vec_index);
-            let constraint = m31_sub(state[0], m_1);
+            let constraint = m31_sub(state.data[0], m_1);
             add_constraint(constraint, vec_index, inner_vec_index);
 
-            state[0] = m_1;
+            state.data[0] = m_1;
             col_index += 1u;
         }
         // 4 full rounds
         for (var i = 0u; i < N_HALF_FULL_ROUNDS; i++) {
             for (var j = 0u; j < N_STATE; j++) {
-                state[j] = m31_add(state[j], M31(EXTERNAL_ROUND_CONSTS[i + N_HALF_FULL_ROUNDS][j]));
+                state.data[j] = m31_add(state.data[j], M31(EXTERNAL_ROUND_CONSTS[i + N_HALF_FULL_ROUNDS][j]));
             }
-            state = apply_external_round_matrix(state);
+            state = apply_external_round_matrix_state16(state);
             for (var j = 0u; j < N_STATE; j++) {
-                state[j] = m31_pow5(state[j]);
+                state.data[j] = m31_pow5(state.data[j]);
             }
             for (var j = 0u; j < N_STATE; j++) {
                 var m_1 = next_trace_mask(col_index, vec_index, inner_vec_index);
-                let constraint = m31_sub(state[j], m_1);
+                let constraint = m31_sub(state.data[j], m_1);
                 add_constraint(constraint, vec_index, inner_vec_index);
-                state[j] = m_1;
+                state.data[j] = m_1;
                 col_index += 1u;
             }
         }
-        add_to_relation_single(RelationEntry(ONE, initial_state));
-        add_to_relation_single(RelationEntry(qm31_neg(ONE), state));
+        add_to_relation_single(RelationEntry(ONE, initial_state.data));
+        add_to_relation_single(RelationEntry(qm31_neg(ONE), state.data));
     }
     finalize_logup_in_pairs(vec_index, inner_vec_index);
 
@@ -263,11 +268,7 @@ fn next_interaction_trace_mask(col_index: u32, vec_index: u32, inner_vec_index: 
     let v2: M31 = extend_trace_output.extended_trace[base + 2].data[i];//620
     let v3: M31 = extend_trace_output.extended_trace[base + 3].data[i];//621
 
-    let c0: CM31 = CM31(v0, v1); // 623
-    let c1: CM31 = CM31(v2, v3); // 624
-
-    let ret_val: QM31 = QM31(c0, c1); // 622
-    return ret_val; // 626
+    return qm31_4(v0, v1, v2, v3);
 }
 
 fn next_interaction_trace_mask_offset(col_index: u32, vec_index: u32, inner_vec_index: u32, offset: i32) -> QM31 {
@@ -292,15 +293,51 @@ fn next_interaction_trace_mask_offset(col_index: u32, vec_index: u32, inner_vec_
 
 /// Applies the external round matrix.
 /// See <https://eprint.iacr.org/2023/323.pdf> 5.1 and Appendix B.
-fn apply_external_round_matrix(state: array<M31, N_STATE>) -> array<M31, N_STATE> {
+// fn apply_external_round_matrix(state: array<M31, N_STATE>) -> array<M31, N_STATE> {
+//     // Applies circ(2M4, M4, M4, M4).
+//     var modified_state = state;
+//     for (var i = 0u; i < 4u; i++) {
+//         var x = array<M31, 4>(
+//             state[4 * i],
+//             state[4 * i + 1],
+//             state[4 * i + 2],
+//             state[4 * i + 3],
+//         );
+
+//         let t0 = m31_add(x[0], x[1]);
+//         let t02 = m31_add(t0, t0);
+//         let t1 = m31_add(x[2], x[3]);
+//         let t12 = m31_add(t1, t1);
+//         let t2 = m31_add(m31_add(x[1], x[1]), t1);
+//         let t3 = m31_add(m31_add(x[3], x[3]), t0);
+//         let t4 = m31_add(m31_add(t12, t12), t3);
+//         let t5 = m31_add(m31_add(t02, t02), t2);
+//         let t6 = m31_add(t3, t5);
+//         let t7 = m31_add(t2, t4);
+
+//         modified_state[4 * i] = t6;
+//         modified_state[4 * i + 1] = t5;
+//         modified_state[4 * i + 2] = t7;
+//         modified_state[4 * i + 3] = t4;
+//     }
+//     for (var j = 0u; j < 4u; j++) {
+//         let s = m31_add(m31_add(modified_state[j], modified_state[j + 4]), m31_add(modified_state[j + 8], modified_state[j + 12]));
+//         for (var i = 0u; i < 4u; i++) {
+//             modified_state[4 * i + j] = m31_add(modified_state[4 * i + j], s);
+//         }
+//     }
+//     return modified_state;
+// }
+
+fn apply_external_round_matrix_state16(state: State16) -> State16 {
     // Applies circ(2M4, M4, M4, M4).
-    var modified_state = state;
+    var modified_state = state.data;
     for (var i = 0u; i < 4u; i++) {
         var x = array<M31, 4>(
-            state[4 * i],
-            state[4 * i + 1],
-            state[4 * i + 2],
-            state[4 * i + 3],
+            state.data[4 * i],
+            state.data[4 * i + 1],
+            state.data[4 * i + 2],
+            state.data[4 * i + 3],
         );
 
         let t0 = m31_add(x[0], x[1]);
@@ -325,38 +362,41 @@ fn apply_external_round_matrix(state: array<M31, N_STATE>) -> array<M31, N_STATE
             modified_state[4 * i + j] = m31_add(modified_state[4 * i + j], s);
         }
     }
-    return modified_state;
+    return State16(modified_state);
 }
+
+// // Applies the internal round matrix.
+// //   mu_i = 2^{i+1} + 1.
+// // See <https://eprint.iacr.org/2023/323.pdf> 5.2.
+// fn apply_internal_round_matrix(state: array<M31, N_STATE>) -> array<M31, N_STATE> {
+//     var sum = state[0];
+//     for (var i = 1u; i < N_STATE; i++) {
+//         sum = m31_add(sum, state[i]);
+//     }
+
+//     var result = array<M31, N_STATE>();
+//     for (var i = 0u; i < N_STATE; i++) {
+//         let factor = partial_reduce(1u << (i + 1));
+//         result[i] = m31_add(m31_mul(M31(factor), state[i]), sum);
+//     }
+
+//     return result;
+// }
 
 // Applies the internal round matrix.
 //   mu_i = 2^{i+1} + 1.
 // See <https://eprint.iacr.org/2023/323.pdf> 5.2.
-fn apply_internal_round_matrix(state: array<M31, N_STATE>) -> array<M31, N_STATE> {
-    var sum = state[0];
+fn apply_internal_round_matrix_state16(state: State16) -> State16 {
+    var sum = state.data[0];
     for (var i = 1u; i < N_STATE; i++) {
-        sum = m31_add(sum, state[i]);
+        sum = m31_add(sum, state.data[i]);
     }
 
-    var result = array<M31, N_STATE>();
+    var result = State16(array<M31, N_STATE>());
     for (var i = 0u; i < N_STATE; i++) {
         let factor = partial_reduce(1u << (i + 1));
-        result[i] = m31_add(m31_mul(M31(factor), state[i]), sum);
+        result.data[i] = m31_add(m31_mul(M31(factor), state.data[i]), sum);
     }
 
     return result;
-}
-
-/// Applies the M4 MDS matrix described in <https://eprint.iacr.org/2023/323.pdf> 5.1.
-fn apply_m4(x: array<M31, 4>) -> array<M31, 4> {
-    let t0 = m31_add(x[0], x[1]);
-    let t02 = m31_add(t0, t0);
-    let t1 = m31_add(x[2], x[3]);
-    let t12 = m31_add(t1, t1);
-    let t2 = m31_add(m31_add(x[1], x[1]), t1);
-    let t3 = m31_add(m31_add(x[3], x[3]), t0);
-    let t4 = m31_add(m31_add(t12, t12), t3);
-    let t5 = m31_add(m31_add(t02, t02), t2);
-    let t6 = m31_add(t3, t5);
-    let t7 = m31_add(t2, t4);
-    return array<M31, 4>(t6, t5, t7, t4);
 }

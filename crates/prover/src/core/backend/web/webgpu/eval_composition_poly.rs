@@ -88,8 +88,8 @@ pub fn create_composition_polynomial_gpu_input<'a>(
         line_twiddles_layer_count: line_twiddles.len() as u32,
         line_twiddles_sizes: [0; N_LINE_TWIDDLES_SIZE as usize],
         line_twiddles_offsets: [0; N_LINE_TWIDDLES_SIZE as usize],
-        line_twiddles_flat: [GpuM31 { data: 0 }; N_LINE_TWIDDLES_FLAT_SIZE as usize],
-        circle_twiddles: [GpuM31 { data: 0 }; N_CIRCLE_TWIDDLES_SIZE as usize],
+        line_twiddles_flat: [GpuM31 { 0: 0 }; N_LINE_TWIDDLES_FLAT_SIZE as usize],
+        circle_twiddles: [GpuM31 { 0: 0 }; N_CIRCLE_TWIDDLES_SIZE as usize],
         circle_twiddles_size: 0,
     };
     for (i, twiddle) in line_twiddles.iter().enumerate() {

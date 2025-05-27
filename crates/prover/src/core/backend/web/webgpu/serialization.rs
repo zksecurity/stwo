@@ -46,7 +46,7 @@ impl ComputeCompositionPolynomialOutput {
 
 impl From<&&CirclePoly<WebBackend>> for GpuOriginalColumn {
     fn from(value: &&CirclePoly<WebBackend>) -> Self {
-        let mut coeffs = [GpuM31 { data: 0 }; (N_LANES * N_ORIGINAL_ROWS) as usize];
+        let mut coeffs = [GpuM31 { 0: 0 }; (N_LANES * N_ORIGINAL_ROWS) as usize];
         let coeffs_vec = value.coeffs.to_cpu();
         for (i, &coeff) in coeffs_vec.iter().enumerate() {
             coeffs[i] = coeff.into();
