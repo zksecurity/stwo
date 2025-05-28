@@ -205,10 +205,18 @@ pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
     // if not wasm32
     #[cfg(not(target_family = "wasm"))]
     {
-        let instance = pollster::block_on(init_wgpu_instance());
-        let args = EvalCompositionPolynomialArgs::new(web, lookup_elements);
+        let mut instance = pollster::block_on(init_wgpu_instance());
+
+        let start = std::time::Instant::now();
+        let args: EvalCompositionPolynomialArgs<'_> =
+            EvalCompositionPolynomialArgs::new(web, lookup_elements);
         let web_input = create_composition_polynomial_gpu_input(args);
-        output = pollster::block_on(compute_composition_polynomial_wgpu(web_input, &instance));
+        output = pollster::block_on(compute_composition_polynomial_wgpu(
+            web_input,
+            &mut instance,
+        ));
+        let end = std::time::Instant::now();
+        info!("Poseidon evaluation took {} ms", (end - start).as_millis());
     }
 
     #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
@@ -868,13 +876,13 @@ mod tests {
     }
 
     fn test_web() {
-// Note: To see time measurement, run test with
+        // Note: To see time measurement, run test with
         //   RUST_LOG_SPAN_EVENTS=enter,close RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS="
         //   -C target-cpu=native -C target-feature=+avx512f -C opt-level=3" cargo test
         //   test_simd_poseidon_prove -- --nocapture
         // Get from environment variable:
         let log_n_instances = env::var("LOG_N_INSTANCES")
-            .unwrap_or_else(|_| "12".to_string())
+            .unwrap_or_else(|_| "17".to_string())
             .parse::<u32>()
             .unwrap();
         let config = PcsConfig {
@@ -911,16 +919,16 @@ mod tests {
     use std::thread::Builder;
     #[test_log::test]
     fn test_web_poseidon_prove() {
-    let handle = Builder::new()
-        .name("big_stack_worker".into())
-        .stack_size(512 * 1024 * 1024)
-        .spawn(|| {
-            test_web();
-        })
-        .expect("thread spawn failed");
+        tracy_client::Client::start();
 
-    handle
-        .join()
-        .expect("thread panicked");
+        let handle = Builder::new()
+            .name("big_stack_worker".into())
+            .stack_size(512 * 1024 * 1024)
+            .spawn(|| {
+                test_web();
+            })
+            .expect("thread spawn failed");
+
+        handle.join().expect("thread panicked");
     }
 }

@@ -17,6 +17,8 @@ use crate::core::pcs::TreeVec;
 use crate::core::poly::circle::{CircleDomain, CirclePoly, PolyOps};
 use crate::core::poly::utils::domain_line_twiddles_from_tree;
 use crate::examples::poseidon::PoseidonElements;
+use wgpu_profiler::{GpuProfiler, GpuProfilerSettings};
+
 // pub struct
 pub struct WgpuInstance {
     pub instance: wgpu::Instance,
@@ -30,6 +32,7 @@ pub struct WgpuInstance {
     pub evaluate_line_twiddle_pipeline: wgpu::ComputePipeline,
     pub evaluate_circle_twiddle_pipeline: wgpu::ComputePipeline,
     pub composition_polynomial_compute_pipeline: wgpu::ComputePipeline,
+    pub profiler: GpuProfiler,
 }
 
 pub struct EvalCompositionPolynomialArgs<'a> {
@@ -46,13 +49,18 @@ pub struct EvalCompositionPolynomialArgs<'a> {
 
 pub async fn compute_composition_polynomial_wgpu(
     input: Arc<ComputeCompositionPolynomialInput>,
-    instance: &WgpuInstance,
+    instance: &mut WgpuInstance,
 ) -> Arc<ComputeCompositionPolynomialOutput> {
-    let encoder = init_encoder(&instance);
+    profiling::scope!("Compute Requested");
+    let encoder = init_encoder(instance);
     instance
         .queue
         .write_buffer(&instance.input_buffer, 0, input.as_bytes());
     instance.queue.submit(Some(encoder.finish()));
+    profiling::finish_frame!();
+
+    instance.profiler.end_frame().unwrap();
+
     let output_slice = instance.staging_buffer.slice(..);
     let (sender, receiver) = flume::bounded(1);
     output_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
@@ -64,8 +72,8 @@ pub async fn compute_composition_polynomial_wgpu(
     let _ = receiver.recv_async().await.unwrap();
     let data = output_slice.get_mapped_range();
     let output = ComputeCompositionPolynomialOutput::from_bytes(&data);
-    drop(data);
-    instance.staging_buffer.unmap();
+    //drop(data);
+    //instance.staging_buffer.unmap();
     Arc::new(output)
 }
 
@@ -193,7 +201,7 @@ pub async fn init_wgpu_instance() -> WgpuInstance {
         .request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("Device"),
-                required_features: wgpu::Features::empty()
+                required_features: wgpu::Features::default()
                     | wgpu::Features::TIMESTAMP_QUERY
                     | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
                     | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES,
@@ -386,6 +394,27 @@ pub async fn init_wgpu_instance() -> WgpuInstance {
             },
         });
 
+    // let profiler = GpuProfiler::new(&device, GpuProfilerSettings::default())
+    //     .expect("Failed to create profiler");
+
+    let profiler = GpuProfiler::new_with_tracy_client(
+        GpuProfilerSettings::default(),
+        adapter.get_info().backend,
+        &device,
+        &queue,
+    )
+    .unwrap_or_else(|err| match err {
+        wgpu_profiler::CreationError::TracyClientNotRunning
+        | wgpu_profiler::CreationError::TracyGpuContextCreationError(_) => {
+            println!("Failed to connect to Tracy. Continuing without Tracy integration.");
+            GpuProfiler::new(&device, GpuProfilerSettings::default())
+                .expect("Failed to create profiler")
+        }
+        _ => {
+            panic!("Failed to create profiler: {}", err);
+        }
+    });
+
     WgpuInstance {
         instance,
         adapter,
@@ -398,36 +427,59 @@ pub async fn init_wgpu_instance() -> WgpuInstance {
         evaluate_line_twiddle_pipeline,
         evaluate_circle_twiddle_pipeline,
         composition_polynomial_compute_pipeline,
+        profiler,
     }
 }
 
-pub fn init_encoder(instance: &WgpuInstance) -> wgpu::CommandEncoder {
+pub fn init_encoder(instance: &mut WgpuInstance) -> wgpu::CommandEncoder {
     let mut encoder = instance
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Compute Composition Polynomial Command Encoder"),
         });
     // Dispatch the compute shader
-    use std::mem::{size_of, align_of};
-    println!("ComputeCompositionPolynomialInput size: {}", size_of::<ComputeCompositionPolynomialInput>());
-    println!("alignment: {}", align_of::<ComputeCompositionPolynomialInput>());
-
     {
-        let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("Compute Composition Polynomial Compute Pass"),
-            timestamp_writes: None,
-        });
+        let mut scope = instance.profiler.scope("computing", &mut encoder);
+        {
+            let mut compute_pass = scope.scoped_compute_pass("Evaluate Line Twiddle Compute Pass");
 
-        compute_pass.set_bind_group(0, &instance.bind_group, &[]);
+            // let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            //     label: Some("Evaluate Line Twiddle Compute Pass"),
+            //     timestamp_writes: None,
+            // });
 
-        compute_pass.set_pipeline(&instance.evaluate_line_twiddle_pipeline);
-        compute_pass.dispatch_workgroups(1, N_EXTEND_TRACE_WORKGROUPS, 1);
+            compute_pass.set_bind_group(0, &instance.bind_group, &[]);
 
-        compute_pass.set_pipeline(&instance.evaluate_circle_twiddle_pipeline);
-        compute_pass.dispatch_workgroups(1, N_EXTEND_TRACE_WORKGROUPS, 1);
+            compute_pass.set_pipeline(&instance.evaluate_line_twiddle_pipeline);
+            compute_pass.dispatch_workgroups(1, N_EXTEND_TRACE_WORKGROUPS, 1);
+        }
+        {
+            let mut compute_pass = scope.scoped_compute_pass("Evaluate Circle Twiddle Compute Pass");
 
-        compute_pass.set_pipeline(&instance.composition_polynomial_compute_pipeline);
-        compute_pass.dispatch_workgroups(N_WORKGROUPS, 1, 1);
+            // let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            //     label: Some("Evaluate Circle Twiddle Compute Pass"),
+            //     timestamp_writes: None,
+            // });
+
+            compute_pass.set_bind_group(0, &instance.bind_group, &[]);
+            compute_pass.set_pipeline(&instance.evaluate_circle_twiddle_pipeline);
+            compute_pass.dispatch_workgroups(1, N_EXTEND_TRACE_WORKGROUPS, 1);
+        }
+        {
+            let mut compute_pass = scope.scoped_compute_pass("Compute Composition Polynomial Compute Pass");
+
+            // let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            //     label: Some("Compute Composition Polynomial Compute Pass"),
+            //     timestamp_writes: None,
+            // });
+
+            compute_pass.set_bind_group(0, &instance.bind_group, &[]);
+            compute_pass.set_pipeline(&instance.composition_polynomial_compute_pipeline);
+            compute_pass.dispatch_workgroups(N_WORKGROUPS, 1, 1);
+        }   
+    }
+    {
+        instance.profiler.resolve_queries(&mut encoder);
     }
 
     // Copy output to staging buffer for read access
