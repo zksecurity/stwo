@@ -5,10 +5,10 @@ use itertools::Itertools;
 
 use super::constants::*;
 use super::gpu_types::*;
+use super::m31::GpuM31;
 use super::qm31::GpuQM31;
 use super::ByteSerialize;
 use crate::core::backend::cpu::circle::circle_twiddles_from_line_twiddles;
-use crate::core::backend::web::webgpu::qm31::GpuM31;
 use crate::core::backend::web::WebBackend;
 use crate::core::backend::CpuBackend;
 use crate::core::fields::m31::{BaseField, M31};
@@ -146,11 +146,12 @@ pub async fn init_wgpu_instance() -> WgpuInstance {
     let mut instance_desc: wgpu::InstanceDescriptor = Default::default();
     instance_desc.backends = wgpu::Backends::DX12;
     instance_desc.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::DynamicDxc {
-        dxil_path: String::from("C:\\Users\\admin\\Downloads\\dxc_2025_02_20\\bin\\x64\\dxil.dll"),
-        dxc_path: String::from("C:\\Users\\admin\\Downloads\\dxc_2025_02_20\\bin\\x64\\dxcompiler.dll"),
+        dxil_path: String::from("dxil.dll"),
+        dxc_path: String::from("dxcompiler.dll"),
     };
     let instance = wgpu::Instance::new(&instance_desc);
 
+    println!("instance: {:?}", instance);
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -407,6 +408,10 @@ pub fn init_encoder(instance: &WgpuInstance) -> wgpu::CommandEncoder {
             label: Some("Compute Composition Polynomial Command Encoder"),
         });
     // Dispatch the compute shader
+    use std::mem::{size_of, align_of};
+    println!("ComputeCompositionPolynomialInput size: {}", size_of::<ComputeCompositionPolynomialInput>());
+    println!("alignment: {}", align_of::<ComputeCompositionPolynomialInput>());
+
     {
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Compute Composition Polynomial Compute Pass"),

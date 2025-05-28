@@ -1,5 +1,5 @@
 use super::constants::*;
-use super::qm31::GpuM31;
+use super::m31::GpuM31;
 use super::{
     ComputeCompositionPolynomialInput, ComputeCompositionPolynomialOutput, GpuExtendedColumn,
     GpuLookupElements, GpuOriginalColumn,

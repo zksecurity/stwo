@@ -53,16 +53,38 @@ fn m31_neg(a: M31) -> M31 {
     return M31(partial_reduce(P - a));
 }
 
-fn m31_square(x: M31, n: u32) -> M31 {
-    var result = x;
-    for (var i = 0u; i < n; i += 1u) {
-        result = m31_mul(result, result);
-    }
-    return result;
+fn m31_square(x: M31) -> M31 {
+    return m31_mul(x, x);
+}
+
+fn m31_pow3(x: M31) -> M31 {
+    let x2 = m31_square(x);
+    return m31_mul(x, x2);
 }
 
 fn m31_pow5(x: M31) -> M31 {
-    return m31_mul(m31_square(x, 2u), x);
+    let x2 = m31_square(x);
+    let x4 = m31_square(x2);
+    return m31_mul(x4, x);
+}
+
+fn m31_pow8(x: M31) -> M31  {
+    let x2 = m31_square(x);
+    let x4 = m31_square(x2);
+    return m31_square(x4);
+}
+
+fn m31_pow128(x: M31) -> M31 {
+    let x8   = m31_pow8(x);
+    let x64  = m31_pow8(x8);
+    return m31_square(x64); 
+}
+
+fn m31_pow256(x: M31) -> M31 {
+    let x8   = m31_pow8(x);
+    let x64  = m31_pow8(x8);
+    let x128  = m31_square(x64);
+    return m31_square(x128);
 }
 
 fn m31_inverse(x: M31) -> M31 {
@@ -70,25 +92,25 @@ fn m31_inverse(x: M31) -> M31 {
     // This is equivalent to x^(P-2) where P = 2^31-1
     
     // t0 = x^5
-    let t0 = m31_mul(m31_square(x, 2u), x);
+    let t0 = m31_pow5(x);
     
     // t1 = x^15
-    let t1 = m31_mul(m31_square(t0, 1u), t0);
+    let t1 = m31_pow3(t0);
     
     // t2 = x^125
-    let t2 = m31_mul(m31_square(t1, 3u), t0);
+    let t2 = m31_mul(m31_pow8(t1), t0);
     
     // t3 = x^255
-    let t3 = m31_mul(m31_square(t2, 1u), t0);
+    let t3 = m31_mul(m31_square(t2), t0);
     
     // t4 = x^65535
-    let t4 = m31_mul(m31_square(t3, 8u), t3);
+    let t4 = m31_mul(m31_pow256(t3), t3);
     
     // t5 = x^16777215
-    let t5 = m31_mul(m31_square(t4, 8u), t3);
+    let t5 = m31_mul(m31_pow256(t4), t3);
     
     // result = x^2147483520
-    var result = m31_square(t5, 7u);
+    var result = m31_pow128(t5);
     result = m31_mul(result, t2);
     
     return result;
@@ -132,6 +154,10 @@ fn cm31_neg(a: CM31) -> CM31 {
 
 fn cm31_square(x: CM31) -> CM31 {
     return cm31_mul(x, x);
+}
+
+fn cm31_pow5(x: CM31) -> CM31 {
+    return cm31_mul(cm31_square(x), x);
 }
 
 fn cm31_inverse(x: CM31) -> CM31 {
@@ -198,6 +224,10 @@ fn qm31_neg(q: QM31) -> QM31 {
 
 fn qm31_square(q: QM31) -> QM31 {
     return qm31_mul(q, q);
+}
+
+fn qm31_pow5(q: QM31) -> QM31 {
+    return qm31_mul(qm31_square(q), q);
 }
 
 fn qm31_inverse(q: QM31) -> QM31 {

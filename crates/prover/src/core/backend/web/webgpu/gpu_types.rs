@@ -1,5 +1,6 @@
 use super::constants::*;
-use super::qm31::{GpuM31, GpuQM31};
+use super::m31::GpuM31;
+use super::qm31::GpuQM31;
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]

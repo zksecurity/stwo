@@ -291,44 +291,6 @@ fn next_interaction_trace_mask_offset(col_index: u32, vec_index: u32, inner_vec_
     return ret_val;
 }
 
-/// Applies the external round matrix.
-/// See <https://eprint.iacr.org/2023/323.pdf> 5.1 and Appendix B.
-// fn apply_external_round_matrix(state: array<M31, N_STATE>) -> array<M31, N_STATE> {
-//     // Applies circ(2M4, M4, M4, M4).
-//     var modified_state = state;
-//     for (var i = 0u; i < 4u; i++) {
-//         var x = array<M31, 4>(
-//             state[4 * i],
-//             state[4 * i + 1],
-//             state[4 * i + 2],
-//             state[4 * i + 3],
-//         );
-
-//         let t0 = m31_add(x[0], x[1]);
-//         let t02 = m31_add(t0, t0);
-//         let t1 = m31_add(x[2], x[3]);
-//         let t12 = m31_add(t1, t1);
-//         let t2 = m31_add(m31_add(x[1], x[1]), t1);
-//         let t3 = m31_add(m31_add(x[3], x[3]), t0);
-//         let t4 = m31_add(m31_add(t12, t12), t3);
-//         let t5 = m31_add(m31_add(t02, t02), t2);
-//         let t6 = m31_add(t3, t5);
-//         let t7 = m31_add(t2, t4);
-
-//         modified_state[4 * i] = t6;
-//         modified_state[4 * i + 1] = t5;
-//         modified_state[4 * i + 2] = t7;
-//         modified_state[4 * i + 3] = t4;
-//     }
-//     for (var j = 0u; j < 4u; j++) {
-//         let s = m31_add(m31_add(modified_state[j], modified_state[j + 4]), m31_add(modified_state[j + 8], modified_state[j + 12]));
-//         for (var i = 0u; i < 4u; i++) {
-//             modified_state[4 * i + j] = m31_add(modified_state[4 * i + j], s);
-//         }
-//     }
-//     return modified_state;
-// }
-
 fn apply_external_round_matrix_state16(state: State16) -> State16 {
     // Applies circ(2M4, M4, M4, M4).
     var modified_state = state.data;
@@ -364,24 +326,6 @@ fn apply_external_round_matrix_state16(state: State16) -> State16 {
     }
     return State16(modified_state);
 }
-
-// // Applies the internal round matrix.
-// //   mu_i = 2^{i+1} + 1.
-// // See <https://eprint.iacr.org/2023/323.pdf> 5.2.
-// fn apply_internal_round_matrix(state: array<M31, N_STATE>) -> array<M31, N_STATE> {
-//     var sum = state[0];
-//     for (var i = 1u; i < N_STATE; i++) {
-//         sum = m31_add(sum, state[i]);
-//     }
-
-//     var result = array<M31, N_STATE>();
-//     for (var i = 0u; i < N_STATE; i++) {
-//         let factor = partial_reduce(1u << (i + 1));
-//         result[i] = m31_add(m31_mul(M31(factor), state[i]), sum);
-//     }
-
-//     return result;
-// }
 
 // Applies the internal round matrix.
 //   mu_i = 2^{i+1} + 1.

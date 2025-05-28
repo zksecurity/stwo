@@ -1,18 +1,13 @@
 use super::gpu_common::ByteSerialize;
 use crate::core::fields::cm31::CM31;
-use crate::core::fields::m31::M31;
 use crate::core::fields::qm31::QM31;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[repr(C)]
-pub struct GpuM31(pub u32); // alias M31 = u32
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[repr(C)]
+#[repr(C, align(8))]
 pub struct GpuCM31(pub [u32; 2]); // alias CM31 = vec2<u32>
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[repr(C)]
+#[repr(C, align(16))]
 pub struct GpuQM31(pub [u32; 4]); // alias QM31 = vec4<u32>
 
 impl From<QM31> for GpuQM31 {
@@ -35,33 +30,21 @@ impl From<GpuQM31> for QM31 {
     }
 }
 
-impl From<M31> for GpuM31 {
-    fn from(value: M31) -> Self {
-        GpuM31 { 0: value.into() }
-    }
-}
-
-impl From<GpuM31> for M31 {
-    fn from(value: GpuM31) -> Self {
-        M31::from(value.0)
-    }
-}
-
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub struct ComputeInput {
+pub struct ComputeQM31Input {
     pub first: GpuQM31,
     pub second: GpuQM31,
 }
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub struct ComputeOutput {
+pub struct ComputeQM31Output {
     pub result: GpuQM31,
 }
 
-impl ByteSerialize for ComputeInput {}
-impl ByteSerialize for ComputeOutput {}
+impl ByteSerialize for ComputeQM31Input {}
+impl ByteSerialize for ComputeQM31Output {}
 
 pub enum QM31Operation {
     Add,
@@ -69,6 +52,8 @@ pub enum QM31Operation {
     Multiply,
     Negate,
     Inverse,
+    Square,
+    Pow5,
 }
 
 #[cfg(test)]
@@ -147,7 +132,23 @@ mod tests {
                 }
             "#
                 }
-            };
+                QM31Operation::Square => {
+                r#"
+                @compute @workgroup_size(1)
+                fn main() {
+                    output.result = qm31_square(input.first);
+                }
+            "#
+                }
+                QM31Operation::Pow5 => {
+                r#"
+                @compute @workgroup_size(1)
+                fn main() {
+                    output.result = qm31_pow5(input.first);
+                }
+            "#
+                }
+        };
 
             format!("{base_source}\n{inputs}\n{output}\n{operation}").into()
         }
@@ -158,17 +159,17 @@ mod tests {
         first: QM31,
         second: QM31,
     ) -> QM31 {
-        let input = ComputeInput {
+        let input = ComputeQM31Input {
             first: first.into(),
             second: second.into(),
         };
 
-        let instance = GpuComputeInstance::new(&input, std::mem::size_of::<ComputeOutput>()).await;
+        let instance = GpuComputeInstance::new(&input, std::mem::size_of::<ComputeQM31Output>()).await;
         let (pipeline, bind_group) =
             instance.create_pipeline(&operation.shader_source(), operation.entry_point());
 
         let output = instance
-            .run_computation::<ComputeOutput>(&pipeline, &bind_group, (1, 1, 1))
+            .run_computation::<ComputeQM31Output>(&pipeline, &bind_group, (1, 1, 1))
             .await;
 
         output.result.into()
@@ -255,6 +256,30 @@ mod tests {
             zero_qm,
         ));
         assert_eq!(gpu_inv.0 .0, cpu_inv, "M31 inverse failed");
+
+        // Test square 
+        let cpu_square = m.square();
+        let gpu_square = pollster::block_on(compute_field_operation(
+            QM31Operation::Square,
+            m_qm,
+            zero_qm,
+        ));
+        assert_eq!(
+            gpu_square.0 .0, cpu_square,
+            "M31 square operation failed"
+        );
+
+        // Test pow5
+        let cpu_pow5 = m.square().square() * m;
+        let gpu_pow5 = pollster::block_on(compute_field_operation(
+            QM31Operation::Pow5,
+            m_qm,
+            zero_qm,
+        ));
+        assert_eq!(
+            gpu_pow5.0 .0, cpu_pow5,
+            "M31 pow5 operation failed"
+        );
 
         // Test with large numbers (near P)
         let large = M31::from(P - 1);
@@ -363,6 +388,30 @@ mod tests {
             gpu_large_inv.0, cpu_large_inv,
             "CM31 large number inverse failed"
         );
+
+        // Test large number square
+        let cpu_large_square = large.square();
+        let gpu_large_square = pollster::block_on(compute_field_operation(
+            QM31Operation::Square,
+            large_qm,
+            QM31(zero, zero),
+        ));
+        assert_eq!(
+            gpu_large_square.0, cpu_large_square,
+            "CM31 large number square failed"
+        );
+
+        // Test large number pow5
+        let cpu_large_pow5 = large.square().square() * large;
+        let gpu_large_pow5 = pollster::block_on(compute_field_operation(
+            QM31Operation::Pow5,
+            large_qm,
+            QM31(zero, zero),
+        ));
+        assert_eq!(
+            gpu_large_pow5.0, cpu_large_pow5,
+            "CM31 large number pow5 failed"
+        );
     }
 
     #[test]
@@ -417,6 +466,24 @@ mod tests {
         assert_eq!(
             gpu_large_inv, cpu_large_inv,
             "QM31 large number inverse failed"
+        );
+
+        // Test large number square
+        let cpu_large_square = large.square();
+        let gpu_large_square =
+            pollster::block_on(compute_field_operation(QM31Operation::Square, large, zero));
+        assert_eq!(
+            gpu_large_square, cpu_large_square,
+            "QM31 large number square failed"
+        );
+
+        // Test large number pow5
+        let cpu_large_pow5 = large.square().square() * large;
+        let gpu_large_pow5 =
+            pollster::block_on(compute_field_operation(QM31Operation::Pow5, large, zero));
+        assert_eq!(
+            gpu_large_pow5, cpu_large_pow5,
+            "QM31 large number pow5 failed"
         );
     }
 }

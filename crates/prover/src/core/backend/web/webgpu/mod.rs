@@ -2,6 +2,7 @@ mod constants;
 pub mod eval_composition_poly;
 pub mod gpu_common;
 pub mod gpu_types;
+pub mod m31;
 pub mod qm31;
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
 pub mod runner;
