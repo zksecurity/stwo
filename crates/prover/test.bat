@@ -15,5 +15,5 @@ set RUST_MIN_STACK_SIZE=500077216
 set RUST_LOG_SPAN_EVENTS=enter,close
 set RUSTFLAGS=-C target-cpu=native -C opt-level=3
 
-cargo test --package stwo-prover --release --lib -- examples::poseidon::tests::test_web_poseidon_prove --exact --show-output -- --nocapture
+cargo test --package stwo-prover --release --features parallel --lib -- examples::poseidon::tests::test_web_poseidon_prove --exact --show-output -- --nocapture
 pause

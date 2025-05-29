@@ -23,10 +23,11 @@ use crate::core::backend::simd::column::BaseColumn;
 use crate::core::backend::simd::m31::{PackedBaseField, LOG_N_LANES, N_LANES};
 use crate::core::backend::simd::qm31::PackedSecureField;
 use crate::core::backend::simd::SimdBackend;
+use crate::core::backend::web::webgpu::eval_composition_poly::WgpuInstance;
 #[allow(unused_imports)]
 use crate::core::backend::web::webgpu::eval_composition_poly::{
     compute_composition_polynomial_wgpu, create_composition_polynomial_gpu_input,
-    init_wgpu_instance, EvalCompositionPolynomialArgs,
+    init_wgpu_instance,
 };
 #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
 use crate::core::backend::web::webgpu::ByteSerialize;
@@ -105,22 +106,6 @@ impl<T> HasDomainTypeName for T {
     }
 }
 
-impl<'a> EvalCompositionPolynomialArgs<'a> {
-    pub fn new(eval: &WebDomainEvaluator<'a>, lookup_elements: &'a PoseidonElements) -> Self {
-        Self {
-            original_trace: &eval.trace_poly,
-            eval_domain: eval.eval_domain,
-            denom_inv: eval.denom_inv.clone(),
-            random_coeff_powers: eval.random_coeff_powers.clone(),
-            lookup_elements,
-            trace_domain_log_size: eval.trace_domain_log_size,
-            eval_domain_log_size: eval.eval_domain.log_size(),
-            log_size: eval.log_size,
-            total_sum: eval.claimed_sum,
-        }
-    }
-}
-
 #[inline(always)]
 /// Applies the M4 MDS matrix described in <https://eprint.iacr.org/2023/323.pdf> 5.1.
 fn apply_m4<F>(x: [F; 4]) -> [F; 4]
@@ -194,6 +179,10 @@ fn pow5<F: FieldExpOps>(x: F) -> F {
     x4 * x.clone()
 }
 
+use once_cell::sync::OnceCell;
+use std::sync::Mutex;
+static INSTANCE: OnceCell<Mutex<WgpuInstance>> = OnceCell::new();
+
 pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
     eval: &mut E,
     lookup_elements: &PoseidonElements,
@@ -205,12 +194,20 @@ pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
     // if not wasm32
     #[cfg(not(target_family = "wasm"))]
     {
-        let mut instance = pollster::block_on(init_wgpu_instance());
+        let instance = INSTANCE.get_or_init(|| {
+            let initialized = pollster::block_on(init_wgpu_instance());
+            Mutex::new(initialized)
+        });
+
+        let mut instance = instance.lock().unwrap(); // Safe and synchronized mutable access
 
         let start = std::time::Instant::now();
-        let args: EvalCompositionPolynomialArgs<'_> =
-            EvalCompositionPolynomialArgs::new(web, lookup_elements);
-        let web_input = create_composition_polynomial_gpu_input(args);
+        profiling::scope!("Poseidon evaluation");
+        let web_input: Arc<crate::core::backend::web::webgpu::ComputeCompositionPolynomialInput>;
+        {
+            profiling::scope!("Create GPU input");
+            web_input = create_composition_polynomial_gpu_input(web, lookup_elements);
+        }
         output = pollster::block_on(compute_composition_polynomial_wgpu(
             web_input,
             &mut instance,
@@ -280,6 +277,8 @@ pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
             web.col.columns[3].set(idx, qm.0[3].into());
         }
     }
+
+    profiling::finish_frame!();
 }
 
 pub fn eval_poseidon_constraints<E: EvalAtRow>(eval: &mut E, lookup_elements: &PoseidonElements) {
@@ -926,6 +925,7 @@ mod tests {
             .stack_size(512 * 1024 * 1024)
             .spawn(|| {
                 test_web();
+                //test_web();
             })
             .expect("thread spawn failed");
 

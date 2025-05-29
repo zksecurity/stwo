@@ -2,19 +2,18 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use itertools::Itertools;
+use wgpu_profiler::GpuTimerQueryResult;
 
 use super::constants::*;
 use super::gpu_types::*;
 use super::m31::GpuM31;
 use super::qm31::GpuQM31;
 use super::ByteSerialize;
+use crate::constraint_framework::WebDomainEvaluator;
 use crate::core::backend::cpu::circle::circle_twiddles_from_line_twiddles;
-use crate::core::backend::web::WebBackend;
 use crate::core::backend::CpuBackend;
-use crate::core::fields::m31::{BaseField, M31};
-use crate::core::fields::qm31::QM31;
-use crate::core::pcs::TreeVec;
-use crate::core::poly::circle::{CircleDomain, CirclePoly, PolyOps};
+use crate::core::fields::m31::BaseField;
+use crate::core::poly::circle::PolyOps;
 use crate::core::poly::utils::domain_line_twiddles_from_tree;
 use crate::examples::poseidon::PoseidonElements;
 use wgpu_profiler::{GpuProfiler, GpuProfilerSettings};
@@ -35,16 +34,45 @@ pub struct WgpuInstance {
     pub profiler: GpuProfiler,
 }
 
-pub struct EvalCompositionPolynomialArgs<'a> {
-    pub original_trace: &'a TreeVec<Vec<&'a CirclePoly<WebBackend>>>,
-    pub eval_domain: CircleDomain,
-    pub denom_inv: Vec<M31>,
-    pub random_coeff_powers: Vec<QM31>,
-    pub lookup_elements: &'a PoseidonElements,
-    pub trace_domain_log_size: u32,
-    pub eval_domain_log_size: u32,
-    pub log_size: u32,
-    pub total_sum: QM31,
+fn scopes_to_console_recursive(results: &[GpuTimerQueryResult], indentation: u32) {
+    for scope in results {
+        if indentation > 0 {
+            print!("{:<width$}", "|", width = 4);
+        }
+
+        if let Some(time) = &scope.time {
+            println!(
+                "{:.3}μs - {}",
+                (time.end - time.start) * 1000.0 * 1000.0,
+                scope.label
+            );
+        } else {
+            println!("n/a - {}", scope.label);
+        }
+
+        if !scope.nested_queries.is_empty() {
+            scopes_to_console_recursive(&scope.nested_queries, indentation + 1);
+        }
+    }
+}
+
+fn console_output(results: &Option<Vec<GpuTimerQueryResult>>, enabled_features: wgpu::Features) {
+    profiling::scope!("console_output");
+    print!("\x1B[2J\x1B[1;1H"); // Clear terminal and put cursor to first row first column
+    println!("Welcome to wgpu_profiler demo!");
+    println!();
+    println!("Enabled device features: {:?}", enabled_features);
+    println!();
+    println!(
+        "Press space to write out a trace file that can be viewed in chrome's chrome://tracing"
+    );
+    println!();
+    match results {
+        Some(results) => {
+            scopes_to_console_recursive(results, 0);
+        }
+        None => println!("No profiling results available yet!"),
+    }
 }
 
 pub async fn compute_composition_polynomial_wgpu(
@@ -52,14 +80,75 @@ pub async fn compute_composition_polynomial_wgpu(
     instance: &mut WgpuInstance,
 ) -> Arc<ComputeCompositionPolynomialOutput> {
     profiling::scope!("Compute Requested");
-    let encoder = init_encoder(instance);
+    let mut encoder = instance
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Compute Composition Polynomial Command Encoder"),
+        });
+    {
+        let mut scope = instance.profiler.scope("computing", &mut encoder);
+        {
+            // let mut nested_scope1 = scope.scope("Evaluate Line Twiddle");
+            let mut compute_pass1 = scope.scoped_compute_pass("Evaluate Line Twiddle Compute Pass");
+
+            // let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            //     label: Some("Evaluate Line Twiddle Compute Pass"),
+            //     timestamp_writes: None,
+            // });
+
+            compute_pass1.set_bind_group(0, &instance.bind_group, &[]);
+
+            compute_pass1.set_pipeline(&instance.evaluate_line_twiddle_pipeline);
+            compute_pass1.dispatch_workgroups(1, N_EXTEND_TRACE_WORKGROUPS, 1);
+        }
+        {
+            // let mut nested_scope2 = scope.scope("Evaluate Circle Twiddle Compute Pass");
+            let mut compute_pass2 = scope.scoped_compute_pass("Evaluate Circle Twiddle Compute Pass");
+
+            // let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            //     label: Some("Evaluate Circle Twiddle Compute Pass"),
+            //     timestamp_writes: None,
+            // });
+
+            compute_pass2.set_bind_group(0, &instance.bind_group, &[]);
+            compute_pass2.set_pipeline(&instance.evaluate_circle_twiddle_pipeline);
+            compute_pass2.dispatch_workgroups(1, N_EXTEND_TRACE_WORKGROUPS, 1);
+        }
+        {
+            //let mut nested_scope3 = scope.scope("Compute Composition Polynomial Compute Pass");
+            let mut compute_pass3 = scope.scoped_compute_pass("Compute Composition Polynomial Compute Pass");
+
+            // let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            //     label: Some("Compute Composition Polynomial Compute Pass"),
+            //     timestamp_writes: None,
+            // });
+
+            compute_pass3.set_bind_group(0, &instance.bind_group, &[]);
+            compute_pass3.set_pipeline(&instance.composition_polynomial_compute_pipeline);
+            compute_pass3.dispatch_workgroups(N_WORKGROUPS, 1, 1);
+        }
+
+    }
+
+    // Copy output to staging buffer for read access
+    encoder.copy_buffer_to_buffer(
+        &instance.output_buffer,
+        0,
+        &instance.staging_buffer,
+        0,
+        instance.staging_buffer.size(),
+    );
+    instance.profiler.resolve_queries(&mut encoder);
     instance
         .queue
         .write_buffer(&instance.input_buffer, 0, input.as_bytes());
     instance.queue.submit(Some(encoder.finish()));
-    profiling::finish_frame!();
+    //profiling::finish_frame!();
 
+    //let open_scope = instance.profiler.
     instance.profiler.end_frame().unwrap();
+    let latest_profiler_result = instance.profiler.process_finished_frame(instance.queue.get_timestamp_period());
+    console_output(&latest_profiler_result, instance.device.features());
 
     let output_slice = instance.staging_buffer.slice(..);
     let (sender, receiver) = flume::bounded(1);
@@ -72,16 +161,17 @@ pub async fn compute_composition_polynomial_wgpu(
     let _ = receiver.recv_async().await.unwrap();
     let data = output_slice.get_mapped_range();
     let output = ComputeCompositionPolynomialOutput::from_bytes(&data);
-    //drop(data);
-    //instance.staging_buffer.unmap();
+    drop(data);
+    instance.staging_buffer.unmap();
     Arc::new(output)
 }
 
-pub fn create_composition_polynomial_gpu_input<'a>(
-    args: EvalCompositionPolynomialArgs<'a>,
+pub fn create_composition_polynomial_gpu_input(
+    eval: &mut WebDomainEvaluator<'_>,
+    lookup_elements: &PoseidonElements,
 ) -> Arc<ComputeCompositionPolynomialInput> {
-    let original_trace_gpu: [GpuOriginalColumn; N_ORIGINAL_TRACE_COLUMNS as usize] = args
-        .original_trace
+    profiling::scope!("create_composition_polynomial_gpu_input");
+    let original_trace_gpu: [GpuOriginalColumn; N_ORIGINAL_TRACE_COLUMNS as usize] = eval.trace_poly
         .iter()
         .flatten()
         .map(|eval| GpuOriginalColumn::from(eval))
@@ -90,8 +180,8 @@ pub fn create_composition_polynomial_gpu_input<'a>(
         .expect("Wrong length");
 
     // flatten twiddles
-    let twiddles = CpuBackend::precompute_twiddles(args.eval_domain.half_coset);
-    let line_twiddles = domain_line_twiddles_from_tree(args.eval_domain, &twiddles.twiddles);
+    let twiddles = CpuBackend::precompute_twiddles(eval.eval_domain.half_coset);
+    let line_twiddles = domain_line_twiddles_from_tree(eval.eval_domain, &twiddles.twiddles);
     let mut twiddle_input = Twiddles {
         line_twiddles_layer_count: line_twiddles.len() as u32,
         line_twiddles_sizes: [0; N_LINE_TWIDDLES_SIZE as usize],
@@ -120,23 +210,25 @@ pub fn create_composition_polynomial_gpu_input<'a>(
     twiddle_input.circle_twiddles[..circle_twiddles.len()].copy_from_slice(&circle_twiddles);
     twiddle_input.circle_twiddles_size = circle_twiddles.len() as u32;
 
-    let denom_inv_gpu: [GpuM31; 4] = args
+    let denom_inv_gpu: [GpuM31; 4] = eval
         .denom_inv
+        .clone()
         .into_iter()
         .map(GpuM31::from)
         .collect::<Vec<_>>()
         .try_into()
         .expect("Wrong length");
 
-    let random_coeff_powers_gpu: [GpuQM31; N_CONSTRAINTS as usize] = args
+    let random_coeff_powers_gpu: [GpuQM31; N_CONSTRAINTS as usize] = eval
         .random_coeff_powers
+        .clone()
         .into_iter()
         .map(GpuQM31::from)
         .collect::<Vec<_>>()
         .try_into()
         .expect("Wrong length");
 
-    let lookup_elements_gpu = GpuLookupElements::from(args.lookup_elements);
+    let lookup_elements_gpu = GpuLookupElements::from(lookup_elements);
 
     Arc::new(ComputeCompositionPolynomialInput {
         original_trace: original_trace_gpu,
@@ -144,9 +236,9 @@ pub fn create_composition_polynomial_gpu_input<'a>(
         denom_inv: denom_inv_gpu,
         random_coeff_powers: random_coeff_powers_gpu,
         lookup_elements: lookup_elements_gpu,
-        trace_domain_log_size: args.trace_domain_log_size,
-        eval_domain_log_size: args.eval_domain_log_size,
-        cumsum_shift: (args.total_sum / BaseField::from_u32_unchecked(1 << args.log_size)).into(),
+        trace_domain_log_size: eval.trace_domain_log_size,
+        eval_domain_log_size: eval.eval_domain.log_size(),
+        cumsum_shift: (eval.claimed_sum / BaseField::from_u32_unchecked(1 << eval.log_size)).into(),
     })
 }
 
@@ -394,26 +486,31 @@ pub async fn init_wgpu_instance() -> WgpuInstance {
             },
         });
 
-    // let profiler = GpuProfiler::new(&device, GpuProfilerSettings::default())
-    //     .expect("Failed to create profiler");
+    let profiler = GpuProfiler::new(&device, GpuProfilerSettings::default())
+        .expect("Failed to create profiler");
 
-    let profiler = GpuProfiler::new_with_tracy_client(
-        GpuProfilerSettings::default(),
-        adapter.get_info().backend,
-        &device,
-        &queue,
-    )
-    .unwrap_or_else(|err| match err {
-        wgpu_profiler::CreationError::TracyClientNotRunning
-        | wgpu_profiler::CreationError::TracyGpuContextCreationError(_) => {
-            println!("Failed to connect to Tracy. Continuing without Tracy integration.");
-            GpuProfiler::new(&device, GpuProfilerSettings::default())
-                .expect("Failed to create profiler")
-        }
-        _ => {
-            panic!("Failed to create profiler: {}", err);
-        }
-    });
+    // let profiler_setting = GpuProfilerSettings {
+    //     enable_timer_queries: true,
+    //     enable_debug_groups: true,
+    //     max_num_pending_frames: 200
+    // };
+    // let profiler = GpuProfiler::new_with_tracy_client(
+    //     profiler_setting.clone(),
+    //     adapter.get_info().backend,
+    //     &device,
+    //     &queue,
+    // )
+    // .unwrap_or_else(|err| match err {
+    //     wgpu_profiler::CreationError::TracyClientNotRunning
+    //     | wgpu_profiler::CreationError::TracyGpuContextCreationError(_) => {
+    //         println!("Failed to connect to Tracy. Continuing without Tracy integration.");
+    //         GpuProfiler::new(&device, profiler_setting)
+    //             .expect("Failed to create profiler")
+    //     }
+    //     _ => {
+    //         panic!("Failed to create profiler: {}", err);
+    //     }
+    // });
 
     WgpuInstance {
         instance,
@@ -441,6 +538,7 @@ pub fn init_encoder(instance: &mut WgpuInstance) -> wgpu::CommandEncoder {
     {
         let mut scope = instance.profiler.scope("computing", &mut encoder);
         {
+            // let mut nested_scope1 = scope.scope("Evaluate Line Twiddle");
             let mut compute_pass = scope.scoped_compute_pass("Evaluate Line Twiddle Compute Pass");
 
             // let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -454,6 +552,7 @@ pub fn init_encoder(instance: &mut WgpuInstance) -> wgpu::CommandEncoder {
             compute_pass.dispatch_workgroups(1, N_EXTEND_TRACE_WORKGROUPS, 1);
         }
         {
+            // let mut nested_scope2 = scope.scope("Evaluate Circle Twiddle Compute Pass");
             let mut compute_pass = scope.scoped_compute_pass("Evaluate Circle Twiddle Compute Pass");
 
             // let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -466,6 +565,7 @@ pub fn init_encoder(instance: &mut WgpuInstance) -> wgpu::CommandEncoder {
             compute_pass.dispatch_workgroups(1, N_EXTEND_TRACE_WORKGROUPS, 1);
         }
         {
+            //let mut nested_scope3 = scope.scope("Compute Composition Polynomial Compute Pass");
             let mut compute_pass = scope.scoped_compute_pass("Compute Composition Polynomial Compute Pass");
 
             // let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
