@@ -1,8 +1,12 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+//use std::sync::Arc;
 
 use itertools::Itertools;
+// use itertools::Itertools;
 use wgpu_profiler::GpuTimerQueryResult;
+
+// #[cfg(feature = "parallel")]
+// use rayon::prelude::*;
 
 use super::constants::*;
 use super::gpu_types::*;
@@ -76,9 +80,9 @@ fn console_output(results: &Option<Vec<GpuTimerQueryResult>>, enabled_features: 
 }
 
 pub async fn compute_composition_polynomial_wgpu(
-    input: Arc<ComputeCompositionPolynomialInput>,
+    input: Box<ComputeCompositionPolynomialInput>,
     instance: &mut WgpuInstance,
-) -> Arc<ComputeCompositionPolynomialOutput> {
+) -> Box<ComputeCompositionPolynomialOutput> {
     profiling::scope!("Compute Requested");
     let mut encoder = instance
         .device
@@ -163,21 +167,18 @@ pub async fn compute_composition_polynomial_wgpu(
     let output = ComputeCompositionPolynomialOutput::from_bytes(&data);
     drop(data);
     instance.staging_buffer.unmap();
-    Arc::new(output)
+    Box::new(output)
 }
 
 pub fn create_composition_polynomial_gpu_input(
     eval: &mut WebDomainEvaluator<'_>,
     lookup_elements: &PoseidonElements,
-) -> Arc<ComputeCompositionPolynomialInput> {
+) -> Box<ComputeCompositionPolynomialInput> {
     profiling::scope!("create_composition_polynomial_gpu_input");
-    let original_trace_gpu: [GpuOriginalColumn; N_ORIGINAL_TRACE_COLUMNS as usize] = eval.trace_poly
-        .iter()
-        .flatten()
-        .map(|eval| GpuOriginalColumn::from(eval))
-        .collect_vec()
-        .try_into()
-        .expect("Wrong length");
+    let original_iter = eval.trace_poly.iter().flatten().map(GpuOriginalColumn::from);
+    let original_trace_gpu: [GpuOriginalColumn; N_ORIGINAL_TRACE_COLUMNS as usize] =
+        array_init::from_iter(original_iter)
+        .expect("Incorrect number of trace polynomials");
 
     // flatten twiddles
     let twiddles = CpuBackend::precompute_twiddles(eval.eval_domain.half_coset);
@@ -190,47 +191,39 @@ pub fn create_composition_polynomial_gpu_input(
         circle_twiddles: [GpuM31 { 0: 0 }; N_CIRCLE_TWIDDLES_SIZE as usize],
         circle_twiddles_size: 0,
     };
-    for (i, twiddle) in line_twiddles.iter().enumerate() {
-        twiddle_input.line_twiddles_sizes[i] = twiddle.len() as u32;
-        twiddle_input.line_twiddles_offsets[i] = if i == 0 {
-            0
-        } else {
-            twiddle_input.line_twiddles_offsets[i - 1] + twiddle_input.line_twiddles_sizes[i - 1]
-        };
-        for (j, &twiddle) in twiddle.iter().enumerate() {
-            twiddle_input.line_twiddles_flat[twiddle_input.line_twiddles_offsets[i] as usize + j] =
-                twiddle.into();
+
+    let mut offset = 0;
+    for (i, twiddle_layer) in line_twiddles.iter().enumerate() {
+        let size = twiddle_layer.len();
+        twiddle_input.line_twiddles_sizes[i] = size as u32;
+        twiddle_input.line_twiddles_offsets[i] = offset as u32;
+
+        // Flatten into flat buffer
+        for (j, &twiddle) in twiddle_layer.iter().enumerate() {
+            twiddle_input.line_twiddles_flat[offset + j] = GpuM31::from(twiddle);
         }
+        offset += size;
     }
 
     // circle twiddles
-    let circle_twiddles: Vec<GpuM31> = circle_twiddles_from_line_twiddles(line_twiddles[0])
-        .map(|twiddle| twiddle.into())
-        .collect();
-    twiddle_input.circle_twiddles[..circle_twiddles.len()].copy_from_slice(&circle_twiddles);
-    twiddle_input.circle_twiddles_size = circle_twiddles.len() as u32;
+    let circle = circle_twiddles_from_line_twiddles(line_twiddles[0]);
+    let circle_len = circle.try_len().unwrap();
+    debug_assert!(circle_len <= N_CIRCLE_TWIDDLES_SIZE as usize);
+    for (i, tw) in circle.enumerate() {
+        twiddle_input.circle_twiddles[i] = GpuM31::from(tw);
+    }
+    twiddle_input.circle_twiddles_size = circle_len as u32;
 
-    let denom_inv_gpu: [GpuM31; 4] = eval
-        .denom_inv
-        .clone()
-        .into_iter()
-        .map(GpuM31::from)
-        .collect::<Vec<_>>()
-        .try_into()
-        .expect("Wrong length");
+    let denom_inv_gpu: [GpuM31; 4] = array_init::array_init(|i| {
+        GpuM31::from(eval.denom_inv[i])
+    });
 
-    let random_coeff_powers_gpu: [GpuQM31; N_CONSTRAINTS as usize] = eval
-        .random_coeff_powers
-        .clone()
-        .into_iter()
-        .map(GpuQM31::from)
-        .collect::<Vec<_>>()
-        .try_into()
-        .expect("Wrong length");
+    let random_coeff_powers_gpu: [GpuQM31; N_CONSTRAINTS as usize] =
+        array_init::array_init(|i| GpuQM31::from(eval.random_coeff_powers[i]));
 
     let lookup_elements_gpu = GpuLookupElements::from(lookup_elements);
 
-    Arc::new(ComputeCompositionPolynomialInput {
+    Box::new(ComputeCompositionPolynomialInput {
         original_trace: original_trace_gpu,
         twiddles: twiddle_input,
         denom_inv: denom_inv_gpu,

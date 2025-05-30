@@ -2,7 +2,7 @@
 
 use std::any::type_name;
 use std::ops::{Add, AddAssign, Mul, Sub};
-use std::sync::Arc;
+//use std::sync::Arc;
 
 use itertools::Itertools;
 #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
@@ -190,7 +190,7 @@ pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
     let web: &mut WebDomainEvaluator<'_> =
         unsafe { &mut *(eval as *mut E as *mut WebDomainEvaluator<'_>) };
 
-    let output: Arc<ComputeCompositionPolynomialOutput>;
+    let output: Box<ComputeCompositionPolynomialOutput>;
     // if not wasm32
     #[cfg(not(target_family = "wasm"))]
     {
@@ -203,7 +203,7 @@ pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
 
         let start = std::time::Instant::now();
         profiling::scope!("Poseidon evaluation");
-        let web_input: Arc<crate::core::backend::web::webgpu::ComputeCompositionPolynomialInput>;
+        let web_input: Box<crate::core::backend::web::webgpu::ComputeCompositionPolynomialInput>;
         {
             profiling::scope!("Create GPU input");
             web_input = create_composition_polynomial_gpu_input(web, lookup_elements);
@@ -888,6 +888,8 @@ mod tests {
             pow_bits: 10,
             fri_config: FriConfig::new(5, 1, 64),
         };
+
+        // precompute twiddles.
 
         // Prove.;
         let (component, proof) = prove_poseidon_web(log_n_instances, config);
