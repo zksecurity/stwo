@@ -9,7 +9,7 @@ popd
 set "PATH=%DLL_PATH%;%PATH%"
 
 set RUST_BACKTRACE=1
-set RUST_LOG=info,wgpu_core=warn,wgpu_hal=warn
+set RUST_LOG=info,wgpu_core=trace,wgpu_hal=warn
 set RUST_MIN_STACK_SIZE=500077216
 
 set RUST_LOG_SPAN_EVENTS=enter,close

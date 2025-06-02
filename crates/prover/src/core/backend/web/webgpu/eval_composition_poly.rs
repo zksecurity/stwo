@@ -92,41 +92,20 @@ pub async fn compute_composition_polynomial_wgpu(
     {
         let mut scope = instance.profiler.scope("computing", &mut encoder);
         {
-            // let mut nested_scope1 = scope.scope("Evaluate Line Twiddle");
             let mut compute_pass1 = scope.scoped_compute_pass("Evaluate Line Twiddle Compute Pass");
-
-            // let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            //     label: Some("Evaluate Line Twiddle Compute Pass"),
-            //     timestamp_writes: None,
-            // });
-
             compute_pass1.set_bind_group(0, &instance.bind_group, &[]);
 
             compute_pass1.set_pipeline(&instance.evaluate_line_twiddle_pipeline);
             compute_pass1.dispatch_workgroups(1, N_EXTEND_TRACE_WORKGROUPS, 1);
         }
         {
-            // let mut nested_scope2 = scope.scope("Evaluate Circle Twiddle Compute Pass");
             let mut compute_pass2 = scope.scoped_compute_pass("Evaluate Circle Twiddle Compute Pass");
-
-            // let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            //     label: Some("Evaluate Circle Twiddle Compute Pass"),
-            //     timestamp_writes: None,
-            // });
-
             compute_pass2.set_bind_group(0, &instance.bind_group, &[]);
             compute_pass2.set_pipeline(&instance.evaluate_circle_twiddle_pipeline);
             compute_pass2.dispatch_workgroups(1, N_EXTEND_TRACE_WORKGROUPS, 1);
         }
         {
-            //let mut nested_scope3 = scope.scope("Compute Composition Polynomial Compute Pass");
             let mut compute_pass3 = scope.scoped_compute_pass("Compute Composition Polynomial Compute Pass");
-
-            // let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            //     label: Some("Compute Composition Polynomial Compute Pass"),
-            //     timestamp_writes: None,
-            // });
-
             compute_pass3.set_bind_group(0, &instance.bind_group, &[]);
             compute_pass3.set_pipeline(&instance.composition_polynomial_compute_pipeline);
             compute_pass3.dispatch_workgroups(N_WORKGROUPS, 1, 1);
@@ -150,9 +129,8 @@ pub async fn compute_composition_polynomial_wgpu(
     //profiling::finish_frame!();
 
     //let open_scope = instance.profiler.
-    instance.profiler.end_frame().unwrap();
-    let latest_profiler_result = instance.profiler.process_finished_frame(instance.queue.get_timestamp_period());
-    console_output(&latest_profiler_result, instance.device.features());
+    // let latest_profiler_result = instance.profiler.process_finished_frame(instance.queue.get_timestamp_period());
+    // console_output(&latest_profiler_result, instance.device.features());
 
     let output_slice = instance.staging_buffer.slice(..);
     let (sender, receiver) = flume::bounded(1);
@@ -162,10 +140,16 @@ pub async fn compute_composition_polynomial_wgpu(
         .poll(wgpu::Maintain::wait())
         .panic_on_timeout();
 
+    instance.profiler.end_frame().unwrap();
+
     let _ = receiver.recv_async().await.unwrap();
     let data = output_slice.get_mapped_range();
     let output = ComputeCompositionPolynomialOutput::from_bytes(&data);
     drop(data);
+
+    let latest_profiler_result = instance.profiler.process_finished_frame(instance.queue.get_timestamp_period());
+    console_output(&latest_profiler_result, instance.device.features());
+
     instance.staging_buffer.unmap();
     Box::new(output)
 }
@@ -479,31 +463,31 @@ pub async fn init_wgpu_instance() -> WgpuInstance {
             },
         });
 
-    let profiler = GpuProfiler::new(&device, GpuProfilerSettings::default())
-        .expect("Failed to create profiler");
+    // let profiler = GpuProfiler::new(&device, GpuProfilerSettings::default())
+    //     .expect("Failed to create profiler");
 
-    // let profiler_setting = GpuProfilerSettings {
-    //     enable_timer_queries: true,
-    //     enable_debug_groups: true,
-    //     max_num_pending_frames: 200
-    // };
-    // let profiler = GpuProfiler::new_with_tracy_client(
-    //     profiler_setting.clone(),
-    //     adapter.get_info().backend,
-    //     &device,
-    //     &queue,
-    // )
-    // .unwrap_or_else(|err| match err {
-    //     wgpu_profiler::CreationError::TracyClientNotRunning
-    //     | wgpu_profiler::CreationError::TracyGpuContextCreationError(_) => {
-    //         println!("Failed to connect to Tracy. Continuing without Tracy integration.");
-    //         GpuProfiler::new(&device, profiler_setting)
-    //             .expect("Failed to create profiler")
-    //     }
-    //     _ => {
-    //         panic!("Failed to create profiler: {}", err);
-    //     }
-    // });
+    let profiler_setting = GpuProfilerSettings {
+        enable_timer_queries: true,
+        enable_debug_groups: true,
+        max_num_pending_frames: 200
+    };
+    let profiler = GpuProfiler::new_with_tracy_client(
+        profiler_setting.clone(),
+        adapter.get_info().backend,
+        &device,
+        &queue,
+    )
+    .unwrap_or_else(|err| match err {
+        wgpu_profiler::CreationError::TracyClientNotRunning
+        | wgpu_profiler::CreationError::TracyGpuContextCreationError(_) => {
+            println!("Failed to connect to Tracy. Continuing without Tracy integration.");
+            GpuProfiler::new(&device, profiler_setting)
+                .expect("Failed to create profiler")
+        }
+        _ => {
+            panic!("Failed to create profiler: {}", err);
+        }
+    });
 
     WgpuInstance {
         instance,
