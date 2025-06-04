@@ -202,12 +202,10 @@ pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
         unsafe { &mut *(eval as *mut E as *mut WebDomainEvaluator<'_>) };
 
     let output: Arc<ComputeCompositionPolynomialOutput>;
-    // if not wasm32
     #[cfg(not(target_family = "wasm"))]
     {
         let instance = pollster::block_on(init_wgpu_instance());
-        let args = EvalCompositionPolynomialArgs::new(web, lookup_elements);
-        let web_input = create_composition_polynomial_gpu_input(args);
+        let web_input = create_composition_polynomial_gpu_input(web, lookup_elements);
         output = pollster::block_on(compute_composition_polynomial_wgpu(web_input, &instance));
     }
 
@@ -227,8 +225,7 @@ pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
         let input_bytes = Uint8Array::new(&input_sab);
         let output_bytes = Uint8Array::new(&output_sab);
 
-        let args = EvalCompositionPolynomialArgs::new(web, lookup_elements);
-        let web_input = create_composition_polynomial_gpu_input(args);
+        let web_input = create_composition_polynomial_gpu_input(web, lookup_elements);
         let buf = web_input.as_bytes();
 
         unsafe {
