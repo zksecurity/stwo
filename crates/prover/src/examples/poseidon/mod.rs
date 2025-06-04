@@ -265,11 +265,11 @@ pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
 
     for (chunk_idx, chunk) in enum_iter {
         for (inner_idx, &qm) in chunk.iter().enumerate() {
-            let idx = chunk_idx * N_LANES as usize + inner_idx;
-            web.col.columns[0].set(idx, qm.a.a.data.into());
-            web.col.columns[1].set(idx, qm.a.b.data.into());
-            web.col.columns[2].set(idx, qm.b.a.data.into());
-            web.col.columns[3].set(idx, qm.b.b.data.into());
+            let idx = chunk_idx * N_LANES as usize + inner_idx;            
+            web.col.columns[0].set(idx, qm.0[0].into());
+            web.col.columns[1].set(idx, qm.0[1].into());
+            web.col.columns[2].set(idx, qm.0[2].into());
+            web.col.columns[3].set(idx, qm.0[3].into());
         }
     }
 }

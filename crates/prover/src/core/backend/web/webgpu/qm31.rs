@@ -4,66 +4,46 @@ use crate::core::fields::m31::M31;
 use crate::core::fields::qm31::QM31;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[repr(C)]
-pub struct GpuM31 {
-    pub data: u32,
-}
+#[repr(C, align(4))]
+pub struct GpuM31(pub u32); // alias M31 = u32
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[repr(C)]
-pub struct GpuCM31 {
-    pub a: GpuM31,
-    pub b: GpuM31,
-}
+#[repr(C, align(8))]
+pub struct GpuCM31(pub [u32; 2]); // alias CM31 = vec2<u32>
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[repr(C)]
-pub struct GpuQM31 {
-    pub a: GpuCM31,
-    pub b: GpuCM31,
-}
+#[repr(C, align(16))]
+pub struct GpuQM31(pub [u32; 4]); // alias QM31 = vec4<u32>
 
 impl From<QM31> for GpuQM31 {
     fn from(value: QM31) -> Self {
-        GpuQM31 {
-            a: GpuCM31 {
-                a: GpuM31 {
-                    data: value.0 .0.into(),
-                },
-                b: GpuM31 {
-                    data: value.0 .1.into(),
-                },
-            },
-            b: GpuCM31 {
-                a: GpuM31 {
-                    data: value.1 .0.into(),
-                },
-                b: GpuM31 {
-                    data: value.1 .1.into(),
-                },
-            },
-        }
+        GpuQM31([
+            value.0. 0.into(),
+            value.0. 1.into(),
+            value.1. 0.into(),
+            value.1. 1.into(),
+        ])
     }
 }
 
 impl From<GpuQM31> for QM31 {
     fn from(value: GpuQM31) -> Self {
         QM31(
-            CM31::from_m31(value.a.a.data.into(), value.a.b.data.into()),
-            CM31::from_m31(value.b.a.data.into(), value.b.b.data.into()),
+            CM31::from_m31(value.0[0].into(), value.0[1].into()),
+            CM31::from_m31(value.0[2].into(), value.0[3].into()),
         )
     }
 }
 
 impl From<M31> for GpuM31 {
     fn from(value: M31) -> Self {
-        GpuM31 { data: value.into() }
+        GpuM31 { 0: value.into() }
     }
 }
 
 impl From<GpuM31> for M31 {
     fn from(value: GpuM31) -> Self {
-        M31::from(value.data)
+        M31::from(value.0)
     }
 }
 
@@ -89,6 +69,8 @@ pub enum QM31Operation {
     Multiply,
     Negate,
     Inverse,
+    Square,
+    Pow5,
 }
 
 #[cfg(test)]
@@ -167,6 +149,22 @@ mod tests {
                 }
             "#
                 }
+                QM31Operation::Square => {
+                r#"
+                @compute @workgroup_size(1)
+                fn main() {
+                    output.result = qm31_square(input.first);
+                }
+            "#
+                }
+                QM31Operation::Pow5 => {
+                r#"
+                @compute @workgroup_size(1)
+                fn main() {
+                    output.result = qm31_pow5(input.first);
+                }
+            "#
+                }
             };
 
             format!("{base_source}\n{inputs}\n{output}\n{operation}").into()
@@ -204,13 +202,13 @@ mod tests {
         let gpu_qm1 = GpuQM31::from(qm1);
 
         let cpu_qm0 = QM31(
-            CM31(gpu_qm0.a.a.data.into(), gpu_qm0.a.b.data.into()),
-            CM31(gpu_qm0.b.a.data.into(), gpu_qm0.b.b.data.into()),
+            CM31(gpu_qm0.0[0].into(), gpu_qm0.0[1].into()),
+            CM31(gpu_qm0.0[2].into(), gpu_qm0.0[3].into()),
         );
 
         let cpu_qm1 = QM31(
-            CM31(gpu_qm1.a.a.data.into(), gpu_qm1.a.b.data.into()),
-            CM31(gpu_qm1.b.a.data.into(), gpu_qm1.b.b.data.into()),
+            CM31(gpu_qm1.0[0].into(), gpu_qm1.0[1].into()),
+            CM31(gpu_qm1.0[2].into(), gpu_qm1.0[3].into()),
         );
 
         assert_eq!(
@@ -275,6 +273,30 @@ mod tests {
             zero_qm,
         ));
         assert_eq!(gpu_inv.0 .0, cpu_inv, "M31 inverse failed");
+
+        // Test square 
+        let cpu_square = m.square();
+        let gpu_square = pollster::block_on(compute_field_operation(
+            QM31Operation::Square,
+            m_qm,
+            zero_qm,
+        ));
+        assert_eq!(
+            gpu_square.0 .0, cpu_square,
+            "M31 square operation failed"
+        );
+
+        // Test pow5
+        let cpu_pow5 = m.square().square() * m;
+        let gpu_pow5 = pollster::block_on(compute_field_operation(
+            QM31Operation::Pow5,
+            m_qm,
+            zero_qm,
+        ));
+        assert_eq!(
+            gpu_pow5.0 .0, cpu_pow5,
+            "M31 pow5 operation failed"
+        );
 
         // Test with large numbers (near P)
         let large = M31::from(P - 1);
