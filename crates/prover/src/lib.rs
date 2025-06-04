@@ -20,3 +20,6 @@ pub mod constraint_framework;
 pub mod core;
 pub mod examples;
 pub mod math;
+
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+pub mod wasm_multithread;

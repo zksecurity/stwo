@@ -4,8 +4,9 @@ rustflags = ["-Dwarnings"]
 
 [target.wasm32-unknown-unknown]
 rustflags = [
-  "-C", "link-args=-z stack-size=268435456", 
+  "-C", "link-args=-z stack-size=536870912", 
   "-C", "target-feature=+simd128,+atomics,+bulk-memory,+mutable-globals",
+  "-A", "unused-imports",
 ]
 [unstable]
 build-std = ["panic_abort", "std"]

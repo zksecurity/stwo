@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::mem::MaybeUninit;
 use std::sync::Arc;
 
 use itertools::Itertools;
@@ -73,11 +74,29 @@ pub async fn compute_composition_polynomial_wgpu(
 pub fn create_composition_polynomial_gpu_input(
     eval: &mut WebDomainEvaluator<'_>,
     lookup_elements: &PoseidonElements,
-) -> Arc<ComputeCompositionPolynomialInput> {
-    let original_iter = eval.trace_poly.iter().flatten().map(GpuOriginalColumn::from);
-    let original_trace_gpu: [GpuOriginalColumn; N_ORIGINAL_TRACE_COLUMNS as usize] =
-        array_init::from_iter(original_iter)
-        .expect("Incorrect number of trace polynomials");
+) -> ComputeCompositionPolynomialInput {
+    web_sys::console::log_1(&format!("create_composition_polynomial_gpu_input").into());
+
+    let mut temp: [MaybeUninit<GpuOriginalColumn>; N_ORIGINAL_TRACE_COLUMNS as usize] =
+        unsafe { MaybeUninit::uninit().assume_init() };
+
+    for (i, item) in eval
+        .trace_poly
+        .iter()
+        .flatten()
+        .map(GpuOriginalColumn::from)
+        .enumerate()
+    {
+        temp[i] = MaybeUninit::new(item);
+    }
+
+    let original_trace_gpu: [GpuOriginalColumn; N_ORIGINAL_TRACE_COLUMNS as usize] = unsafe {
+        std::ptr::read(
+            &temp as *const _ as *const [GpuOriginalColumn; N_ORIGINAL_TRACE_COLUMNS as usize],
+        )
+    };
+
+    web_sys::console::log_1(&format!("original trace done").into());
 
     // flatten twiddles
     let twiddles = CpuBackend::precompute_twiddles(eval.eval_domain.half_coset);
@@ -90,6 +109,8 @@ pub fn create_composition_polynomial_gpu_input(
         circle_twiddles: [GpuM31 { 0: 0 }; N_CIRCLE_TWIDDLES_SIZE as usize],
         circle_twiddles_size: 0,
     };
+
+    web_sys::console::log_1(&format!("twiddles done").into());
 
     let mut offset = 0;
     for (i, twiddle_layer) in line_twiddles.iter().enumerate() {
@@ -104,6 +125,8 @@ pub fn create_composition_polynomial_gpu_input(
         offset += size;
     }
 
+    web_sys::console::log_1(&format!("line twiddles done").into());
+
     // circle twiddles
     let circle = circle_twiddles_from_line_twiddles(line_twiddles[0]);
     let circle_len = circle.try_len().unwrap();
@@ -113,16 +136,35 @@ pub fn create_composition_polynomial_gpu_input(
     }
     twiddle_input.circle_twiddles_size = circle_len as u32;
 
-    let denom_inv_gpu: [GpuM31; 4] = array_init::array_init(|i| {
-        GpuM31::from(eval.denom_inv[i])
-    });
+    let denom_inv_gpu: [GpuM31; 4] = {
+        let mut arr = [GpuM31 { 0: 0 }; 4];
+        for i in 0..4 {
+            arr[i] = GpuM31::from(eval.denom_inv[i]);
+        }
+        arr
+    };
 
-    let random_coeff_powers_gpu: [GpuQM31; N_CONSTRAINTS as usize] =
-        array_init::array_init(|i| GpuQM31::from(eval.random_coeff_powers[i]));
+    let mut random_coeff_powers_gpu: [GpuQM31; N_CONSTRAINTS as usize] =
+        [GpuQM31 { 0: [0, 0, 0, 0] }; N_CONSTRAINTS as usize];
+
+    for i in 0..N_CONSTRAINTS as usize {
+        random_coeff_powers_gpu[i] = GpuQM31::from(eval.random_coeff_powers[i]);
+    }
 
     let lookup_elements_gpu = GpuLookupElements::from(lookup_elements);
 
-    Arc::new(ComputeCompositionPolynomialInput {
+    web_sys::console::log_1(&format!("input done").into());
+
+    // print size of ComputeCompositionPolynomialInput
+    web_sys::console::log_1(
+        &format!(
+            "size of ComputeCompositionPolynomialInput: {:?}",
+            std::mem::size_of::<ComputeCompositionPolynomialInput>()
+        )
+        .into(),
+    );
+
+    ComputeCompositionPolynomialInput {
         original_trace: original_trace_gpu,
         twiddles: twiddle_input,
         denom_inv: denom_inv_gpu,
@@ -131,7 +173,7 @@ pub fn create_composition_polynomial_gpu_input(
         trace_domain_log_size: eval.trace_domain_log_size,
         eval_domain_log_size: eval.eval_domain.log_size(),
         cumsum_shift: (eval.claimed_sum / BaseField::from_u32_unchecked(1 << eval.log_size)).into(),
-    })
+    }
 }
 
 pub async fn init_wgpu_instance() -> WgpuInstance {
@@ -147,26 +189,33 @@ pub async fn init_wgpu_instance() -> WgpuInstance {
     // let mut limit = wgpu::Limits::default();
     let adapter_limits = adapter.limits();
 
-    let limits = wgpu::Limits {
-        // bump storage‐binding to 512 MiB
-        max_storage_buffer_binding_size: 512 * 1024 * 1024,
-        // bump overall buffer size to 4 GiB (adapter reports it supports this)
-        max_buffer_size: adapter_limits.max_buffer_size / 2, // or hard‑code 4 GiB if you’ve checked
-        ..adapter_limits
-    };
+    web_sys::console::log_1(
+        &format!("max_buffer_size: {:?}", adapter_limits.max_buffer_size).into(),
+    );
+
+    // let _limits = wgpu::Limits {
+    //     // bump storage‐binding to 512 MiB
+    //     max_storage_buffer_binding_size: 512 * 1024 * 1024,
+    //     // bump overall buffer size to 4 GiB (adapter reports it supports this)
+    //     max_buffer_size: adapter_limits.max_buffer_size / 2, // or hard‑code 4 GiB if you’ve
+    //     // checked
+    //     ..adapter_limits
+    // };
 
     let (device, queue) = adapter
         .request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("Device"),
-                required_features: wgpu::Features::SHADER_INT64,
-                required_limits: limits,
+                required_features: wgpu::Features::default(),
+                required_limits: wgpu::Limits::default(),
                 memory_hints: wgpu::MemoryHints::Performance,
             },
             None,
         )
         .await
         .unwrap();
+
+    web_sys::console::log_1(&format!("device: {:?}", device).into());
 
     // Load shader
     let constants_shader = include_str!("constants.wgsl")
@@ -193,6 +242,8 @@ pub async fn init_wgpu_instance() -> WgpuInstance {
         source: wgpu::ShaderSource::Wgsl(extend_trace_combined_shader.into()),
     });
 
+    web_sys::console::log_1(&format!("extend trace shader done").into());
+
     // Load composition polynomial shader
     let composition_polynomial_combined_shader = format!(
         "{}\n
@@ -208,6 +259,8 @@ pub async fn init_wgpu_instance() -> WgpuInstance {
             label: Some("Compute Composition Polynomial Shader"),
             source: wgpu::ShaderSource::Wgsl(composition_polynomial_combined_shader.into()),
         });
+
+    web_sys::console::log_1(&format!("shader done").into());
 
     // Create buffers
     let input_buffer_size = std::mem::size_of::<ComputeCompositionPolynomialInput>();
@@ -241,6 +294,8 @@ pub async fn init_wgpu_instance() -> WgpuInstance {
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
+
+    web_sys::console::log_1(&format!("buffer done").into());
 
     // Bind group layout
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
