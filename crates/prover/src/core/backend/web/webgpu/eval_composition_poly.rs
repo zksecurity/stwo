@@ -77,24 +77,16 @@ pub fn create_composition_polynomial_gpu_input(
 ) -> ComputeCompositionPolynomialInput {
     web_sys::console::log_1(&format!("create_composition_polynomial_gpu_input").into());
 
-    let mut temp: [MaybeUninit<GpuOriginalColumn>; N_ORIGINAL_TRACE_COLUMNS as usize] =
-        unsafe { MaybeUninit::uninit().assume_init() };
-
-    for (i, item) in eval
-        .trace_poly
-        .iter()
-        .flatten()
-        .map(GpuOriginalColumn::from)
-        .enumerate()
-    {
-        temp[i] = MaybeUninit::new(item);
-    }
-
-    let original_trace_gpu: [GpuOriginalColumn; N_ORIGINAL_TRACE_COLUMNS as usize] = unsafe {
-        std::ptr::read(
-            &temp as *const _ as *const [GpuOriginalColumn; N_ORIGINAL_TRACE_COLUMNS as usize],
-        )
-    };
+    let original_trace_gpu: [GpuOriginalColumn; N_ORIGINAL_TRACE_COLUMNS as usize] =
+        std::array::from_fn(|i| {
+            let itm = eval
+                .trace_poly
+                .iter()
+                .flatten()
+                .nth(i)
+                .expect("trace_poly too short");
+            GpuOriginalColumn::from(itm)
+        });
 
     web_sys::console::log_1(&format!("original trace done").into());
 

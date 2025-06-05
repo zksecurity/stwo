@@ -4,7 +4,10 @@ rustflags = ["-Dwarnings"]
 
 [target.wasm32-unknown-unknown]
 rustflags = [
-  "-C", "link-args=-z stack-size=536870912", 
+  "-C", "link-arg=-z",
+  "-C", "link-arg=stack-size=536870912",
+  "-C", "link-arg=--initial-memory=8192",   # 8192 pages = 512 MiB
+  "-C", "link-arg=--max-memory=65536",
   "-C", "target-feature=+simd128,+atomics,+bulk-memory,+mutable-globals",
   "-A", "unused-imports",
 ]

@@ -227,25 +227,33 @@ pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
         let web_input = create_composition_polynomial_gpu_input(web, lookup_elements);
         web_sys::console::log_1(&"sending request".into());
 
-        let arr_size_100kb = [0; 100 * 1024];
-        let test_arc_100kb = Arc::new(arr_size_100kb);
+        // let arr_size_100kb = [0; 100 * 1024];
+        // let test_arc_100kb = Arc::new(arr_size_100kb);
 
-        web_sys::console::log_1(&format!("test_arc_100kb: {:?}", test_arc_100kb.len()).into());
+        // web_sys::console::log_1(&format!("test_arc_100kb: {:?}", test_arc_100kb.len()).into());
 
-        let arr_size_1mib = [0; 1024 * 1024];
-        let test_arc_1mib = Arc::new(arr_size_1mib);
+        // let arr_size_1mib = [0; 1024 * 1024];
+        // let test_arc_1mib = Arc::new(arr_size_1mib);
 
-        web_sys::console::log_1(&format!("test_arc_1mib: {:?}", test_arc_1mib.len()).into());
+        // web_sys::console::log_1(&format!("test_arc_1mib: {:?}", test_arc_1mib.len()).into());
 
-        let arr_size_5mib = [0; 5 * 1024 * 1024];
-        let test_arc_5mib = Arc::new(arr_size_5mib);
-        web_sys::console::log_1(&format!("test_arc_5mib: {:?}", test_arc_5mib.len()).into());
+        // let arr_size_5mib = [0; 5 * 1024 * 1024];
+        // let test_arc_5mib = Arc::new(arr_size_5mib);
+        // web_sys::console::log_1(&format!("test_arc_5mib: {:?}", test_arc_5mib.len()).into());
 
-        let arr_size_10mib = [0; 10 * 1024 * 1024];
-        let test_arc_10mib = Arc::new(arr_size_10mib);
-        web_sys::console::log_1(&format!("test_arc_10mib: {:?}", test_arc_10mib.len()).into());
+        // let arr_size_10mib = [0; 10 * 1024 * 1024];
+        // let test_arc_10mib = Arc::new(arr_size_10mib);
+        // web_sys::console::log_1(&format!("test_arc_10mib: {:?}", test_arc_10mib.len()).into());
 
-        REQUEST_TX.get().unwrap().send(Arc::new(web_input)).unwrap();
+        let web_input_arr = web_input.as_bytes().to_vec();
+        web_sys::console::log_1(&format!("web_input_arr: {:?}", web_input_arr.len()).into());
+
+        let _arc_web_input_arr = Arc::new(web_input_arr);
+
+        let arc_new = Arc::new(web_input);
+        web_sys::console::log_1(&format!("after arc_new").into());
+
+        REQUEST_TX.get().unwrap().send(arc_new).unwrap();
         web_sys::console::log_1(&"request sent".into());
 
         output = RESPONSE_RX.get().unwrap().recv().unwrap();
