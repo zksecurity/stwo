@@ -1,13 +1,10 @@
 [build]
 # Configuration for these lints should be placed in `.clippy.toml` at the crate root.
-rustflags = ["-Dwarnings"]
+rustflags = ["-Dwarnings", "-A", "unused-imports"]
 
 [target.wasm32-unknown-unknown]
 rustflags = [
-  "-C", "link-arg=-z",
-  "-C", "link-arg=stack-size=536870912",
-  "-C", "link-arg=--initial-memory=8192",   # 8192 pages = 512 MiB
-  "-C", "link-arg=--max-memory=65536",
+  "-C", "link-args=-z stack-size=268435456", 
   "-C", "target-feature=+simd128,+atomics,+bulk-memory,+mutable-globals",
   "-A", "unused-imports",
 ]

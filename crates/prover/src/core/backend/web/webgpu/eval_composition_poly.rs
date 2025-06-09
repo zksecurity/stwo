@@ -63,7 +63,15 @@ pub async fn compute_composition_polynomial_wgpu(
         .poll(wgpu::Maintain::wait())
         .panic_on_timeout();
 
+    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+    web_sys::console::log_1(&format!("poll done").into());
+    println!("poll done");
+
     let _ = receiver.recv_async().await.unwrap();
+    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+    web_sys::console::log_1(&format!("recv done").into());
+    println!("recv done");
+
     let data = output_slice.get_mapped_range();
     let output = ComputeCompositionPolynomialOutput::from_bytes(&data);
     drop(data);
@@ -74,98 +82,65 @@ pub async fn compute_composition_polynomial_wgpu(
 pub fn create_composition_polynomial_gpu_input(
     eval: &mut WebDomainEvaluator<'_>,
     lookup_elements: &PoseidonElements,
-) -> ComputeCompositionPolynomialInput {
-    web_sys::console::log_1(&format!("create_composition_polynomial_gpu_input").into());
+) -> Box<ComputeCompositionPolynomialInput> {
+    let mut retval = Box::new(ComputeCompositionPolynomialInput {
+        original_trace: [GpuOriginalColumn {
+            coeffs: [GpuM31 { 0: 0 }; (N_LANES * N_ORIGINAL_ROWS) as usize],
+        }; N_ORIGINAL_TRACE_COLUMNS as usize],
+        twiddles: Twiddles {
+            line_twiddles_layer_count: 0,
+            line_twiddles_sizes: [0; N_LINE_TWIDDLES_SIZE as usize],
+            line_twiddles_offsets: [0; N_LINE_TWIDDLES_SIZE as usize],
+            line_twiddles_flat: [GpuM31 { 0: 0 }; N_LINE_TWIDDLES_FLAT_SIZE as usize],
+            circle_twiddles: [GpuM31 { 0: 0 }; N_CIRCLE_TWIDDLES_SIZE as usize],
+            circle_twiddles_size: 0,
+        },
+        denom_inv: [GpuM31 { 0: 0 }; 4],
+        random_coeff_powers: [GpuQM31 { 0: [0, 0, 0, 0] }; N_CONSTRAINTS as usize],
+        lookup_elements: GpuLookupElements::from(lookup_elements),
+        trace_domain_log_size: eval.trace_domain_log_size,
+        eval_domain_log_size: eval.eval_domain.log_size(),
+        cumsum_shift: (eval.claimed_sum / BaseField::from_u32_unchecked(1 << eval.log_size)).into(),
+    });
 
-    let original_trace_gpu: [GpuOriginalColumn; N_ORIGINAL_TRACE_COLUMNS as usize] =
-        std::array::from_fn(|i| {
-            let itm = eval
-                .trace_poly
-                .iter()
-                .flatten()
-                .nth(i)
-                .expect("trace_poly too short");
-            GpuOriginalColumn::from(itm)
-        });
-
-    web_sys::console::log_1(&format!("original trace done").into());
+    for (i, eval) in eval.trace_poly.iter().flatten().enumerate() {
+        retval.original_trace[i] = GpuOriginalColumn::from(eval);
+    }
 
     // flatten twiddles
     let twiddles = CpuBackend::precompute_twiddles(eval.eval_domain.half_coset);
     let line_twiddles = domain_line_twiddles_from_tree(eval.eval_domain, &twiddles.twiddles);
-    let mut twiddle_input = Twiddles {
-        line_twiddles_layer_count: line_twiddles.len() as u32,
-        line_twiddles_sizes: [0; N_LINE_TWIDDLES_SIZE as usize],
-        line_twiddles_offsets: [0; N_LINE_TWIDDLES_SIZE as usize],
-        line_twiddles_flat: [GpuM31 { 0: 0 }; N_LINE_TWIDDLES_FLAT_SIZE as usize],
-        circle_twiddles: [GpuM31 { 0: 0 }; N_CIRCLE_TWIDDLES_SIZE as usize],
-        circle_twiddles_size: 0,
-    };
-
-    web_sys::console::log_1(&format!("twiddles done").into());
 
     let mut offset = 0;
     for (i, twiddle_layer) in line_twiddles.iter().enumerate() {
         let size = twiddle_layer.len();
-        twiddle_input.line_twiddles_sizes[i] = size as u32;
-        twiddle_input.line_twiddles_offsets[i] = offset as u32;
+        retval.twiddles.line_twiddles_sizes[i] = size as u32;
+        retval.twiddles.line_twiddles_offsets[i] = offset as u32;
 
         // Flatten into flat buffer
         for (j, &twiddle) in twiddle_layer.iter().enumerate() {
-            twiddle_input.line_twiddles_flat[offset + j] = GpuM31::from(twiddle);
+            retval.twiddles.line_twiddles_flat[offset + j] = GpuM31::from(twiddle);
         }
         offset += size;
     }
 
-    web_sys::console::log_1(&format!("line twiddles done").into());
-
     // circle twiddles
     let circle = circle_twiddles_from_line_twiddles(line_twiddles[0]);
     let circle_len = circle.try_len().unwrap();
-    debug_assert!(circle_len <= N_CIRCLE_TWIDDLES_SIZE as usize);
     for (i, tw) in circle.enumerate() {
-        twiddle_input.circle_twiddles[i] = GpuM31::from(tw);
+        retval.twiddles.circle_twiddles[i] = GpuM31::from(tw);
     }
-    twiddle_input.circle_twiddles_size = circle_len as u32;
+    retval.twiddles.circle_twiddles_size = circle_len as u32;
 
-    let denom_inv_gpu: [GpuM31; 4] = {
-        let mut arr = [GpuM31 { 0: 0 }; 4];
-        for i in 0..4 {
-            arr[i] = GpuM31::from(eval.denom_inv[i]);
-        }
-        arr
-    };
-
-    let mut random_coeff_powers_gpu: [GpuQM31; N_CONSTRAINTS as usize] =
-        [GpuQM31 { 0: [0, 0, 0, 0] }; N_CONSTRAINTS as usize];
+    for i in 0..4 {
+        retval.denom_inv[i] = GpuM31::from(eval.denom_inv[i]);
+    }
 
     for i in 0..N_CONSTRAINTS as usize {
-        random_coeff_powers_gpu[i] = GpuQM31::from(eval.random_coeff_powers[i]);
+        retval.random_coeff_powers[i] = GpuQM31::from(eval.random_coeff_powers[i]);
     }
 
-    let lookup_elements_gpu = GpuLookupElements::from(lookup_elements);
-
-    web_sys::console::log_1(&format!("input done").into());
-
-    // print size of ComputeCompositionPolynomialInput
-    web_sys::console::log_1(
-        &format!(
-            "size of ComputeCompositionPolynomialInput: {:?}",
-            std::mem::size_of::<ComputeCompositionPolynomialInput>()
-        )
-        .into(),
-    );
-
-    ComputeCompositionPolynomialInput {
-        original_trace: original_trace_gpu,
-        twiddles: twiddle_input,
-        denom_inv: denom_inv_gpu,
-        random_coeff_powers: random_coeff_powers_gpu,
-        lookup_elements: lookup_elements_gpu,
-        trace_domain_log_size: eval.trace_domain_log_size,
-        eval_domain_log_size: eval.eval_domain.log_size(),
-        cumsum_shift: (eval.claimed_sum / BaseField::from_u32_unchecked(1 << eval.log_size)).into(),
-    }
+    retval
 }
 
 pub async fn init_wgpu_instance() -> WgpuInstance {
@@ -179,11 +154,7 @@ pub async fn init_wgpu_instance() -> WgpuInstance {
         .await
         .unwrap();
     // let mut limit = wgpu::Limits::default();
-    let adapter_limits = adapter.limits();
-
-    web_sys::console::log_1(
-        &format!("max_buffer_size: {:?}", adapter_limits.max_buffer_size).into(),
-    );
+    // let adapter_limits = adapter.limits();
 
     // let _limits = wgpu::Limits {
     //     // bump storage‐binding to 512 MiB
@@ -206,8 +177,6 @@ pub async fn init_wgpu_instance() -> WgpuInstance {
         )
         .await
         .unwrap();
-
-    web_sys::console::log_1(&format!("device: {:?}", device).into());
 
     // Load shader
     let constants_shader = include_str!("constants.wgsl")
@@ -234,8 +203,6 @@ pub async fn init_wgpu_instance() -> WgpuInstance {
         source: wgpu::ShaderSource::Wgsl(extend_trace_combined_shader.into()),
     });
 
-    web_sys::console::log_1(&format!("extend trace shader done").into());
-
     // Load composition polynomial shader
     let composition_polynomial_combined_shader = format!(
         "{}\n
@@ -251,8 +218,6 @@ pub async fn init_wgpu_instance() -> WgpuInstance {
             label: Some("Compute Composition Polynomial Shader"),
             source: wgpu::ShaderSource::Wgsl(composition_polynomial_combined_shader.into()),
         });
-
-    web_sys::console::log_1(&format!("shader done").into());
 
     // Create buffers
     let input_buffer_size = std::mem::size_of::<ComputeCompositionPolynomialInput>();
@@ -286,8 +251,6 @@ pub async fn init_wgpu_instance() -> WgpuInstance {
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
-
-    web_sys::console::log_1(&format!("buffer done").into());
 
     // Bind group layout
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {

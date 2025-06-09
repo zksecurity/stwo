@@ -14,7 +14,7 @@ pub async fn runner_eval_composition_polynomial(
 
     console::log_1(&"runner: running".into());
     let outcome = request_rx.recv_async().await.unwrap();
-    console::log_1(&format!("runner: received {:?}", outcome).into());
+    // console::log_1(&format!("runner: received {:?}", outcome).into());
 
     console::time_with_label("runner-timer");
 

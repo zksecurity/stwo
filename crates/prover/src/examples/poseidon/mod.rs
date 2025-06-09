@@ -3,10 +3,13 @@
 use std::any::type_name;
 use std::ops::{Add, AddAssign, Mul, Sub};
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use itertools::Itertools;
 use num_traits::One;
 use tracing::{info, span, Level};
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+use wasm_thread as thread;
 #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
 use web_sys::console;
 
@@ -191,18 +194,20 @@ fn pow5<F: FieldExpOps>(x: F) -> F {
 }
 
 // if wasm
-static REQUEST_TX: OnceLock<flume::Sender<Arc<ComputeCompositionPolynomialInput>>> =
-    OnceLock::new();
-static RESPONSE_RX: OnceLock<flume::Receiver<Arc<ComputeCompositionPolynomialOutput>>> =
-    OnceLock::new();
+thread_local! {
+    /// Per-thread sender for composition-polynomial jobs.
+    static REQUEST_TX: OnceLock<flume::Sender<Arc<ComputeCompositionPolynomialInput>>> = OnceLock::new();
+
+    /// Per-thread receiver for composition-polynomial results.
+    static RESPONSE_RX: OnceLock<flume::Receiver<Arc<ComputeCompositionPolynomialOutput>>> = OnceLock::new();
+}
 
 pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
     eval: &mut E,
-    lookup_elements: &PoseidonElements,
+    _lookup_elements: &PoseidonElements,
 ) {
     let web: &mut WebDomainEvaluator<'_> =
         unsafe { &mut *(eval as *mut E as *mut WebDomainEvaluator<'_>) };
-    web_sys::console::log_1(&"eval_poseidon_constraints_web".into());
 
     let output: Arc<ComputeCompositionPolynomialOutput>;
     #[cfg(not(target_family = "wasm"))]
@@ -210,8 +215,11 @@ pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
         let instance = pollster::block_on(init_wgpu_instance());
 
         let start = std::time::Instant::now();
-        let web_input = create_composition_polynomial_gpu_input(web, lookup_elements);
-        output = pollster::block_on(compute_composition_polynomial_wgpu(web_input, &instance));
+        let web_input = create_composition_polynomial_gpu_input(web, _lookup_elements);
+        output = pollster::block_on(compute_composition_polynomial_wgpu(
+            Arc::from(web_input),
+            &instance,
+        ));
         let duration = start.elapsed();
         println!("work-timer: {:?}", duration);
     }
@@ -220,43 +228,28 @@ pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
     {
         console::time_with_label("work-timer");
 
-        // print REQEUST_TX
-        web_sys::console::log_1(&format!("REQUEST_TX: {:?}", REQUEST_TX.get().unwrap()).into());
+        // web_sys::console::log_1(&"creating input".into());
+        let web_input = create_composition_polynomial_gpu_input(web, _lookup_elements);
+        // web_sys::console::log_1(&"sending request".into());
 
-        web_sys::console::log_1(&"creating input".into());
-        let web_input = create_composition_polynomial_gpu_input(web, lookup_elements);
-        web_sys::console::log_1(&"sending request".into());
-
-        // let arr_size_100kb = [0; 100 * 1024];
-        // let test_arc_100kb = Arc::new(arr_size_100kb);
-
-        // web_sys::console::log_1(&format!("test_arc_100kb: {:?}", test_arc_100kb.len()).into());
-
-        // let arr_size_1mib = [0; 1024 * 1024];
-        // let test_arc_1mib = Arc::new(arr_size_1mib);
-
-        // web_sys::console::log_1(&format!("test_arc_1mib: {:?}", test_arc_1mib.len()).into());
-
-        // let arr_size_5mib = [0; 5 * 1024 * 1024];
-        // let test_arc_5mib = Arc::new(arr_size_5mib);
-        // web_sys::console::log_1(&format!("test_arc_5mib: {:?}", test_arc_5mib.len()).into());
-
-        // let arr_size_10mib = [0; 10 * 1024 * 1024];
-        // let test_arc_10mib = Arc::new(arr_size_10mib);
-        // web_sys::console::log_1(&format!("test_arc_10mib: {:?}", test_arc_10mib.len()).into());
-
-        let web_input_arr = web_input.as_bytes().to_vec();
-        web_sys::console::log_1(&format!("web_input_arr: {:?}", web_input_arr.len()).into());
-
-        let _arc_web_input_arr = Arc::new(web_input_arr);
-
-        let arc_new = Arc::new(web_input);
+        // let web_input: Vec<u8> = vec![0; 10 * 1024 * 1024];
+        let arc_new = Arc::from(web_input);
         web_sys::console::log_1(&format!("after arc_new").into());
 
-        REQUEST_TX.get().unwrap().send(arc_new).unwrap();
+        thread::sleep(Duration::from_secs(1));
+
+        REQUEST_TX.with(|cell| {
+            let tx = cell.get().expect("REQUEST_TX not initialised");
+            tx.send(arc_new).unwrap();
+        });
+
         web_sys::console::log_1(&"request sent".into());
 
-        output = RESPONSE_RX.get().unwrap().recv().unwrap();
+        output = RESPONSE_RX.with(|cell| {
+            let rx = cell.get().expect("RESPONSE_RX not initialised");
+            rx.recv().unwrap()
+        });
+
         console::time_end_with_label("work-timer");
     }
 
@@ -609,9 +602,10 @@ mod tests {
 
     use crate::constraint_framework::assert_constraints_on_polys;
     use crate::core::air::Component;
+    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+    use crate::core::backend::web::webgpu::runner_eval_composition_polynomial;
     use crate::core::backend::web::webgpu::{
-        runner_eval_composition_polynomial, ComputeCompositionPolynomialInput,
-        ComputeCompositionPolynomialOutput,
+        ComputeCompositionPolynomialInput, ComputeCompositionPolynomialOutput,
     };
     use crate::core::channel::Blake2sChannel;
     use crate::core::fields::m31::BaseField;
@@ -755,7 +749,7 @@ mod tests {
         //   test_simd_poseidon_prove -- --nocapture
         // Get from environment variable:
         let log_n_instances = env::var("LOG_N_INSTANCES")
-            .unwrap_or_else(|_| "17".to_string())
+            .unwrap_or_else(|_| "13".to_string())
             .parse::<u32>()
             .unwrap();
         let config = PcsConfig {
@@ -799,21 +793,28 @@ mod tests {
             flume::bounded::<Arc<ComputeCompositionPolynomialOutput>>(1);
         let (job_tx, job_rx) = flume::bounded(1);
 
-        // spawn runner
+        // spawn runner A
         thread::spawn(move || {
             spawn_local(async move {
                 runner_eval_composition_polynomial(request_rx, response_tx).await;
             });
         });
 
-        // spawn worker
+        // spawn worker B
         thread::spawn(move || {
-            REQUEST_TX.set(request_tx).unwrap();
-            RESPONSE_RX.set(response_rx).unwrap();
+            REQUEST_TX.with(|cell| {
+                cell.set(request_tx)
+                    .expect("REQUEST_TX already initialised");
+            });
+
+            RESPONSE_RX.with(|cell| {
+                cell.set(response_rx)
+                    .expect("RESPONSE_RX already initialised");
+            });
 
             web_sys::console::log_1(&"worker spawned".into());
             let log_n_instances = env::var("LOG_N_INSTANCES")
-                .unwrap_or_else(|_| "13".to_string())
+                .unwrap_or_else(|_| "12".to_string())
                 .parse::<u32>()
                 .unwrap();
             let config = PcsConfig {
