@@ -57,6 +57,8 @@ var<storage, read_write> composition_polynomial_output: ComputeCompositionPolyno
 @group(0) @binding(2)
 var<storage, read_write> trace_output: ExtendTraceOutput;
 
+// var<workgroup> workgroup_storage: array<M31, N_MAX_WORKGROUP_STORAGE_SIZE>;
+
 @compute @workgroup_size(256)
 fn evaluate_line_twiddle(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let thread_size = 256u;
@@ -114,6 +116,45 @@ fn evaluate_line_twiddle(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
         if (layer == 0u) { break; }  
         layer = layer - 1u;
+    }
+}
+
+@compute @workgroup_size(32)
+fn evaluate_line_twiddle_per_poly32(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let poly_id = global_id.x * 32u + global_id.y;
+    if (poly_id >= N_ORIGINAL_TRACE_COLUMNS) {
+        return;                     // 경계 밖 thread 는 즉시 종료
+    }
+
+    // 1. 원본 → 확장 트레이스 복사
+    for (var j: u32 = 0u; j < N_ORIGINAL_COLUMN_SIZE; j = j + 1u) {
+        trace_output.extended_trace[poly_id].data[j] =
+            trace_input.original_trace[poly_id].data[j];
+    }
+
+    // 2. 라인 트위들 FFT
+    let num_layers = trace_input.twiddles.line_twiddles_layer_count;
+    for (var layer: u32 = num_layers - 1u; layer >= 0u; layer = layer - 1u) {
+        let layer_size   = trace_input.twiddles.line_twiddles_sizes[layer];
+        let layer_offset = trace_input.twiddles.line_twiddles_offsets[layer];
+        let step         = 1u << (layer + 1u);
+
+        for (var h: u32 = 0u; h < layer_size; h = h + 1u) {
+            let t        = trace_input.twiddles.line_twiddles_flat[layer_offset + h];
+            let base_idx = h << (layer + 2u);
+
+            // 단일 thread 가 자기 poly 의 버터플라이 전부 처리
+            for (var l: u32 = 0u; l < step; l = l + 1u) {
+                let idx0 = base_idx + l;
+                let idx1 = idx0 + step;
+
+                var v0 = trace_output.extended_trace[poly_id].data[idx0];
+                var v1 = trace_output.extended_trace[poly_id].data[idx1];
+                butterfly(&v0, &v1, t);
+                trace_output.extended_trace[poly_id].data[idx0] = v0;
+                trace_output.extended_trace[poly_id].data[idx1] = v1;
+            }
+        }
     }
 }
 

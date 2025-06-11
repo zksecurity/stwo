@@ -157,6 +157,9 @@ pub async fn init_wgpu_instance() -> WgpuInstance {
         }
     }
 
+    // see: https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf#page=7
+    limits.max_compute_workgroup_storage_size = 32 << 10;
+
     let (device, queue) = adapter
         .request_device(
             &wgpu::DeviceDescriptor {
@@ -317,13 +320,26 @@ pub async fn init_wgpu_instance() -> WgpuInstance {
             label: Some("Extend Trace Line Twiddle Pipeline"),
             layout: Some(&pipeline_layout),
             module: &extend_trace_shader_module,
-            entry_point: Some("evaluate_line_twiddle"),
+            entry_point: Some("evaluate_line_twiddle_per_poly32"),
             cache: None,
             compilation_options: wgpu::PipelineCompilationOptions {
                 constants: &HashMap::from([]),
                 zero_initialize_workgroup_memory: true,
             },
         });
+
+    // let evaluate_line_twiddle_pipeline =
+    //     device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+    //         label: Some("Extend Trace Line Twiddle Pipeline"),
+    //         layout: Some(&pipeline_layout),
+    //         module: &extend_trace_shader_module,
+    //         entry_point: Some("evaluate_line_twiddle"),
+    //         cache: None,
+    //         compilation_options: wgpu::PipelineCompilationOptions {
+    //             constants: &HashMap::from([]),
+    //             zero_initialize_workgroup_memory: true,
+    //         },
+    //     });
 
     let evaluate_circle_twiddle_pipeline =
         device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -381,8 +397,12 @@ pub fn init_encoder(instance: &WgpuInstance) -> wgpu::CommandEncoder {
 
         compute_pass.set_bind_group(0, &instance.bind_group, &[]);
 
+        // compute_pass.set_pipeline(&instance.evaluate_line_twiddle_pipeline);
+        // compute_pass.dispatch_workgroups(1, N_EXTEND_TRACE_WORKGROUPS, 1);
+
+        let num_wg = (N_ORIGINAL_TRACE_COLUMNS + 31) / 32;
         compute_pass.set_pipeline(&instance.evaluate_line_twiddle_pipeline);
-        compute_pass.dispatch_workgroups(1, N_EXTEND_TRACE_WORKGROUPS, 1);
+        compute_pass.dispatch_workgroups(1, num_wg, 1);
 
         compute_pass.set_pipeline(&instance.evaluate_circle_twiddle_pipeline);
         compute_pass.dispatch_workgroups(1, N_EXTEND_TRACE_WORKGROUPS, 1);

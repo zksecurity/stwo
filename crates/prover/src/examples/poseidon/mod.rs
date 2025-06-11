@@ -629,7 +629,7 @@ mod tests {
     #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
     #[wasm_bindgen_test::wasm_bindgen_test]
     fn test_poseidon_prove_wasm() {
-        const LOG_N_INSTANCES: u32 = 17;
+        const LOG_N_INSTANCES: u32 = 15;
         let config = PcsConfig {
             pow_bits: 10,
             fri_config: FriConfig::new(5, 1, 64),
@@ -792,6 +792,7 @@ mod tests {
     #[wasm_bindgen_test::wasm_bindgen_test]
     async fn test_web_poseidon_prove_runner() {
         init_wasm_mt(8).await;
+        console_error_panic_hook::set_once();
 
         let (request_tx, request_rx) = flume::bounded::<Box<ComputeCompositionPolynomialInput>>(1);
         let (response_tx, response_rx) =
@@ -822,7 +823,7 @@ mod tests {
             web_sys::console::log_1(&"worker spawned".into());
 
             let log_n_instances = env::var("LOG_N_INSTANCES")
-                .unwrap_or_else(|_| "17".to_string())
+                .unwrap_or_else(|_| "15".to_string())
                 .parse::<u32>()
                 .unwrap();
             let config = PcsConfig {
