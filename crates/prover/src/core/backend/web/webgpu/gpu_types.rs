@@ -33,7 +33,7 @@ pub struct GpuLookupElements {
 }
 
 #[derive(Debug, Clone, Copy)]
-#[repr(C)]
+#[repr(C, align(16))]
 pub struct ComputeCompositionPolynomialInput {
     pub original_trace: [GpuOriginalColumn; N_ORIGINAL_TRACE_COLUMNS as usize],
     pub twiddles: Twiddles,
@@ -46,6 +46,7 @@ pub struct ComputeCompositionPolynomialInput {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[repr(C, align(16))]
 pub struct ComputeCompositionPolynomialOutput {
     pub poly: [[GpuQM31; N_LANES as usize]; N_EXTENDED_ROWS as usize],
 }

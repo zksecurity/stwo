@@ -2,14 +2,11 @@
 
 use std::any::type_name;
 use std::ops::{Add, AddAssign, Mul, Sub};
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::sync::OnceLock;
 
 use itertools::Itertools;
 use num_traits::One;
 use tracing::{info, span, Level};
-#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
-use wasm_thread as thread;
 #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
 use web_sys::console;
 
@@ -28,7 +25,7 @@ use crate::core::backend::web::webgpu::eval_composition_poly::{
     init_wgpu_instance, EvalCompositionPolynomialArgs,
 };
 use crate::core::backend::web::webgpu::{
-    ByteSerialize, ComputeCompositionPolynomialInput, ComputeCompositionPolynomialOutput,
+    ComputeCompositionPolynomialInput, ComputeCompositionPolynomialOutput,
 };
 use crate::core::backend::web::WebBackend;
 use crate::core::backend::{Col, Column};
@@ -195,11 +192,13 @@ fn pow5<F: FieldExpOps>(x: F) -> F {
 
 // if wasm
 thread_local! {
-    /// Per-thread sender for composition-polynomial jobs.
-    static REQUEST_TX: OnceLock<flume::Sender<Arc<ComputeCompositionPolynomialInput>>> = OnceLock::new();
+    /// sender for composition-polynomial jobs.
+    static REQUEST_TX: OnceLock<flume::Sender<Box<ComputeCompositionPolynomialInput>>> =
+        OnceLock::new();
 
-    /// Per-thread receiver for composition-polynomial results.
-    static RESPONSE_RX: OnceLock<flume::Receiver<Arc<ComputeCompositionPolynomialOutput>>> = OnceLock::new();
+    /// receiver for composition-polynomial results.
+    static RESPONSE_RX: OnceLock<flume::Receiver<Box<ComputeCompositionPolynomialOutput>>> =
+        OnceLock::new();
 }
 
 pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
@@ -209,7 +208,7 @@ pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
     let web: &mut WebDomainEvaluator<'_> =
         unsafe { &mut *(eval as *mut E as *mut WebDomainEvaluator<'_>) };
 
-    let output: Arc<ComputeCompositionPolynomialOutput>;
+    let output: Box<ComputeCompositionPolynomialOutput>;
     #[cfg(not(target_family = "wasm"))]
     {
         let instance = pollster::block_on(init_wgpu_instance());
@@ -228,29 +227,25 @@ pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
     {
         console::time_with_label("work-timer");
 
-        // web_sys::console::log_1(&"creating input".into());
+        console::time_with_label("work-timer-chunk1");
+        // from caller, generate input from lookup data and trace evals
         let web_input = create_composition_polynomial_gpu_input(web, _lookup_elements);
-        // web_sys::console::log_1(&"sending request".into());
-
-        // let web_input: Vec<u8> = vec![0; 10 * 1024 * 1024];
-        let arc_new = Arc::from(web_input);
-        web_sys::console::log_1(&format!("after arc_new").into());
-
-        thread::sleep(Duration::from_secs(1));
-
+        console::time_end_with_label("work-timer-chunk1");
+        console::time_with_label("work-timer-chunk2-sending");
+        // Box::<[u8]>::leak(boxed_input);
         REQUEST_TX.with(|cell| {
             let tx = cell.get().expect("REQUEST_TX not initialised");
-            tx.send(arc_new).unwrap();
+            tx.send(web_input).unwrap();
         });
-
-        web_sys::console::log_1(&"request sent".into());
+        console::time_end_with_label("work-timer-chunk2-sending");
+        console::time_with_label("work-timer-chunk3-receiving");
 
         output = RESPONSE_RX.with(|cell| {
             let rx = cell.get().expect("RESPONSE_RX not initialised");
             rx.recv().unwrap()
         });
-
-        console::time_end_with_label("work-timer");
+        console::time_end_with_label("work-timer-chunk3-receiving");
+        console::time_with_label("work-timer-chunk4-copying");
     }
 
     let enum_iter = output.poly.iter().enumerate();
@@ -263,6 +258,13 @@ pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
             web.col.columns[2].set(idx, qm.0[2].into());
             web.col.columns[3].set(idx, qm.0[3].into());
         }
+    }
+
+    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+    {
+        Box::leak(output);
+        console::time_end_with_label("work-timer-chunk4-copying");
+        console::time_end_with_label("work-timer");
     }
 }
 
@@ -587,8 +589,6 @@ pub fn prove_poseidon_web(
 #[cfg(test)]
 mod tests {
     use std::env;
-    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
-    use std::sync::Arc;
 
     use itertools::Itertools;
     use num_traits::One;
@@ -604,6 +604,7 @@ mod tests {
     use crate::core::air::Component;
     #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
     use crate::core::backend::web::webgpu::runner_eval_composition_polynomial;
+    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
     use crate::core::backend::web::webgpu::{
         ComputeCompositionPolynomialInput, ComputeCompositionPolynomialOutput,
     };
@@ -628,7 +629,7 @@ mod tests {
     #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
     #[wasm_bindgen_test::wasm_bindgen_test]
     fn test_poseidon_prove_wasm() {
-        const LOG_N_INSTANCES: u32 = 10;
+        const LOG_N_INSTANCES: u32 = 17;
         let config = PcsConfig {
             pow_bits: 10,
             fri_config: FriConfig::new(5, 1, 64),
@@ -741,22 +742,7 @@ mod tests {
         verify(&[&component], channel, commitment_scheme, proof).unwrap();
     }
 
-    #[test_log::test]
-    fn test_web_poseidon_prove() {
-        // Note: To see time measurement, run test with
-        //   RUST_LOG_SPAN_EVENTS=enter,close RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS="
-        //   -C target-cpu=native -C target-feature=+avx512f -C opt-level=3" cargo test
-        //   test_simd_poseidon_prove -- --nocapture
-        // Get from environment variable:
-        let log_n_instances = env::var("LOG_N_INSTANCES")
-            .unwrap_or_else(|_| "13".to_string())
-            .parse::<u32>()
-            .unwrap();
-        let config = PcsConfig {
-            pow_bits: 10,
-            fri_config: FriConfig::new(5, 1, 64),
-        };
-
+    fn web_poseidon_prove(log_n_instances: u32, config: PcsConfig) {
         // Prove.;
         let (component, proof) = prove_poseidon_web(log_n_instances, config);
 
@@ -783,25 +769,46 @@ mod tests {
         verify(&[&component], channel, commitment_scheme, proof).unwrap();
     }
 
+    #[test_log::test]
+    fn test_web_poseidon_prove() {
+        // Note: To see time measurement, run test with
+        //   RUST_LOG_SPAN_EVENTS=enter,close RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS="
+        //   -C target-cpu=native -C target-feature=+avx512f -C opt-level=3" cargo test
+        //   test_simd_poseidon_prove -- --nocapture
+        // Get from environment variable:
+        let log_n_instances = env::var("LOG_N_INSTANCES")
+            .unwrap_or_else(|_| "17".to_string())
+            .parse::<u32>()
+            .unwrap();
+        let config = PcsConfig {
+            pow_bits: 10,
+            fri_config: FriConfig::new(5, 1, 64),
+        };
+
+        web_poseidon_prove(log_n_instances, config);
+    }
+
     #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
     #[wasm_bindgen_test::wasm_bindgen_test]
     async fn test_web_poseidon_prove_runner() {
-        // init_wasm_mt(8).await;
+        init_wasm_mt(8).await;
 
-        let (request_tx, request_rx) = flume::bounded::<Arc<ComputeCompositionPolynomialInput>>(1);
+        let (request_tx, request_rx) = flume::bounded::<Box<ComputeCompositionPolynomialInput>>(1);
         let (response_tx, response_rx) =
-            flume::bounded::<Arc<ComputeCompositionPolynomialOutput>>(1);
+            flume::bounded::<Box<ComputeCompositionPolynomialOutput>>(1);
         let (job_tx, job_rx) = flume::bounded(1);
 
-        // spawn runner A
+        // spawn runner
         thread::spawn(move || {
             spawn_local(async move {
                 runner_eval_composition_polynomial(request_rx, response_tx).await;
+                web_sys::console::log_1(&"runner done".into());
             });
         });
 
-        // spawn worker B
+        // spawn caller
         thread::spawn(move || {
+            // from here, different thread
             REQUEST_TX.with(|cell| {
                 cell.set(request_tx)
                     .expect("REQUEST_TX already initialised");
@@ -813,8 +820,9 @@ mod tests {
             });
 
             web_sys::console::log_1(&"worker spawned".into());
+
             let log_n_instances = env::var("LOG_N_INSTANCES")
-                .unwrap_or_else(|_| "12".to_string())
+                .unwrap_or_else(|_| "17".to_string())
                 .parse::<u32>()
                 .unwrap();
             let config = PcsConfig {
@@ -822,34 +830,13 @@ mod tests {
                 fri_config: FriConfig::new(5, 1, 64),
             };
 
-            // Prove.;
-            let (component, proof) = prove_poseidon_web(log_n_instances, config);
+            web_poseidon_prove(log_n_instances, config);
 
-            // Verify.
-            // TODO: Create Air instance independently.
-            let channel = &mut Blake2sChannel::default();
-            let commitment_scheme =
-                &mut CommitmentSchemeVerifier::<Blake2sMerkleChannel>::new(proof.config);
-
-            // Decommit.
-            // Retrieve the expected column sizes in each commitment interaction, from the AIR.
-            let sizes = component.trace_log_degree_bounds();
-
-            // Preprocessed columns.
-            commitment_scheme.commit(proof.commitments[0], &sizes[0], channel);
-            // Trace columns.
-            commitment_scheme.commit(proof.commitments[1], &sizes[1], channel);
-            // Draw lookup element.
-            let lookup_elements = PoseidonElements::draw(channel);
-            assert_eq!(lookup_elements, component.lookup_elements);
-            // Interaction columns.
-            commitment_scheme.commit(proof.commitments[2], &sizes[2], channel);
-
-            verify(&[&component], channel, commitment_scheme, proof).unwrap();
             job_tx.send(()).unwrap();
         });
 
         // wait for worker to finish
         let _ = job_rx.recv_async().await.unwrap();
+        wasm_thread::terminate_all_workers();
     }
 }

@@ -1,16 +1,14 @@
 use std::collections::HashMap;
-use std::mem::MaybeUninit;
-use std::sync::Arc;
 
 use itertools::Itertools;
 
 use super::constants::*;
 use super::gpu_types::*;
 use super::qm31::GpuQM31;
-use super::ByteSerialize;
 use crate::constraint_framework::WebDomainEvaluator;
 use crate::core::backend::cpu::circle::circle_twiddles_from_line_twiddles;
 use crate::core::backend::web::webgpu::qm31::GpuM31;
+use crate::core::backend::web::webgpu::ByteSerialize;
 use crate::core::backend::web::WebBackend;
 use crate::core::backend::CpuBackend;
 use crate::core::fields::m31::{BaseField, M31};
@@ -47,13 +45,13 @@ pub struct EvalCompositionPolynomialArgs<'a> {
 }
 
 pub async fn compute_composition_polynomial_wgpu(
-    input: Arc<ComputeCompositionPolynomialInput>,
+    input: Box<ComputeCompositionPolynomialInput>,
     instance: &WgpuInstance,
-) -> Arc<ComputeCompositionPolynomialOutput> {
+) -> Box<ComputeCompositionPolynomialOutput> {
     let encoder = init_encoder(&instance);
     instance
         .queue
-        .write_buffer(&instance.input_buffer, 0, input.as_bytes());
+        .write_buffer(&instance.input_buffer, 0, &input.as_bytes());
     instance.queue.submit(Some(encoder.finish()));
     let output_slice = instance.staging_buffer.slice(..);
     let (sender, receiver) = flume::bounded(1);
@@ -63,20 +61,13 @@ pub async fn compute_composition_polynomial_wgpu(
         .poll(wgpu::Maintain::wait())
         .panic_on_timeout();
 
-    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
-    web_sys::console::log_1(&format!("poll done").into());
-    println!("poll done");
-
     let _ = receiver.recv_async().await.unwrap();
-    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
-    web_sys::console::log_1(&format!("recv done").into());
-    println!("recv done");
-
     let data = output_slice.get_mapped_range();
-    let output = ComputeCompositionPolynomialOutput::from_bytes(&data);
+    // let output_vec = data.to_vec();
+    let output = Box::new(ComputeCompositionPolynomialOutput::from_bytes(&data));
     drop(data);
     instance.staging_buffer.unmap();
-    Arc::new(output)
+    output
 }
 
 pub fn create_composition_polynomial_gpu_input(
@@ -111,6 +102,7 @@ pub fn create_composition_polynomial_gpu_input(
     let twiddles = CpuBackend::precompute_twiddles(eval.eval_domain.half_coset);
     let line_twiddles = domain_line_twiddles_from_tree(eval.eval_domain, &twiddles.twiddles);
 
+    retval.twiddles.line_twiddles_layer_count = line_twiddles.len() as u32;
     let mut offset = 0;
     for (i, twiddle_layer) in line_twiddles.iter().enumerate() {
         let size = twiddle_layer.len();
@@ -153,24 +145,24 @@ pub async fn init_wgpu_instance() -> WgpuInstance {
         })
         .await
         .unwrap();
-    // let mut limit = wgpu::Limits::default();
+
+    let mut limits = wgpu::Limits::default();
     // let adapter_limits = adapter.limits();
 
-    // let _limits = wgpu::Limits {
-    //     // bump storage‐binding to 512 MiB
-    //     max_storage_buffer_binding_size: 512 * 1024 * 1024,
-    //     // bump overall buffer size to 4 GiB (adapter reports it supports this)
-    //     max_buffer_size: adapter_limits.max_buffer_size / 2, // or hard‑code 4 GiB if you’ve
-    //     // checked
-    //     ..adapter_limits
-    // };
+    if N_ROWS >= 512 {
+        let extend_trace_buffer_size = std::mem::size_of::<ExtendTraceOutput>();
+        limits.max_storage_buffer_binding_size = extend_trace_buffer_size as u32 + 1;
+        if N_ROWS >= 1024 {
+            limits.max_buffer_size = extend_trace_buffer_size as u64 + 1;
+        }
+    }
 
     let (device, queue) = adapter
         .request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("Device"),
                 required_features: wgpu::Features::default(),
-                required_limits: wgpu::Limits::default(),
+                required_limits: limits,
                 memory_hints: wgpu::MemoryHints::Performance,
             },
             None,
