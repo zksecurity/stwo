@@ -262,7 +262,7 @@ pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
 
     #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
     {
-        Box::leak(output);
+        // Box::leak(output);
         console::time_end_with_label("work-timer-chunk4-copying");
         console::time_end_with_label("work-timer");
     }
