@@ -596,6 +596,8 @@ mod tests {
     use wasm_bindgen_test::*;
     #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
     use wasm_thread as thread;
+    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+    use web_sys::console;
 
     use crate::constraint_framework::assert_constraints_on_polys;
     use crate::core::air::Component;
@@ -633,7 +635,9 @@ mod tests {
         };
 
         // Prove.
+        console::time_with_label("poseidon_prove");
         prove_poseidon(LOG_N_INSTANCES, config);
+        console::time_end_with_label("poseidon_prove");
     }
 
     #[test]
@@ -771,7 +775,11 @@ mod tests {
 
     fn web_poseidon_prove(log_n_instances: u32, config: PcsConfig) {
         // Prove.;
+        #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+        console::time_with_label("web_poseidon_prove");
         let (component, proof) = prove_poseidon_web(log_n_instances, config);
+        #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+        console::time_end_with_label("web_poseidon_prove");
 
         // Verify.
         // TODO: Create Air instance independently.
