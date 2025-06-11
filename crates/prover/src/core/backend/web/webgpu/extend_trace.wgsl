@@ -2,8 +2,8 @@
 
 fn butterfly(v0: ptr<function, M31>, v1: ptr<function, M31>, twid: M31) {
     let tmp = m31_mul(*v1, twid);
-    *v1 = m31_sub(*v0, tmp);
-    *v0 = m31_add(*v0, tmp);
+    * v1 = m31_sub(*v0, tmp);
+    * v0 = m31_add(*v0, tmp);
 }
 
 struct OriginalColumn {
@@ -57,93 +57,57 @@ var<storage, read_write> composition_polynomial_output: ComputeCompositionPolyno
 @group(0) @binding(2)
 var<storage, read_write> trace_output: ExtendTraceOutput;
 
-// var<workgroup> workgroup_storage: array<M31, N_MAX_WORKGROUP_STORAGE_SIZE>;
+//------------------------------------------------------------------------------
+//  evaluate_line_twiddle_per_poly32
+//
+//  One work-item (thread) processes **one polynomial column**.
+//
+//  Phase 1 – “large layers”            : operate directly in device storage
+//  Phase 2 – “small layers + circle”   : copy 256-u32 chunks into a
+//                                        thread-local scratch array,
+//                                        finish the remaining line-twiddle
+//                                        layers *and* the final circle-twiddle
+//                                        (step = 1), then write the chunk back.
+//------------------------------------------------------------------------------
 
-@compute @workgroup_size(256)
-fn evaluate_line_twiddle(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let thread_size = 256u;
-    let y_dim_size = 256u;
-
-    let size = N_EXTENDED_COLUMN_SIZE;
-    let thread_id_x = global_id.x;
-    let original_column_size = N_ORIGINAL_COLUMN_SIZE;
-    let copy_chunk_size = (original_column_size + thread_size - 1u) / thread_size;
-    let copy_chunk_start = thread_id_x * copy_chunk_size;
-    let copy_chunk_end = min(copy_chunk_start + copy_chunk_size, original_column_size);
-
-    let thread_id_y = global_id.y;
-    let polynomial_chunk_size = (N_ORIGINAL_TRACE_COLUMNS + y_dim_size) / y_dim_size;
-    let polynomial_start = polynomial_chunk_size * thread_id_y;
-    let polynomial_end = min(polynomial_start + polynomial_chunk_size, N_ORIGINAL_TRACE_COLUMNS);
-
-    // copy input.coeffs to trace_output.evals
-    for (var polynomial_id = polynomial_start; polynomial_id < polynomial_end; polynomial_id = polynomial_id + 1u) {
-        for (var j = copy_chunk_start; j < copy_chunk_end; j = j + 1u) {
-            trace_output.extended_trace[polynomial_id].data[j] = trace_input.original_trace[polynomial_id].data[j];
-        }
-    }
-
-    workgroupBarrier();
-
-    // Process line_twiddles
-    var layer = trace_input.twiddles.line_twiddles_layer_count - 1u;
-    loop {
-        let layer_size = trace_input.twiddles.line_twiddles_sizes[layer];
-        let layer_offset = trace_input.twiddles.line_twiddles_offsets[layer];
-        let step = 1u << (layer + 1u);
-        
-        for (var h = 0u; h < layer_size; h = h + 1u) {
-            let t = trace_input.twiddles.line_twiddles_flat[layer_offset + h];
-            let idx0_offset = (h << (layer + 2u));
-
-            for (var l = thread_id_x; l < step; l = l + thread_size) {
-                let idx0 = idx0_offset + l;
-                let idx1 = idx0 + step;
-
-                for (var polynomial_id = polynomial_start; polynomial_id < polynomial_end; polynomial_id = polynomial_id + 1u) {
-                    var val0 = trace_output.extended_trace[polynomial_id].data[idx0];
-                    var val1 = trace_output.extended_trace[polynomial_id].data[idx1];
-                
-                    butterfly(&val0, &val1, t);
-                    
-                    trace_output.extended_trace[polynomial_id].data[idx0] = val0;
-                    trace_output.extended_trace[polynomial_id].data[idx1] = val1;
-                }
-            }
-
-            workgroupBarrier();
-        }
-
-        if (layer == 0u) { break; }  
-        layer = layer - 1u;
-    }
-}
+// Size of a thread-local scratch tile (256 u32 = 1 KiB).
+// 32 threads × 1 KiB ≈ 32 KiB, matching Metal's per-threadgroup LDS budget.
+const CHUNK_SIZE: u32 = 256u;
 
 @compute @workgroup_size(32)
 fn evaluate_line_twiddle_per_poly32(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let poly_id = global_id.x * 32u + global_id.y;
+    let poly_id = global_id.x + global_id.y * 32u;
     if (poly_id >= N_ORIGINAL_TRACE_COLUMNS) {
-        return;                     // 경계 밖 thread 는 즉시 종료
+        return;
     }
 
-    // 1. 원본 → 확장 트레이스 복사
+    //------------------------------------------------------------------------
+    // 1. Copy coeffs → output evals (storage → storage, 1 : 1)
+    //------------------------------------------------------------------------
     for (var j: u32 = 0u; j < N_ORIGINAL_COLUMN_SIZE; j = j + 1u) {
-        trace_output.extended_trace[poly_id].data[j] =
-            trace_input.original_trace[poly_id].data[j];
+        trace_output.extended_trace[poly_id].data[j] = trace_input.original_trace[poly_id].data[j];
     }
 
-    // 2. 라인 트위들 FFT
+    //------------------------------------------------------------------------
+    // 2. Line-twiddle “large layers” – operate in place in storage
+    //    Stop when a single butterfly block (step*2) fits in CHUNK_SIZE.
+    //------------------------------------------------------------------------
     let num_layers = trace_input.twiddles.line_twiddles_layer_count;
-    for (var layer: u32 = num_layers - 1u; layer >= 0u; layer = layer - 1u) {
-        let layer_size   = trace_input.twiddles.line_twiddles_sizes[layer];
+    var layer = num_layers - 1u;
+    loop {
+        let step = 1u << (layer + 1u);
+        if (step * 2u <= CHUNK_SIZE) {
+            break;
+        }
+        let layer_size = trace_input.twiddles.line_twiddles_sizes[layer];
         let layer_offset = trace_input.twiddles.line_twiddles_offsets[layer];
-        let step         = 1u << (layer + 1u);
 
+        // Iterate over all butterfly blocks in this layer
         for (var h: u32 = 0u; h < layer_size; h = h + 1u) {
-            let t        = trace_input.twiddles.line_twiddles_flat[layer_offset + h];
+            let t = trace_input.twiddles.line_twiddles_flat[layer_offset + h];
             let base_idx = h << (layer + 2u);
 
-            // 단일 thread 가 자기 poly 의 버터플라이 전부 처리
+            // Plain Cooley–Tukey butterfly within the block
             for (var l: u32 = 0u; l < step; l = l + 1u) {
                 let idx0 = base_idx + l;
                 let idx1 = idx0 + step;
@@ -154,6 +118,89 @@ fn evaluate_line_twiddle_per_poly32(@builtin(global_invocation_id) global_id: ve
                 trace_output.extended_trace[poly_id].data[idx0] = v0;
                 trace_output.extended_trace[poly_id].data[idx1] = v1;
             }
+        }
+        if (layer == 0u) {
+            break;
+        }
+        layer = layer - 1u;
+    }
+
+    //------------------------------------------------------------------------
+    // 3. Scratch-tile phase – finish remaining line layers + circle twiddle
+    //------------------------------------------------------------------------
+    let num_chunks = (N_EXTENDED_COLUMN_SIZE + CHUNK_SIZE - 1u) / CHUNK_SIZE;
+    var scratch: array<M31, CHUNK_SIZE>;
+    for (var chunk_id: u32 = 0u; chunk_id < num_chunks; chunk_id = chunk_id + 1u) {
+        let base = chunk_id * CHUNK_SIZE;
+        let real_size = min(CHUNK_SIZE, N_EXTENDED_COLUMN_SIZE - base);
+
+        //--------------------------------------------------------------------
+        // 3-A. Copy current chunk from storage → scratch
+        //--------------------------------------------------------------------
+        for (var i: u32 = 0u; i < real_size; i = i + 1u) {
+            scratch[i] = trace_output.extended_trace[poly_id].data[base + i];
+        }
+
+        //--------------------------------------------------------------------
+        // 3-B. Remaining (small) line-twiddle layers in scratch
+        //--------------------------------------------------------------------
+        var l = layer;
+        loop {
+            let step = 1u << (l + 1u);
+            let layer_size = trace_input.twiddles.line_twiddles_sizes[l];
+            let layer_offset = trace_input.twiddles.line_twiddles_offsets[l];
+
+            let h_start = base >> (l + 2u);
+            let h_end = (base + real_size - 1u) >> (l + 2u);
+            let h_count = h_end - h_start + 1u;
+
+            for (var h_local: u32 = 0u; h_local < h_count; h_local = h_local + 1u) {
+                let h_global = h_start + h_local;
+                if (h_global >= layer_size) {
+                    continue;
+                }
+                let t = trace_input.twiddles.line_twiddles_flat[layer_offset + h_global];
+
+                // Convert global base index → scratch-local index
+                let base_idx_local = (h_global << (l + 2u)) - base;
+
+                for (var s: u32 = 0u; s < step; s = s + 1u) {
+                    let idx0 = base_idx_local + s;
+                    let idx1 = idx0 + step;
+                    var v0 = scratch[idx0];
+                    var v1 = scratch[idx1];
+                    butterfly(&v0, &v1, t);
+                    scratch[idx0] = v0;
+                    scratch[idx1] = v1;
+                }
+            }
+            if (l == 0u) {
+                break;
+            }
+            l = l - 1u;
+        }
+
+        //--------------------------------------------------------------------
+        // 3-C. Circle-twiddle (step = 1) in scratch
+        //--------------------------------------------------------------------
+        // Treat (idx0, idx1) as even/odd pair; global pair index = (base+idx0)/2
+        for (var idx0: u32 = 0u; idx0 + 1u < real_size; idx0 = idx0 + 2u) {
+            let idx1 = idx0 + 1u;
+            let pair_global = (base + idx0) >> 1u;
+            let t = trace_input.twiddles.circle_twiddles[pair_global];
+
+            var v0 = scratch[idx0];
+            var v1 = scratch[idx1];
+            butterfly(&v0, &v1, t);
+            scratch[idx0] = v0;
+            scratch[idx1] = v1;
+        }
+
+        //--------------------------------------------------------------------
+        // 3-D. Copy scratch → storage
+        //--------------------------------------------------------------------
+        for (var i: u32 = 0u; i < real_size; i = i + 1u) {
+            trace_output.extended_trace[poly_id].data[base + i] = scratch[i];
         }
     }
 }

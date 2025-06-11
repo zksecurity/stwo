@@ -404,8 +404,8 @@ pub fn init_encoder(instance: &WgpuInstance) -> wgpu::CommandEncoder {
         compute_pass.set_pipeline(&instance.evaluate_line_twiddle_pipeline);
         compute_pass.dispatch_workgroups(1, num_wg, 1);
 
-        compute_pass.set_pipeline(&instance.evaluate_circle_twiddle_pipeline);
-        compute_pass.dispatch_workgroups(1, N_EXTEND_TRACE_WORKGROUPS, 1);
+        // compute_pass.set_pipeline(&instance.evaluate_circle_twiddle_pipeline);
+        // compute_pass.dispatch_workgroups(1, N_EXTEND_TRACE_WORKGROUPS, 1);
 
         compute_pass.set_pipeline(&instance.composition_polynomial_compute_pipeline);
         compute_pass.dispatch_workgroups(N_WORKGROUPS, 1, 1);
