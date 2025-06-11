@@ -3,7 +3,9 @@ use std::mem::transmute;
 use std::simd::Simd;
 
 use bytemuck::Zeroable;
-use num_traits::One;
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
+use tracing::{span, Level};
 
 use super::fft::{ifft, rfft, CACHED_FFT_LOG_SIZE, MIN_FFT_LOG_SIZE};
 use super::m31::{PackedBaseField, LOG_N_LANES, N_LANES};
@@ -76,7 +78,7 @@ impl SimdBackend {
             mappings.reverse();
             let n = mappings.len();
             let n0 = (n - LOG_N_LANES as usize) / 2;
-            let n1 = (n - LOG_N_LANES as usize + 1) / 2;
+            let n1 = (n - LOG_N_LANES as usize).div_ceil(2);
             let (ab, c) = mappings.split_at_mut(n1);
             let (a, _b) = ab.split_at_mut(n0);
             // Swap content of a,c.
@@ -127,22 +129,11 @@ impl PolyOps for SimdBackend {
     //  representation of the field.
     type Twiddles = Vec<u32>;
 
-    fn new_canonical_ordered(
-        coset: CanonicCoset,
-        values: Col<Self, BaseField>,
-    ) -> CircleEvaluation<Self, BaseField, BitReversedOrder> {
-        // TODO(Ohad): Optimize.
-        let eval = CpuBackend::new_canonical_ordered(coset, values.into_cpu_vec());
-        CircleEvaluation::new(
-            eval.domain,
-            Col::<SimdBackend, BaseField>::from_iter(eval.values),
-        )
-    }
-
     fn interpolate(
         eval: CircleEvaluation<Self, BaseField, BitReversedOrder>,
         twiddles: &TwiddleTree<Self>,
     ) -> CirclePoly<Self> {
+        let _span = span!(Level::TRACE, "", class = "iFFT").entered();
         let log_size = eval.values.length.ilog2();
         if log_size < MIN_FFT_LOG_SIZE {
             let cpu_poly = eval.to_cpu().interpolate();
@@ -192,24 +183,42 @@ impl PolyOps for SimdBackend {
         // of the current index. For every 2^n alligned chunk of 2^n elements, the twiddle
         // array is the same, denoted twiddle_low. Use this to compute sums of (coeff *
         // twiddle_high) mod 2^n, then multiply by twiddle_low, and sum to get the final result.
-        let mut sum = PackedSecureField::zeroed();
-        let mut twiddle_high = SecureField::one();
-        for (i, coeff_chunk) in poly.coeffs.data.array_chunks::<N_LANES>().enumerate() {
-            // For every chunk of 2 ^ 4 * 2 ^ 4 = 2 ^ 8 elements, the twiddle high is the same.
-            // Multiply it by every mid twiddle factor to get the factors for the current chunk.
-            let high_twiddle_factors =
-                (PackedSecureField::broadcast(twiddle_high) * twiddle_mids).to_array();
+        let compute_chunk_sum = |coeff_chunk: &[PackedBaseField],
+                                 twiddle_mids: PackedSecureField,
+                                 offset: usize| {
+            let mut sum = PackedSecureField::zeroed();
+            let mut twiddle_high = Self::twiddle_at(&mappings, offset * N_LANES);
+            for (i, coeff_chunk) in coeff_chunk.array_chunks::<N_LANES>().enumerate() {
+                // For every chunk of 2 ^ 4 * 2 ^ 4 = 2 ^ 8 elements, the twiddle high is the same.
+                // Multiply it by every mid twiddle factor to get the factors for the current chunk.
+                let high_twiddle_factors =
+                    (PackedSecureField::broadcast(twiddle_high) * twiddle_mids).to_array();
 
-            // Sum the coefficients multiplied by each corrseponsing twiddle. Result is effectivley
-            // an array[16] where the value at index 'i' is the sum of all coefficients at indices
-            // that are i mod 16.
-            for (&packed_coeffs, mid_twiddle) in zip(coeff_chunk, high_twiddle_factors) {
-                sum += PackedSecureField::broadcast(mid_twiddle) * packed_coeffs;
+                // Sum the coefficients multiplied by each corrseponsing twiddle. Result is
+                // effectivley an array[16] where the value at index 'i' is the sum
+                // of all coefficients at indices that are i mod 16.
+                for (&packed_coeffs, mid_twiddle) in zip(coeff_chunk, high_twiddle_factors) {
+                    sum += PackedSecureField::broadcast(mid_twiddle) * packed_coeffs;
+                }
+
+                // Advance twiddle high.
+                twiddle_high = Self::advance_twiddle(twiddle_high, &twiddle_steps, offset + i);
             }
+            sum
+        };
 
-            // Advance twiddle high.
-            twiddle_high = Self::advance_twiddle(twiddle_high, &twiddle_steps, i);
-        }
+        #[cfg(not(feature = "parallel"))]
+        let sum = compute_chunk_sum(&poly.coeffs.data, twiddle_mids, 0);
+
+        #[cfg(feature = "parallel")]
+        let sum: PackedSecureField = {
+            const CHUNK_SIZE: usize = 1 << 10;
+            let chunks = poly.coeffs.data.par_chunks(CHUNK_SIZE).enumerate();
+            chunks
+                .into_par_iter()
+                .map(|(i, chunk)| compute_chunk_sum(chunk, twiddle_mids, i * CHUNK_SIZE))
+                .sum()
+        };
 
         (sum * twiddle_lows).pointwise_sum()
     }
@@ -225,6 +234,7 @@ impl PolyOps for SimdBackend {
         domain: CircleDomain,
         twiddles: &TwiddleTree<Self>,
     ) -> CircleEvaluation<Self, BaseField, BitReversedOrder> {
+        let _span = span!(Level::TRACE, "", class = "rFFT").entered();
         let log_size = domain.log_size();
         let fft_log_size = poly.log_size();
         assert!(
@@ -291,6 +301,7 @@ impl PolyOps for SimdBackend {
     /// Note: the coset point are symmetrical over the x-axis so only the first half of the coset is
     /// needed.
     fn precompute_twiddles(mut coset: Coset) -> TwiddleTree<Self> {
+        let _span = span!(Level::TRACE, "", class = "PrecomputeTwiddles").entered();
         let root_coset = coset;
 
         if root_coset.size() < N_LANES {
@@ -391,7 +402,7 @@ pub fn slow_eval_at_point(
     if poly.log_size() > CACHED_FFT_LOG_SIZE {
         let n = mappings.len();
         let n0 = (n - LOG_N_LANES as usize) / 2;
-        let n1 = (n - LOG_N_LANES as usize + 1) / 2;
+        let n1 = (n - LOG_N_LANES as usize).div_ceil(2);
         let (ab, c) = mappings.split_at_mut(n1);
         let (a, _b) = ab.split_at_mut(n0);
         // Swap content of a,c.

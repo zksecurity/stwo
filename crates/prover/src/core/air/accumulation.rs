@@ -77,7 +77,7 @@ impl<B: Backend> DomainEvaluationAccumulator<B> {
         n_cols_per_size: [(u32, usize); N],
     ) -> [ColumnAccumulator<'_, B>; N] {
         self.sub_accumulations
-            .get_many_mut(n_cols_per_size.map(|(log_size, _)| log_size as usize))
+            .get_disjoint_mut(n_cols_per_size.map(|(log_size, _)| log_size as usize))
             .unwrap_or_else(|e| panic!("invalid log_sizes: {}", e))
             .into_iter()
             .zip(n_cols_per_size)
@@ -96,7 +96,7 @@ impl<B: Backend> DomainEvaluationAccumulator<B> {
     }
 
     /// Returns the log size of the resulting polynomial.
-    pub fn log_size(&self) -> u32 {
+    pub const fn log_size(&self) -> u32 {
         (self.sub_accumulations.len() - 1) as u32
     }
 
@@ -108,7 +108,12 @@ impl<B: Backend> DomainEvaluationAccumulator<B> {
             "not all random coefficients were used"
         );
         let log_size = self.log_size();
-        let _span = span!(Level::INFO, "Constraints interpolation").entered();
+        let _span = span!(
+            Level::INFO,
+            "Constraints interpolation",
+            class = "ConstraintInterpolation"
+        )
+        .entered();
         let mut cur_poly: Option<SecureCirclePoly<B>> = None;
         let twiddles = B::precompute_twiddles(
             CanonicCoset::new(self.log_size())

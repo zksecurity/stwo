@@ -215,10 +215,7 @@ pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
 
         let start = std::time::Instant::now();
         let web_input = create_composition_polynomial_gpu_input(web, _lookup_elements);
-        output = pollster::block_on(compute_composition_polynomial_wgpu(
-            Arc::from(web_input),
-            &instance,
-        ));
+        output = pollster::block_on(compute_composition_polynomial_wgpu(web_input, &instance));
         let duration = start.elapsed();
         println!("work-timer: {:?}", duration);
     }
@@ -740,6 +737,36 @@ mod tests {
         commitment_scheme.commit(proof.commitments[2], &sizes[2], channel);
 
         verify(&[&component], channel, commitment_scheme, proof).unwrap();
+    }
+
+    #[cfg(feature = "tracing")]
+    #[test]
+    fn trace_simd_poseidon_prove() {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::Registry;
+
+        use crate::tracing::SpanAccumulator;
+
+        let collector = SpanAccumulator::default();
+        let layer = collector.clone();
+        let subscriber = Registry::default().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let log_n_instances = env::var("LOG_N_INSTANCES")
+            .unwrap_or_else(|_| "10".to_string())
+            .parse::<u32>()
+            .unwrap();
+        let config = PcsConfig {
+            pow_bits: 10,
+            fri_config: FriConfig::new(5, 1, 64),
+        };
+
+        // Prove.
+        let _ = prove_poseidon(log_n_instances, config);
+
+        let csv = collector.export_csv();
+
+        println!("{}", csv);
     }
 
     fn web_poseidon_prove(log_n_instances: u32, config: PcsConfig) {

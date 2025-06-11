@@ -12,7 +12,9 @@ use super::qm31::PackedSecureField;
 use super::SimdBackend;
 use crate::core::backend::cpu::bit_reverse;
 use crate::core::backend::cpu::quotients::{batch_random_coeffs, column_line_coeffs};
+use crate::core::backend::simd::column::SecureColumnByCoordsMutSlice;
 use crate::core::backend::CpuBackend;
+use crate::core::circle::CirclePoint;
 use crate::core::fields::m31::BaseField;
 use crate::core::fields::qm31::SecureField;
 use crate::core::fields::secure_column::{SecureColumnByCoords, SECURE_EXTENSION_DEGREE};
@@ -115,23 +117,23 @@ fn accumulate_quotients_on_subdomain(
         unsafe { SecureColumnByCoords::<SimdBackend>::uninitialized(subdomain.size()) };
     let quotient_constants = quotient_constants(sample_batches, random_coeff, subdomain);
 
-    let span = span!(Level::INFO, "Quotient accumulation").entered();
-    let quad_rows = CircleDomainBitRevIterator::new(subdomain)
-        .array_chunks::<4>()
-        .collect_vec();
+    let span = span!(
+        Level::INFO,
+        "Quotient accumulation",
+        class = "FRIQuotientAccumulation"
+    )
+    .entered();
+    let quad_rows = CircleDomainBitRevIterator::new(subdomain);
 
-    #[cfg(not(feature = "parallel"))]
-    let iter = quad_rows.iter().zip(values.chunks_mut(4)).enumerate();
-
-    #[cfg(feature = "parallel")]
-    let iter = quad_rows
-        .par_iter()
-        .zip(values.par_chunks_mut(4))
-        .enumerate();
-
-    iter.for_each(|(quad_row, (points, mut values_dst))| {
-        // TODO(andrew): Spapini said: Use optimized domain iteration. Is there a better way to do
-        // this?
+    let accumulate = |(quad_row, (points, mut values_dst)): (
+        usize,
+        (
+            [CirclePoint<PackedBaseField>; 4],
+            SecureColumnByCoordsMutSlice<'_>,
+        ),
+    )| {
+        // TODO(andrew): Spapini said: Use optimized domain iteration. Is there a better way to
+        // do this?
         let (y01, _) = points[0].y.deinterleave(points[1].y);
         let (y23, _) = points[2].y.deinterleave(points[3].y);
         let (spaced_ys, _) = y01.deinterleave(y23);
@@ -148,9 +150,48 @@ fn accumulate_quotients_on_subdomain(
             values_dst.set_packed(2, row_accumulator[2]);
             values_dst.set_packed(3, row_accumulator[3]);
         }
-    });
+    };
+
+    #[cfg(not(feature = "parallel"))]
+    let iter = quad_rows
+        .array_chunks::<4>()
+        .zip(values.chunks_mut(4))
+        .enumerate();
+
+    #[cfg(feature = "parallel")]
+    let iter = {
+        const CHUNK_SIZE: usize = 1 << 12;
+        values
+            .par_chunks_mut(CHUNK_SIZE)
+            .enumerate()
+            .flat_map_iter(|(chunk_idx, values_dst)| {
+                let vec_offset = chunk_idx * CHUNK_SIZE;
+                let quad_rows = quad_rows.start_at(vec_offset).array_chunks::<4>();
+                let values_dst = {
+                    let [a, b, c, d] = values_dst.0.map(|x| x.0);
+                    izip!(
+                        a.chunks_mut(4),
+                        b.chunks_mut(4),
+                        c.chunks_mut(4),
+                        d.chunks_mut(4)
+                    )
+                    .map(|(a, b, c, d)| unsafe {
+                        SecureColumnByCoordsMutSlice::from_coordinates_unchecked([a, b, c, d])
+                    })
+                };
+                (vec_offset / 4..).zip(quad_rows.zip(values_dst))
+            })
+    };
+
+    iter.for_each(accumulate);
+
     span.exit();
-    let span = span!(Level::INFO, "Quotient extension").entered();
+    let span = span!(
+        Level::INFO,
+        "Quotient extension",
+        class = "FRIQuotientExtension"
+    )
+    .entered();
 
     // Extend the evaluation to the full domain.
     let extended_eval =
@@ -229,10 +270,10 @@ fn denominator_inverses(
 ) -> Vec<CM31Column> {
     // We want a P to be on a line that passes through a point Pr + uPi in QM31^2, and its conjugate
     // Pr - uPi. Thus, Pr - P is parallel to Pi. Or, (Pr - P).x * Pi.y - (Pr - P).y * Pi.x = 0.
-    let domain_points = CircleDomainBitRevIterator::new(domain).collect_vec();
+    let domain_points = CircleDomainBitRevIterator::new(domain);
 
     #[cfg(not(feature = "parallel"))]
-    let iter = domain_points.into_iter();
+    let iter = domain_points;
 
     #[cfg(feature = "parallel")]
     let iter = domain_points.par_iter();
@@ -267,7 +308,12 @@ fn quotient_constants(
     random_coeff: SecureField,
     domain: CircleDomain,
 ) -> QuotientConstants {
-    let _span = span!(Level::INFO, "Quotient constants").entered();
+    let _span = span!(
+        Level::INFO,
+        "Quotient constants",
+        class = "FRIQuotientConstants"
+    )
+    .entered();
     let line_coeffs = column_line_coeffs(sample_batches, random_coeff);
     let batch_random_coeffs = batch_random_coeffs(sample_batches, random_coeff);
     let denominator_inverses = denominator_inverses(sample_batches, domain);

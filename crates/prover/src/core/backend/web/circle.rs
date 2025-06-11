@@ -1,13 +1,9 @@
-use super::utils::convert_web_to_simd_column;
 use super::WebBackend;
 use crate::core::backend::simd::SimdBackend;
-use crate::core::backend::Col;
 use crate::core::circle::{CirclePoint, Coset};
 use crate::core::fields::m31::BaseField;
 use crate::core::fields::qm31::SecureField;
-use crate::core::poly::circle::{
-    CanonicCoset, CircleDomain, CircleEvaluation, CirclePoly, PolyOps,
-};
+use crate::core::poly::circle::{CircleDomain, CircleEvaluation, CirclePoly, PolyOps};
 use crate::core::poly::twiddles::TwiddleTree;
 use crate::core::poly::BitReversedOrder;
 
@@ -16,13 +12,6 @@ impl PolyOps for WebBackend {
     //  requires one of the numbers to be shifted left by 1 bit. This is not a reduced
     //  representation of the field.
     type Twiddles = Vec<u32>;
-
-    fn new_canonical_ordered(
-        coset: CanonicCoset,
-        values: Col<Self, BaseField>,
-    ) -> CircleEvaluation<Self, BaseField, BitReversedOrder> {
-        SimdBackend::new_canonical_ordered(coset, convert_web_to_simd_column(values)).into()
-    }
 
     fn interpolate(
         eval: CircleEvaluation<Self, BaseField, BitReversedOrder>,

@@ -5,9 +5,10 @@ use std::simd::u32x16;
 use bytemuck::cast_slice;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
+use tracing::{span, Level};
 
-use super::blake2s::compress16;
 use super::SimdBackend;
+use crate::core::backend::simd::blake2s::hash_16;
 use crate::core::backend::simd::m31::N_LANES;
 use crate::core::channel::Blake2sChannel;
 #[cfg(not(target_arch = "wasm32"))]
@@ -20,6 +21,8 @@ const GRIND_HI_BITS: u32 = 64 - GRIND_LOW_BITS;
 
 impl GrindOps<Blake2sChannel> for SimdBackend {
     fn grind(channel: &Blake2sChannel, pow_bits: u32) -> u64 {
+        let _span = span!(Level::TRACE, "Simd Blake2s Grind", class = "Blake2s Grind");
+
         // TODO(first): support more than 32 bits.
         assert!(pow_bits <= 32, "pow_bits > 32 is not supported");
         let digest = channel.digest();
@@ -33,7 +36,7 @@ impl GrindOps<Blake2sChannel> for SimdBackend {
         #[cfg(feature = "parallel")]
         let res = (0..=(1 << GRIND_HI_BITS))
             .into_par_iter()
-            .find_map_any(|hi| grind_blake(digest, hi, pow_bits))
+            .find_map_first(|hi| grind_blake(digest, hi, pow_bits))
             .expect("Grind failed to find a solution.");
 
         res
@@ -41,23 +44,30 @@ impl GrindOps<Blake2sChannel> for SimdBackend {
 }
 
 fn grind_blake(digest: &[u32], hi: u64, pow_bits: u32) -> Option<u64> {
-    let zero: u32x16 = u32x16::default();
+    const DIGEST_SIZE: usize = std::mem::size_of::<[u32; 8]>();
+    const NONCE_SIZE: usize = std::mem::size_of::<u64>();
+    let zero: u32x16 = u32x16::splat(0);
+    let offsets_vec = u32x16::from(std::array::from_fn(|i| i as u32));
     let pow_bits = u32x16::splat(pow_bits);
 
-    let state: [u32x16; 8] = std::array::from_fn(|i| u32x16::splat(digest[i]));
+    let state: [_; 8] = std::array::from_fn(|i| u32x16::splat(digest[i]));
 
-    let mut attempt = [zero; 16];
-    attempt[0] = u32x16::splat((hi << GRIND_LOW_BITS) as u32);
-    attempt[0] += u32x16::from(std::array::from_fn(|i| i as u32));
-    attempt[1] = u32x16::splat((hi >> (32 - GRIND_LOW_BITS)) as u32);
+    let mut attempt_low = u32x16::splat((hi << GRIND_LOW_BITS) as u32) + offsets_vec;
+    let attempt_high = u32x16::splat((hi >> (32 - GRIND_LOW_BITS)) as u32);
     for low in (0..(1 << GRIND_LOW_BITS)).step_by(N_LANES) {
-        let res = compress16(state, attempt, zero, zero, zero, zero);
+        let msgs = std::array::from_fn(|i| match i {
+            0..=7 => state[i],
+            8 => attempt_low,
+            9 => attempt_high,
+            _ => zero,
+        });
+        let res = hash_16(msgs, (DIGEST_SIZE + NONCE_SIZE) as u64);
         let success_mask = res[0].trailing_zeros().simd_ge(pow_bits);
         if success_mask.any() {
             let i = success_mask.to_array().iter().position(|&x| x).unwrap();
             return Some((hi << GRIND_LOW_BITS) + low as u64 + i as u64);
         }
-        attempt[0] += u32x16::splat(N_LANES as u32);
+        attempt_low += u32x16::splat(N_LANES as u32);
     }
     None
 }
@@ -75,5 +85,28 @@ impl GrindOps<Poseidon252Channel> for SimdBackend {
             }
             nonce += 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn test_grind_blake_is_determinstic() {
+        use itertools::Itertools;
+
+        use super::*;
+
+        let pow_bits = 2;
+        let n_attempts = 1000;
+        let mut channel = Blake2sChannel::default();
+        channel.mix_u64(0);
+
+        let results = (0..n_attempts)
+            .map(|_| SimdBackend::grind(&channel, pow_bits))
+            .collect_vec();
+
+        assert!(results.iter().all(|r| r == &results[0]));
     }
 }
