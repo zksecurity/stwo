@@ -1,4 +1,4 @@
-// Note: depends on qm31.wgsl, fraction.wgsl, utils.wgsl constants.wgsl
+// Note: depends on qm31.wgsl, utils.wgsl constants.wgsl
 
 fn butterfly(v0: ptr<function, M31>, v1: ptr<function, M31>, twid: M31) {
     let tmp = m31_mul(*v1, twid);

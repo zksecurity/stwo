@@ -227,7 +227,9 @@ fn qm31_square(q: QM31) -> QM31 {
 }
 
 fn qm31_pow5(q: QM31) -> QM31 {
-    return qm31_mul(qm31_square(q), q);
+    let q2 = qm31_square(q);
+    let q4 = qm31_square(q2);
+    return qm31_mul(q4, q);
 }
 
 fn qm31_inverse(q: QM31) -> QM31 {
@@ -251,3 +253,26 @@ fn partial_reduce(val: u32) -> u32 {
     let reduced = val - P;
     return select(val, reduced, reduced < val);
 } 
+
+const ZERO_FRACTION: Fraction =
+    Fraction(vec4<u32>(0u), vec4<u32>(1u, 0u, 0u, 0u));
+
+struct Fraction {
+    numerator  : QM31,      // vec4<u32>
+    denominator: QM31,
+}
+
+// Add two fractions: (a/b + c/d) = (ad + bc)/(bd)
+fn fraction_add(x: Fraction, y: Fraction) -> Fraction {
+    let num = qm31_add(
+        qm31_mul(x.numerator,   y.denominator),
+        qm31_mul(y.numerator,   x.denominator)
+    );
+    let den = qm31_mul(x.denominator, y.denominator);
+    return Fraction(num, den);
+}
+
+fn fraction_eq(x: Fraction, y: Fraction) -> bool {
+    return all(x.numerator   == y.numerator) &&
+           all(x.denominator == y.denominator);
+}

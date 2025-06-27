@@ -1,11 +1,11 @@
 use super::WebBackend;
 use crate::core::backend::simd::SimdBackend;
 use crate::core::backend::{BaseField, Col};
-use crate::core::fields::secure_column::SecureColumnByCoords;
 use crate::core::poly::circle::{CircleEvaluation, CirclePoly, SecureEvaluation};
 use crate::core::poly::line::LineEvaluation;
 use crate::core::poly::twiddles::TwiddleTree;
 use crate::core::poly::BitReversedOrder;
+use crate::core::secure_column::SecureColumnByCoords;
 
 // WARNING: This works because they are literally the same object layout.
 //

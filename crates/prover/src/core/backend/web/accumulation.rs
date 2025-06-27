@@ -2,7 +2,7 @@ use super::WebBackend;
 use crate::core::air::accumulation::AccumulationOps;
 use crate::core::backend::simd::SimdBackend;
 use crate::core::fields::qm31::SecureField;
-use crate::core::fields::secure_column::SecureColumnByCoords;
+use crate::core::secure_column::SecureColumnByCoords;
 
 impl AccumulationOps for WebBackend {
     fn accumulate(column: &mut SecureColumnByCoords<Self>, other: &SecureColumnByCoords<Self>) {

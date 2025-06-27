@@ -45,11 +45,11 @@ mod tests {
     use crate::core::backend::{Column, CpuBackend};
     use crate::core::fields::m31::BaseField;
     use crate::core::fields::qm31::SecureField;
-    use crate::core::fields::secure_column::SecureColumnByCoords;
     use crate::core::fri::FriOps;
     use crate::core::poly::circle::{CanonicCoset, CirclePoly, PolyOps, SecureEvaluation};
     use crate::core::poly::line::{LineDomain, LineEvaluation};
     use crate::core::poly::BitReversedOrder;
+    use crate::core::secure_column::SecureColumnByCoords;
     use crate::qm31;
 
     #[test]
