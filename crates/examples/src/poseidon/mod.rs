@@ -595,7 +595,7 @@ mod tests {
     #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
     #[wasm_bindgen_test::wasm_bindgen_test]
     fn test_poseidon_prove_wasm() {
-        const LOG_N_INSTANCES: u32 = 17;
+        const LOG_N_INSTANCES: u32 = 15;
         let config = PcsConfig {
             pow_bits: 10,
             fri_config: FriConfig::new(5, 1, 64),
@@ -772,7 +772,7 @@ mod tests {
 
     #[test_log::test]
     fn test_web_poseidon_prove() {
-        let log_n_instances = 17;
+        let log_n_instances = 15;
         let config = PcsConfig {
             pow_bits: 10,
             fri_config: FriConfig::new(5, 1, 64),
@@ -812,7 +812,7 @@ mod tests {
 
             web_sys::console::log_1(&"worker spawned".into());
 
-            let log_n_instances = 17;
+            let log_n_instances = 15;
             let config = PcsConfig {
                 pow_bits: 10,
                 fri_config: FriConfig::new(5, 1, 64),
