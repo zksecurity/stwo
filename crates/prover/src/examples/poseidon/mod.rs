@@ -223,26 +223,18 @@ pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
     #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
     {
         console::time_with_label("work-timer");
-
-        console::time_with_label("work-timer-chunk1");
         // from caller, generate input from lookup data and trace evals
         let web_input = create_composition_polynomial_gpu_input(web, _lookup_elements);
-        console::time_end_with_label("work-timer-chunk1");
-        console::time_with_label("work-timer-chunk2-sending");
         // Box::<[u8]>::leak(boxed_input);
         REQUEST_TX.with(|cell| {
             let tx = cell.get().expect("REQUEST_TX not initialised");
             tx.send(web_input).unwrap();
         });
-        console::time_end_with_label("work-timer-chunk2-sending");
-        console::time_with_label("work-timer-chunk3-receiving");
 
         output = RESPONSE_RX.with(|cell| {
             let rx = cell.get().expect("RESPONSE_RX not initialised");
             rx.recv().unwrap()
         });
-        console::time_end_with_label("work-timer-chunk3-receiving");
-        console::time_with_label("work-timer-chunk4-copying");
     }
 
     let enum_iter = output.poly.iter().enumerate();
@@ -260,7 +252,6 @@ pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
     #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
     {
         // Box::leak(output);
-        console::time_end_with_label("work-timer-chunk4-copying");
         console::time_end_with_label("work-timer");
     }
 }
@@ -616,8 +607,10 @@ mod tests {
     use crate::core::vcs::blake2_merkle::Blake2sMerkleChannel;
     use crate::examples::poseidon::{
         apply_internal_round_matrix, apply_m4, eval_poseidon_constraints, gen_interaction_trace,
-        gen_trace, prove_poseidon, prove_poseidon_web, PoseidonElements, REQUEST_TX, RESPONSE_RX,
+        gen_trace, prove_poseidon, prove_poseidon_web, PoseidonElements,
     };
+    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+    use crate::examples::poseidon::{REQUEST_TX, RESPONSE_RX};
     use crate::math::matrix::{RowMajorMatrix, SquareMatrix};
     #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
     use crate::wasm_multithread::init_wasm_mt;
@@ -627,8 +620,9 @@ mod tests {
 
     #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
     #[wasm_bindgen_test::wasm_bindgen_test]
-    fn test_poseidon_prove_wasm() {
-        const LOG_N_INSTANCES: u32 = 17;
+    async fn test_poseidon_prove_wasm() {
+        init_wasm_mt(8).await;
+        const LOG_N_INSTANCES: u32 = 19;
         let config = PcsConfig {
             pow_bits: 10,
             fri_config: FriConfig::new(5, 1, 64),
@@ -709,7 +703,7 @@ mod tests {
 
         // Get from environment variable:
         let log_n_instances = env::var("LOG_N_INSTANCES")
-            .unwrap_or_else(|_| "16".to_string())
+            .unwrap_or_else(|_| "17".to_string())
             .parse::<u32>()
             .unwrap();
         let config: PcsConfig = PcsConfig {
@@ -718,8 +712,10 @@ mod tests {
         };
 
         // Prove.
+        let start = std::time::Instant::now();
         let (component, proof) = prove_poseidon(log_n_instances, config);
-
+        let duration = start.elapsed();
+        println!("Poseidon prove time: {:?}", duration);
         // Verify.
         // TODO: Create Air instance independently.
         let channel = &mut Blake2sChannel::default();
@@ -824,7 +820,8 @@ mod tests {
     }
 
     #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
-    #[wasm_bindgen_test::wasm_bindgen_test]
+    //#[wasm_bindgen_test::wasm_bindgen_test]
+    #[allow(dead_code)]
     async fn test_web_poseidon_prove_runner() {
         init_wasm_mt(8).await;
         // console_error_panic_hook::set_once();

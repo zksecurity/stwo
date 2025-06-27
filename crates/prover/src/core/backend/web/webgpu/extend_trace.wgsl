@@ -72,11 +72,11 @@ var<storage, read_write> trace_output: ExtendTraceOutput;
 
 // Size of a thread-local scratch tile (256 u32 = 1 KiB).
 // 32 threads × 1 KiB ≈ 32 KiB, matching Metal's per-threadgroup LDS budget.
-const CHUNK_SIZE: u32 = 256u;
+const CHUNK_SIZE: u32 = 128u;
 
-@compute @workgroup_size(32)
+@compute @workgroup_size(16)
 fn evaluate_line_twiddle_per_poly32(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let poly_id = global_id.x + global_id.y * 32u;
+    let poly_id = global_id.x + global_id.y * 16u;
     if (poly_id >= N_ORIGINAL_TRACE_COLUMNS) {
         return;
     }

@@ -400,7 +400,7 @@ pub fn init_encoder(instance: &WgpuInstance) -> wgpu::CommandEncoder {
         // compute_pass.set_pipeline(&instance.evaluate_line_twiddle_pipeline);
         // compute_pass.dispatch_workgroups(1, N_EXTEND_TRACE_WORKGROUPS, 1);
 
-        let num_wg = (N_ORIGINAL_TRACE_COLUMNS + 31) / 32;
+        let num_wg = (N_ORIGINAL_TRACE_COLUMNS + 15) / 16;
         compute_pass.set_pipeline(&instance.evaluate_line_twiddle_pipeline);
         compute_pass.dispatch_workgroups(1, num_wg, 1);
 
