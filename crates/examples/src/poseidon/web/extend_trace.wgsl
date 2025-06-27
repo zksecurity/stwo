@@ -204,36 +204,3 @@ fn evaluate_line_twiddle_per_poly32(@builtin(global_invocation_id) global_id: ve
         }
     }
 }
-
-@compute @workgroup_size(256)
-fn evaluate_circle_twiddle(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let workgroup_size = 256u;
-    let y_dim_size = 256u;
-    let size = N_EXTENDED_COLUMN_SIZE / 2;
-
-    let thread_id_x = global_id.x;
-    let chunk_size = (size + workgroup_size - 1u) / workgroup_size;
-    let chunk_start = thread_id_x * chunk_size;
-    let chunk_end = min(chunk_start + chunk_size, size);
-
-    let thread_id_y = global_id.y;
-    let polynomial_chunk_size = (N_ORIGINAL_TRACE_COLUMNS + y_dim_size) / y_dim_size;
-    let polynomial_start = polynomial_chunk_size * thread_id_y;
-    let polynomial_end = min(polynomial_start + polynomial_chunk_size, N_ORIGINAL_TRACE_COLUMNS);
-
-    // store_debug_value(thread_id, global_id.y);
-    for (var i = chunk_start; i < chunk_end; i = i + 1u) {
-        let idx0 = i << 1u;
-        let idx1 = idx0 + 1u;
-
-        for (var polynomial_id = polynomial_start; polynomial_id < polynomial_end; polynomial_id = polynomial_id + 1u) {
-            var val0 = trace_output.extended_trace[polynomial_id].data[idx0];
-            var val1 = trace_output.extended_trace[polynomial_id].data[idx1];
-
-            butterfly(&val0, &val1, trace_input.twiddles.circle_twiddles[i]);
-
-            trace_output.extended_trace[polynomial_id].data[idx0] = val0;
-            trace_output.extended_trace[polynomial_id].data[idx1] = val1;
-        }
-    }
-}

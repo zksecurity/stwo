@@ -577,7 +577,7 @@ mod tests {
 
     use crate::poseidon::{
         apply_internal_round_matrix, apply_m4, eval_poseidon_constraints, gen_interaction_trace,
-        gen_trace, prove_poseidon, PoseidonElements,
+        gen_trace, prove_poseidon, prove_poseidon_web, PoseidonElements,
     };
 
     #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
@@ -726,5 +726,47 @@ mod tests {
         let csv = collector.export_csv();
 
         println!("{}", csv);
+    }
+
+    fn web_poseidon_prove(log_n_instances: u32, config: PcsConfig) {
+        // Prove.;
+        #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+        console::time_with_label("web_poseidon_prove");
+        let (component, proof) = prove_poseidon_web(log_n_instances, config);
+        #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+        console::time_end_with_label("web_poseidon_prove");
+
+        // Verify.
+        // TODO: Create Air instance independently.
+        let channel = &mut Blake2sChannel::default();
+        let commitment_scheme =
+            &mut CommitmentSchemeVerifier::<Blake2sMerkleChannel>::new(proof.config);
+
+        // Decommit.
+        // Retrieve the expected column sizes in each commitment interaction, from the AIR.
+        let sizes = component.trace_log_degree_bounds();
+
+        // Preprocessed columns.
+        commitment_scheme.commit(proof.commitments[0], &sizes[0], channel);
+        // Trace columns.
+        commitment_scheme.commit(proof.commitments[1], &sizes[1], channel);
+        // Draw lookup element.
+        let lookup_elements = PoseidonElements::draw(channel);
+        assert_eq!(lookup_elements, component.lookup_elements);
+        // Interaction columns.
+        commitment_scheme.commit(proof.commitments[2], &sizes[2], channel);
+
+        verify(&[&component], channel, commitment_scheme, proof).unwrap();
+    }
+
+    #[test_log::test]
+    fn test_web_poseidon_prove() {
+        let log_n_instances = 15;
+        let config = PcsConfig {
+            pow_bits: 10,
+            fri_config: FriConfig::new(5, 1, 64),
+        };
+
+        web_poseidon_prove(log_n_instances, config);
     }
 }
