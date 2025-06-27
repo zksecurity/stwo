@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::mem::MaybeUninit;
+use std::ptr;
 
 use itertools::Itertools;
 use stwo_constraint_framework::WebDomainEvaluator;
@@ -52,29 +54,23 @@ pub async fn compute_composition_polynomial_wgpu(
     output
 }
 
+pub fn alloc_default_gpu_input() -> Box<ComputeCompositionPolynomialInput> {
+    let mut boxed = Box::<MaybeUninit<ComputeCompositionPolynomialInput>>::new_uninit();
+
+    let out: *mut ComputeCompositionPolynomialInput = boxed.as_mut_ptr().cast();
+
+    unsafe {
+        ptr::write_bytes(out, 0, 1);
+
+        Box::from_raw(Box::into_raw(boxed).cast())
+    }
+}
+
 pub fn create_composition_polynomial_gpu_input(
     eval: &mut WebDomainEvaluator<'_>,
     lookup_elements: &PoseidonElements,
 ) -> Box<ComputeCompositionPolynomialInput> {
-    let mut retval = Box::new(ComputeCompositionPolynomialInput {
-        original_trace: [GpuOriginalColumn {
-            coeffs: [GpuM31 { 0: 0 }; (N_LANES * N_ORIGINAL_ROWS) as usize],
-        }; N_ORIGINAL_TRACE_COLUMNS as usize],
-        twiddles: Twiddles {
-            line_twiddles_layer_count: 0,
-            line_twiddles_sizes: [0; N_LINE_TWIDDLES_SIZE as usize],
-            line_twiddles_offsets: [0; N_LINE_TWIDDLES_SIZE as usize],
-            line_twiddles_flat: [GpuM31 { 0: 0 }; N_LINE_TWIDDLES_FLAT_SIZE as usize],
-            circle_twiddles: [GpuM31 { 0: 0 }; N_CIRCLE_TWIDDLES_SIZE as usize],
-            circle_twiddles_size: 0,
-        },
-        denom_inv: [GpuM31 { 0: 0 }; 4],
-        random_coeff_powers: [GpuQM31 { 0: [0, 0, 0, 0] }; N_CONSTRAINTS as usize],
-        lookup_elements: GpuLookupElements::from(lookup_elements),
-        trace_domain_log_size: eval.trace_domain_log_size,
-        eval_domain_log_size: eval.eval_domain.log_size(),
-        cumsum_shift: (eval.claimed_sum / BaseField::from_u32_unchecked(1 << eval.log_size)).into(),
-    });
+    let mut retval = alloc_default_gpu_input();
 
     for (i, eval) in eval.trace_poly.iter().flatten().enumerate() {
         retval.original_trace[i] = GpuOriginalColumn::from(eval);
@@ -113,6 +109,12 @@ pub fn create_composition_polynomial_gpu_input(
     for i in 0..N_CONSTRAINTS as usize {
         retval.random_coeff_powers[i] = GpuQM31::from(eval.random_coeff_powers[i]);
     }
+
+    retval.lookup_elements = GpuLookupElements::from(lookup_elements);
+    retval.trace_domain_log_size = eval.trace_domain_log_size;
+    retval.eval_domain_log_size = eval.eval_domain.log_size();
+    retval.cumsum_shift =
+        (eval.claimed_sum / BaseField::from_u32_unchecked(1 << eval.log_size)).into();
 
     retval
 }

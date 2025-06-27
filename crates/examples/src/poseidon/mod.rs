@@ -2,8 +2,6 @@
 
 use std::any::type_name;
 use std::ops::{Add, AddAssign, Mul, Sub};
-#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
-use std::sync::OnceLock;
 
 use itertools::Itertools;
 use num_traits::One;
@@ -32,15 +30,15 @@ use stwo_prover::core::vcs::blake2_merkle::{Blake2sMerkleChannel, Blake2sMerkleH
 use stwo_prover::core::ColumnVec;
 use tracing::{info, span, Level};
 #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
-use web_sys::console;
+use {
+    crate::poseidon::web::ComputeCompositionPolynomialInput, std::sync::OnceLock, web_sys::console,
+};
 
 use crate::poseidon::web::eval_composition_poly::create_composition_polynomial_gpu_input;
 #[cfg(not(target_family = "wasm"))]
 use crate::poseidon::web::eval_composition_poly::{
     compute_composition_polynomial_wgpu, init_wgpu_instance,
 };
-#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
-use crate::poseidon::web::ComputeCompositionPolynomialInput;
 use crate::poseidon::web::ComputeCompositionPolynomialOutput;
 
 mod web;
@@ -574,6 +572,17 @@ mod tests {
     use stwo_prover::core::poly::circle::CanonicCoset;
     use stwo_prover::core::prover::verify;
     use stwo_prover::core::vcs::blake2_merkle::Blake2sMerkleChannel;
+    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+    use {
+        crate::poseidon::web::runner::runner_eval_composition_polynomial,
+        crate::poseidon::web::{
+            ComputeCompositionPolynomialInput, ComputeCompositionPolynomialOutput,
+        },
+        crate::poseidon::{REQUEST_TX, RESPONSE_RX},
+        wasm_bindgen_futures::spawn_local,
+        wasm_thread as thread,
+        web_sys::console,
+    };
 
     use crate::poseidon::{
         apply_internal_round_matrix, apply_m4, eval_poseidon_constraints, gen_interaction_trace,
@@ -586,14 +595,16 @@ mod tests {
     #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
     #[wasm_bindgen_test::wasm_bindgen_test]
     fn test_poseidon_prove_wasm() {
-        const LOG_N_INSTANCES: u32 = 10;
+        const LOG_N_INSTANCES: u32 = 17;
         let config = PcsConfig {
             pow_bits: 10,
             fri_config: FriConfig::new(5, 1, 64),
         };
 
         // Prove.
+        console::time_with_label("test_poseidon_prove_wasm");
         prove_poseidon(LOG_N_INSTANCES, config);
+        console::time_end_with_label("test_poseidon_prove_wasm");
     }
 
     #[test]
@@ -761,12 +772,59 @@ mod tests {
 
     #[test_log::test]
     fn test_web_poseidon_prove() {
-        let log_n_instances = 15;
+        let log_n_instances = 17;
         let config = PcsConfig {
             pow_bits: 10,
             fri_config: FriConfig::new(5, 1, 64),
         };
 
         web_poseidon_prove(log_n_instances, config);
+    }
+
+    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    #[allow(dead_code)]
+    async fn test_web_poseidon_prove_runner() {
+        let (request_tx, request_rx) = flume::bounded::<Box<ComputeCompositionPolynomialInput>>(1);
+        let (response_tx, response_rx) =
+            flume::bounded::<Box<ComputeCompositionPolynomialOutput>>(1);
+        let (job_tx, job_rx) = flume::bounded(1);
+
+        // spawn runner
+        thread::spawn(move || {
+            spawn_local(async move {
+                runner_eval_composition_polynomial(request_rx, response_tx).await;
+                web_sys::console::log_1(&"runner done".into());
+            });
+        });
+
+        // spawn caller
+        thread::spawn(move || {
+            REQUEST_TX.with(|cell| {
+                cell.set(request_tx)
+                    .expect("REQUEST_TX already initialised");
+            });
+
+            RESPONSE_RX.with(|cell| {
+                cell.set(response_rx)
+                    .expect("RESPONSE_RX already initialised");
+            });
+
+            web_sys::console::log_1(&"worker spawned".into());
+
+            let log_n_instances = 17;
+            let config = PcsConfig {
+                pow_bits: 10,
+                fri_config: FriConfig::new(5, 1, 64),
+            };
+
+            web_poseidon_prove(log_n_instances, config);
+
+            job_tx.send(()).unwrap();
+        });
+
+        // wait for worker to finish
+        let _ = job_rx.recv_async().await.unwrap();
+        wasm_thread::terminate_all_workers();
     }
 }

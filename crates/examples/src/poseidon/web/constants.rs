@@ -1,4 +1,4 @@
-pub const N_ROWS: u32 = 256;
+pub const N_ROWS: u32 = 1024;
 pub const N_CONSTRAINTS: u32 = 1144;
 
 pub const N_STATE: u32 = 16;
@@ -10,7 +10,6 @@ pub const N_ORIGINAL_ROWS: u32 = N_ROWS;
 pub const N_COLUMNS: u32 = 1264;
 pub const N_INTERACTION_COLUMNS: u32 = N_INSTANCES_PER_ROW * 4;
 pub const N_WORKGROUPS: u32 = N_EXTENDED_ROWS * N_LANES / THREADS_PER_WORKGROUP;
-// pub const N_EXTEND_TRACE_WORKGROUPS: u32 = 256;
 pub const THREADS_PER_WORKGROUP: u32 = 256;
 
 pub const N_LINE_TWIDDLES_SIZE: u32 = 32;

@@ -17,6 +17,18 @@ pub struct GpuCM31(pub [u32; 2]); // alias CM31 = vec2<u32>
 #[repr(C, align(16))]
 pub struct GpuQM31(pub [u32; 4]); // alias QM31 = vec4<u32>
 
+impl Default for GpuQM31 {
+    fn default() -> Self {
+        Self::zeroed()
+    }
+}
+
+impl Default for GpuM31 {
+    fn default() -> Self {
+        Self::zeroed()
+    }
+}
+
 impl From<QM31> for GpuQM31 {
     fn from(value: QM31) -> Self {
         GpuQM31([
