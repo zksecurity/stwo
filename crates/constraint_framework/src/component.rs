@@ -18,6 +18,7 @@ use stwo_prover::core::backend::simd::very_packed_m31::{
     VeryPackedBaseField, LOG_N_VERY_PACKED_ELEMS,
 };
 use stwo_prover::core::backend::simd::SimdBackend;
+use stwo_prover::core::backend::web::WebBackend;
 use stwo_prover::core::circle::CirclePoint;
 use stwo_prover::core::constraints::coset_vanishing;
 use stwo_prover::core::fields::m31::BaseField;
@@ -29,8 +30,6 @@ use stwo_prover::core::poly::BitReversedOrder;
 use stwo_prover::core::secure_column::SecureColumnByCoords;
 use stwo_prover::core::ColumnVec;
 use tracing::{span, Level};
-#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
-use web_sys::console;
 
 use super::cpu_domain::CpuDomainEvaluator;
 use super::preprocessed_columns::PreProcessedColumnId;
@@ -313,9 +312,6 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
             .map(|idx| &trace.evals[PREPROCESSED_TRACE_IDX][*idx])
             .collect();
 
-        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
-        console::time_with_label("simd-work-timer");
-
         // Extend trace if necessary.
         // TODO: Don't extend when eval_size < committed_size. Instead, pick a good
         // subdomain. (For larger blowup factors).
@@ -431,9 +427,6 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
                 }
             }
         });
-
-        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
-        console::time_end_with_label("simd-work-timer");
     }
 }
 

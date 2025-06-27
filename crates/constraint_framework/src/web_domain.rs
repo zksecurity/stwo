@@ -1,18 +1,19 @@
 use std::ops::Mul;
 
-use super::INTERACTION_TRACE_IDX;
-use crate::constraint_framework::logup::LogupAtRow;
-use crate::constraint_framework::EvalAtRow;
-use crate::core::backend::simd::column::VeryPackedSecureColumnByCoords;
-use crate::core::backend::simd::very_packed_m31::{VeryPackedBaseField, VeryPackedSecureField};
-use crate::core::backend::web::WebBackend;
-use crate::core::fields::m31::{BaseField, M31};
-use crate::core::fields::qm31::SecureField;
-use crate::core::fields::secure_column::SECURE_EXTENSION_DEGREE;
-use crate::core::lookups::utils::Fraction;
-use crate::core::pcs::TreeVec;
-use crate::core::poly::circle::{CircleDomain, CircleEvaluation, CirclePoly};
-use crate::core::poly::BitReversedOrder;
+use stwo_prover::core::backend::simd::column::VeryPackedSecureColumnByCoords;
+use stwo_prover::core::backend::simd::very_packed_m31::{
+    VeryPackedBaseField, VeryPackedSecureField,
+};
+use stwo_prover::core::backend::web::WebBackend;
+use stwo_prover::core::fields::m31::{BaseField, M31};
+use stwo_prover::core::fields::qm31::{SecureField, SECURE_EXTENSION_DEGREE};
+use stwo_prover::core::lookups::utils::Fraction;
+use stwo_prover::core::pcs::TreeVec;
+use stwo_prover::core::poly::circle::{CircleDomain, CircleEvaluation, CirclePoly};
+use stwo_prover::core::poly::BitReversedOrder;
+
+use super::logup::LogupAtRow;
+use super::{EvalAtRow, INTERACTION_TRACE_IDX};
 
 /// Dummy evaluator for WebGPU.
 pub struct WebDomainEvaluator<'a> {
@@ -28,6 +29,7 @@ pub struct WebDomainEvaluator<'a> {
     pub log_size: u32,
     pub logup: LogupAtRow<Self>,
 }
+
 impl<'a> WebDomainEvaluator<'a> {
     pub fn new(
         trace_poly: &'a TreeVec<Vec<&'a CirclePoly<WebBackend>>>,

@@ -31,17 +31,10 @@ tracing-subscriber.workspace = true
 wgpu.workspace = true
 flume.workspace = true
 pollster.workspace = true
-[target.'cfg(all(target_family = "wasm", not(target_os = "wasi")))'.dependencies]
-web-sys = { version = "0.3", features = ["console", "Performance", "Window"] }
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4.50"
-wasm_thread = { git = "https://github.com/jaehunkim/wasm_thread", branch = "main" }
 
 [dev-dependencies]
 aligned = "0.4.2"
 test-log = { version = "0.2.15", features = ["trace"] }
-[target.'cfg(all(target_family = "wasm", not(target_os = "wasi")))'.dev-dependencies]
-wasm-bindgen-test = "0.3.43"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies.criterion]
 features = ["html_reports"]

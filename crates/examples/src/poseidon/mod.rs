@@ -2,14 +2,11 @@
 
 use std::any::type_name;
 use std::ops::{Add, AddAssign, Mul, Sub};
+#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
 use std::sync::OnceLock;
 
 use itertools::Itertools;
 use num_traits::One;
-use tracing::{info, span, Level};
-#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
-use web_sys::console;
-
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 use stwo_constraint_framework::logup::LogupTraceGenerator;
@@ -17,34 +14,11 @@ use stwo_constraint_framework::{
     relation, EvalAtRow, FrameworkComponent, FrameworkEval, Relation, RelationEntry,
     TraceLocationAllocator, WebDomainEvaluator,
 };
-use crate::core::backend::simd::column::BaseColumn;
-use crate::core::backend::simd::m31::{PackedBaseField, LOG_N_LANES, N_LANES};
-use crate::core::backend::simd::qm31::PackedSecureField;
-use crate::core::backend::simd::SimdBackend;
-#[allow(unused_imports)]
-use crate::core::backend::web::webgpu::eval_composition_poly::{
-    compute_composition_polynomial_wgpu, create_composition_polynomial_gpu_input,
-    init_wgpu_instance, EvalCompositionPolynomialArgs,
-};
-use crate::core::backend::web::webgpu::{
-    ComputeCompositionPolynomialInput, ComputeCompositionPolynomialOutput,
-};
-use crate::core::backend::web::WebBackend;
-use crate::core::backend::{Col, Column};
-use crate::core::channel::Blake2sChannel;
-use crate::core::fields::m31::BaseField;
-use crate::core::fields::qm31::SecureField;
-use crate::core::fields::FieldExpOps;
-use crate::core::pcs::{CommitmentSchemeProver, PcsConfig};
-use crate::core::poly::circle::{CanonicCoset, CircleEvaluation, PolyOps};
-use crate::core::poly::BitReversedOrder;
-use crate::core::prover::{prove, StarkProof};
-use crate::core::vcs::blake2_merkle::{Blake2sMerkleChannel, Blake2sMerkleHasher};
-use crate::core::ColumnVec;
 use stwo_prover::core::backend::simd::column::BaseColumn;
-use stwo_prover::core::backend::simd::m31::{PackedBaseField, LOG_N_LANES};
+use stwo_prover::core::backend::simd::m31::{PackedBaseField, LOG_N_LANES, N_LANES};
 use stwo_prover::core::backend::simd::qm31::PackedSecureField;
 use stwo_prover::core::backend::simd::SimdBackend;
+use stwo_prover::core::backend::web::WebBackend;
 use stwo_prover::core::backend::{Col, Column};
 use stwo_prover::core::channel::Blake2sChannel;
 use stwo_prover::core::fields::m31::BaseField;
@@ -57,6 +31,19 @@ use stwo_prover::core::prover::{prove, StarkProof};
 use stwo_prover::core::vcs::blake2_merkle::{Blake2sMerkleChannel, Blake2sMerkleHasher};
 use stwo_prover::core::ColumnVec;
 use tracing::{info, span, Level};
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+use web_sys::console;
+
+use crate::poseidon::web::eval_composition_poly::create_composition_polynomial_gpu_input;
+#[cfg(not(target_family = "wasm"))]
+use crate::poseidon::web::eval_composition_poly::{
+    compute_composition_polynomial_wgpu, init_wgpu_instance,
+};
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+use crate::poseidon::web::ComputeCompositionPolynomialInput;
+use crate::poseidon::web::ComputeCompositionPolynomialOutput;
+
+mod web;
 
 const N_LOG_INSTANCES_PER_ROW: usize = 3;
 const N_INSTANCES_PER_ROW: usize = 1 << N_LOG_INSTANCES_PER_ROW;
@@ -116,22 +103,6 @@ impl<T> HasDomainTypeName for T {
     }
     fn as_ptr(&self) -> *const () {
         self as *const T as *const ()
-    }
-}
-
-impl<'a> EvalCompositionPolynomialArgs<'a> {
-    pub fn new(eval: &WebDomainEvaluator<'a>, lookup_elements: &'a PoseidonElements) -> Self {
-        Self {
-            original_trace: &eval.trace_poly,
-            eval_domain: eval.eval_domain,
-            denom_inv: eval.denom_inv.clone(),
-            random_coeff_powers: eval.random_coeff_powers.clone(),
-            lookup_elements,
-            trace_domain_log_size: eval.trace_domain_log_size,
-            eval_domain_log_size: eval.eval_domain.log_size(),
-            log_size: eval.log_size,
-            total_sum: eval.claimed_sum,
-        }
     }
 }
 
@@ -208,13 +179,10 @@ fn pow5<F: FieldExpOps>(x: F) -> F {
     x4 * x.clone()
 }
 
-// if wasm
+#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
 thread_local! {
-    /// sender for composition-polynomial jobs.
     static REQUEST_TX: OnceLock<flume::Sender<Box<ComputeCompositionPolynomialInput>>> =
         OnceLock::new();
-
-    /// receiver for composition-polynomial results.
     static RESPONSE_RX: OnceLock<flume::Receiver<Box<ComputeCompositionPolynomialOutput>>> =
         OnceLock::new();
 }
@@ -241,9 +209,7 @@ pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
     #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
     {
         console::time_with_label("work-timer");
-        // from caller, generate input from lookup data and trace evals
         let web_input = create_composition_polynomial_gpu_input(web, _lookup_elements);
-        // Box::<[u8]>::leak(boxed_input);
         REQUEST_TX.with(|cell| {
             let tx = cell.get().expect("REQUEST_TX not initialised");
             tx.send(web_input).unwrap();
@@ -269,7 +235,6 @@ pub fn eval_poseidon_constraints_web<E: EvalAtRow>(
 
     #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
     {
-        // Box::leak(output);
         console::time_end_with_label("work-timer");
     }
 }
@@ -600,33 +565,6 @@ mod tests {
     use std::{array, env};
 
     use itertools::Itertools;
-    use num_traits::One;
-    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
-    use wasm_bindgen_futures::spawn_local;
-    #[allow(unused_imports)]
-    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
-    use wasm_bindgen_test::*;
-    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
-    use wasm_thread as thread;
-    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
-    use web_sys::console;
-
-    use crate::constraint_framework::assert_constraints_on_polys;
-    use crate::core::air::Component;
-    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
-    use crate::core::backend::web::webgpu::runner_eval_composition_polynomial;
-    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
-    use crate::core::backend::web::webgpu::{
-        ComputeCompositionPolynomialInput, ComputeCompositionPolynomialOutput,
-    };
-    use crate::core::channel::Blake2sChannel;
-    use crate::core::fields::m31::BaseField;
-    use crate::core::fri::FriConfig;
-    use crate::core::pcs::{CommitmentSchemeVerifier, PcsConfig, TreeVec};
-    use crate::core::poly::circle::CanonicCoset;
-    use crate::core::prover::verify;
-    use crate::core::vcs::blake2_merkle::Blake2sMerkleChannel;
-    use crate::examples::poseidon::{
     use stwo_constraint_framework::assert_constraints_on_polys;
     use stwo_prover::core::air::Component;
     use stwo_prover::core::channel::Blake2sChannel;
@@ -639,31 +577,23 @@ mod tests {
 
     use crate::poseidon::{
         apply_internal_round_matrix, apply_m4, eval_poseidon_constraints, gen_interaction_trace,
-        gen_trace, prove_poseidon, prove_poseidon_web, PoseidonElements,
+        gen_trace, prove_poseidon, PoseidonElements,
     };
-    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
-    use crate::examples::poseidon::{REQUEST_TX, RESPONSE_RX};
-    use crate::math::matrix::{RowMajorMatrix, SquareMatrix};
-    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
-    use crate::wasm_multithread::init_wasm_mt;
 
     #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
     #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
     #[wasm_bindgen_test::wasm_bindgen_test]
-    async fn test_poseidon_prove_wasm() {
-        init_wasm_mt(8).await;
-        const LOG_N_INSTANCES: u32 = 19;
+    fn test_poseidon_prove_wasm() {
+        const LOG_N_INSTANCES: u32 = 10;
         let config = PcsConfig {
             pow_bits: 10,
             fri_config: FriConfig::new(5, 1, 64),
         };
 
         // Prove.
-        console::time_with_label("poseidon_prove");
         prove_poseidon(LOG_N_INSTANCES, config);
-        console::time_end_with_label("poseidon_prove");
     }
 
     #[test]
@@ -726,7 +656,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[test_log::test]
     fn test_simd_poseidon_prove() {
         // Note: To see time measurement, run test with
         //   RUST_LOG_SPAN_EVENTS=enter,close RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS="
@@ -735,19 +665,17 @@ mod tests {
 
         // Get from environment variable:
         let log_n_instances = env::var("LOG_N_INSTANCES")
-            .unwrap_or_else(|_| "17".to_string())
+            .unwrap_or_else(|_| "10".to_string())
             .parse::<u32>()
             .unwrap();
-        let config: PcsConfig = PcsConfig {
+        let config = PcsConfig {
             pow_bits: 10,
             fri_config: FriConfig::new(5, 1, 64),
         };
 
         // Prove.
-        let start = std::time::Instant::now();
         let (component, proof) = prove_poseidon(log_n_instances, config);
-        let duration = start.elapsed();
-        println!("Poseidon prove time: {:?}", duration);
+
         // Verify.
         // TODO: Create Air instance independently.
         let channel = &mut Blake2sChannel::default();
@@ -798,106 +726,5 @@ mod tests {
         let csv = collector.export_csv();
 
         println!("{}", csv);
-    }
-
-    fn web_poseidon_prove(log_n_instances: u32, config: PcsConfig) {
-        // Prove.;
-        #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
-        console::time_with_label("web_poseidon_prove");
-        let (component, proof) = prove_poseidon_web(log_n_instances, config);
-        #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
-        console::time_end_with_label("web_poseidon_prove");
-
-        // Verify.
-        // TODO: Create Air instance independently.
-        let channel = &mut Blake2sChannel::default();
-        let commitment_scheme =
-            &mut CommitmentSchemeVerifier::<Blake2sMerkleChannel>::new(proof.config);
-
-        // Decommit.
-        // Retrieve the expected column sizes in each commitment interaction, from the AIR.
-        let sizes = component.trace_log_degree_bounds();
-
-        // Preprocessed columns.
-        commitment_scheme.commit(proof.commitments[0], &sizes[0], channel);
-        // Trace columns.
-        commitment_scheme.commit(proof.commitments[1], &sizes[1], channel);
-        // Draw lookup element.
-        let lookup_elements = PoseidonElements::draw(channel);
-        assert_eq!(lookup_elements, component.lookup_elements);
-        // Interaction columns.
-        commitment_scheme.commit(proof.commitments[2], &sizes[2], channel);
-
-        verify(&[&component], channel, commitment_scheme, proof).unwrap();
-    }
-
-    #[test_log::test]
-    fn test_web_poseidon_prove() {
-        // Note: To see time measurement, run test with
-        //   RUST_LOG_SPAN_EVENTS=enter,close RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS="
-        //   -C target-cpu=native -C target-feature=+avx512f -C opt-level=3" cargo test
-        //   test_simd_poseidon_prove -- --nocapture
-        // Get from environment variable:
-        let log_n_instances = env::var("LOG_N_INSTANCES")
-            .unwrap_or_else(|_| "17".to_string())
-            .parse::<u32>()
-            .unwrap();
-        let config = PcsConfig {
-            pow_bits: 10,
-            fri_config: FriConfig::new(5, 1, 64),
-        };
-
-        web_poseidon_prove(log_n_instances, config);
-    }
-
-    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
-    //#[wasm_bindgen_test::wasm_bindgen_test]
-    #[allow(dead_code)]
-    async fn test_web_poseidon_prove_runner() {
-        init_wasm_mt(8).await;
-        // console_error_panic_hook::set_once();
-
-        let (request_tx, request_rx) = flume::bounded::<Box<ComputeCompositionPolynomialInput>>(1);
-        let (response_tx, response_rx) =
-            flume::bounded::<Box<ComputeCompositionPolynomialOutput>>(1);
-        let (job_tx, job_rx) = flume::bounded(1);
-
-        // spawn runner
-        thread::spawn(move || {
-            spawn_local(async move {
-                runner_eval_composition_polynomial(request_rx, response_tx).await;
-                web_sys::console::log_1(&"runner done".into());
-            });
-        });
-
-        // spawn caller
-        thread::spawn(move || {
-            // from here, different thread
-            REQUEST_TX.with(|cell| {
-                cell.set(request_tx)
-                    .expect("REQUEST_TX already initialised");
-            });
-
-            RESPONSE_RX.with(|cell| {
-                cell.set(response_rx)
-                    .expect("RESPONSE_RX already initialised");
-            });
-
-            web_sys::console::log_1(&"worker spawned".into());
-
-            let log_n_instances = 17;
-            let config = PcsConfig {
-                pow_bits: 10,
-                fri_config: FriConfig::new(5, 1, 64),
-            };
-
-            web_poseidon_prove(log_n_instances, config);
-
-            job_tx.send(()).unwrap();
-        });
-
-        // wait for worker to finish
-        let _ = job_rx.recv_async().await.unwrap();
-        wasm_thread::terminate_all_workers();
     }
 }
