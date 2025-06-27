@@ -6,8 +6,7 @@ use starknet_ff::FieldElement as FieldElement252;
 
 use super::{Channel, ChannelTime};
 use crate::core::fields::m31::BaseField;
-use crate::core::fields::qm31::SecureField;
-use crate::core::fields::secure_column::SECURE_EXTENSION_DEGREE;
+use crate::core::fields::qm31::{SecureField, SECURE_EXTENSION_DEGREE};
 
 // Number of bytes that fit into a felt252.
 pub const BYTES_PER_FELT252: usize = 252 / 8;
@@ -28,7 +27,7 @@ impl Poseidon252Channel {
         self.digest = new_digest;
         self.channel_time.inc_challenges();
     }
-    fn draw_felt252(&mut self) -> FieldElement252 {
+    fn draw_secure_felt252(&mut self) -> FieldElement252 {
         let res = poseidon_hash(self.digest, self.channel_time.n_sent.into());
         self.channel_time.inc_sent();
         res
@@ -39,7 +38,7 @@ impl Poseidon252Channel {
     fn draw_base_felts(&mut self) -> [BaseField; 8] {
         let shift = (1u64 << 31).into();
 
-        let mut cur = self.draw_felt252();
+        let mut cur = self.draw_secure_felt252();
         let u32s: [u32; 8] = std::array::from_fn(|_| {
             let next = cur.floor_div(shift);
             let res = cur - next * shift;
@@ -60,7 +59,8 @@ impl Channel for Poseidon252Channel {
 
     fn trailing_zeros(&self) -> u32 {
         let bytes = self.digest.to_bytes_be();
-        u128::from_le_bytes(std::array::from_fn(|i| bytes[i])).trailing_zeros()
+        // Returns maximum of 128.
+        u128::from_be_bytes(bytes[16..].try_into().unwrap()).trailing_zeros()
     }
 
     fn mix_felts(&mut self, felts: &[SecureField]) {
@@ -72,9 +72,7 @@ impl Channel for Poseidon252Channel {
                 chunk
                     .iter()
                     .flat_map(|x| x.to_m31_array())
-                    .fold(FieldElement252::default(), |cur, y| {
-                        cur * shift + y.0.into()
-                    }),
+                    .fold(FieldElement252::ONE, |cur, y| cur * shift + y.0.into()),
             );
         }
 
@@ -103,16 +101,15 @@ impl Channel for Poseidon252Channel {
     }
 
     fn mix_u64(&mut self, value: u64) {
-        // Split value to 32-bit limbs representing a big endian felt252.
-        self.mix_u32s(&[0, 0, 0, 0, 0, ((value >> 32) as u32), (value as u32)])
+        self.update_digest(poseidon_hash(self.digest, value.into()));
     }
 
-    fn draw_felt(&mut self) -> SecureField {
+    fn draw_secure_felt(&mut self) -> SecureField {
         let felts: [BaseField; FELTS_PER_HASH] = self.draw_base_felts();
         SecureField::from_m31_array(felts[..SECURE_EXTENSION_DEGREE].try_into().unwrap())
     }
 
-    fn draw_felts(&mut self, n_felts: usize) -> Vec<SecureField> {
+    fn draw_secure_felts(&mut self, n_felts: usize) -> Vec<SecureField> {
         let mut felts = iter::from_fn(|| Some(self.draw_base_felts())).flatten();
         let secure_felts = iter::from_fn(|| {
             Some(SecureField::from_m31_array([
@@ -127,7 +124,7 @@ impl Channel for Poseidon252Channel {
 
     fn draw_random_bytes(&mut self) -> Vec<u8> {
         let shift = (1u64 << 8).into();
-        let mut cur = self.draw_felt252();
+        let mut cur = self.draw_secure_felt252();
         let bytes: [u8; 31] = std::array::from_fn(|_| {
             let next = cur.floor_div(shift);
             let res = cur - next * shift;
@@ -160,7 +157,7 @@ mod tests {
         assert_eq!(channel.channel_time.n_challenges, 0);
         assert_eq!(channel.channel_time.n_sent, 1);
 
-        channel.draw_felts(9);
+        channel.draw_secure_felts(9);
         assert_eq!(channel.channel_time.n_challenges, 0);
         assert_eq!(channel.channel_time.n_sent, 6);
     }
@@ -176,21 +173,21 @@ mod tests {
     }
 
     #[test]
-    pub fn test_draw_felt() {
+    pub fn test_draw_secure_felt() {
         let mut channel = Poseidon252Channel::default();
 
-        let first_random_felt = channel.draw_felt();
+        let first_random_felt = channel.draw_secure_felt();
 
         // Assert that next random felt is different.
-        assert_ne!(first_random_felt, channel.draw_felt());
+        assert_ne!(first_random_felt, channel.draw_secure_felt());
     }
 
     #[test]
-    pub fn test_draw_felts() {
+    pub fn test_draw_secure_felts() {
         let mut channel = Poseidon252Channel::default();
 
-        let mut random_felts = channel.draw_felts(5);
-        random_felts.extend(channel.draw_felts(4));
+        let mut random_felts = channel.draw_secure_felts(5);
+        random_felts.extend(channel.draw_secure_felts(4));
 
         // Assert that all the random felts are unique.
         assert_eq!(
@@ -216,12 +213,14 @@ mod tests {
     pub fn test_mix_u64() {
         let mut channel = Poseidon252Channel::default();
         channel.mix_u64(0x1111222233334444);
-        let digest_64 = channel.digest;
 
-        let mut channel = Poseidon252Channel::default();
-        channel.mix_u32s(&[0, 0, 0, 0, 0, 0x11112222, 0x33334444]);
-
-        assert_eq!(digest_64, channel.digest);
+        assert_eq!(
+            channel.digest(),
+            FieldElement252::from_hex_be(
+                "0x07cecc0ee3d858c843fe63165f038353f9f80f52dd8d32eead9f635e2f7d8b8e"
+            )
+            .unwrap()
+        );
     }
 
     #[test]

@@ -8,11 +8,10 @@ use tracing::{info, instrument, span, Level};
 use super::air::{Component, ComponentProver, ComponentProvers, Components};
 use super::backend::BackendForChannel;
 use super::channel::MerkleChannel;
-use super::fields::secure_column::SECURE_EXTENSION_DEGREE;
+use super::fields::qm31::SECURE_EXTENSION_DEGREE;
 use super::fri::FriVerificationError;
 use super::pcs::CommitmentSchemeProof;
 use super::vcs::ops::MerkleHasher;
-use crate::constraint_framework::PREPROCESSED_TRACE_IDX;
 use crate::core::channel::Channel;
 use crate::core::circle::CirclePoint;
 use crate::core::fields::m31::BaseField;
@@ -22,6 +21,8 @@ use crate::core::pcs::{CommitmentSchemeProver, CommitmentSchemeVerifier};
 use crate::core::vcs::hash::Hash;
 use crate::core::vcs::prover::MerkleDecommitment;
 use crate::core::vcs::verifier::MerkleVerificationError;
+
+pub const PREPROCESSED_TRACE_IDX: usize = 0;
 
 #[instrument(skip_all)]
 pub fn prove<B: BackendForChannel<MC>, MC: MerkleChannel>(
@@ -39,7 +40,7 @@ pub fn prove<B: BackendForChannel<MC>, MC: MerkleChannel>(
     let trace = commitment_scheme.trace();
 
     // Evaluate and commit on composition polynomial.
-    let random_coeff = channel.draw_felt();
+    let random_coeff = channel.draw_secure_felt();
 
     let span = span!(Level::INFO, "Composition", class = "Composition").entered();
     let span1 = span!(
@@ -97,7 +98,7 @@ pub fn verify<MC: MerkleChannel>(
         components: components.to_vec(),
         n_preprocessed_columns,
     };
-    let random_coeff = channel.draw_felt();
+    let random_coeff = channel.draw_secure_felt();
 
     // Read composition polynomial commitment.
     commitment_scheme.commit(
@@ -113,6 +114,13 @@ pub fn verify<MC: MerkleChannel>(
     let mut sample_points = components.mask_points(oods_point);
     // Add the composition polynomial mask points.
     sample_points.push(vec![vec![oods_point]; SECURE_EXTENSION_DEGREE]);
+    
+    let sample_points_by_column = sample_points.as_cols_ref().flatten();
+    tracing::info!("Sampling {} columns.", sample_points_by_column.len());
+    tracing::info!(
+        "Total sample points: {}.",
+        sample_points_by_column.into_iter().flatten().count()
+    );
 
     let composition_oods_eval = proof.extract_composition_oods_eval().map_err(|_| {
         VerificationError::InvalidStructure("Unexpected sampled_values structure".to_string())
@@ -354,8 +362,7 @@ mod tests {
     use num_traits::One;
 
     use crate::core::fields::m31::BaseField;
-    use crate::core::fields::qm31::SecureField;
-    use crate::core::fields::secure_column::SECURE_EXTENSION_DEGREE;
+    use crate::core::fields::qm31::{SecureField, SECURE_EXTENSION_DEGREE};
     use crate::core::prover::SizeEstimate;
 
     #[test]
