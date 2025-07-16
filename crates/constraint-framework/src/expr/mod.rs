@@ -2,6 +2,7 @@ pub mod assignment;
 pub mod degree;
 pub mod evaluator;
 pub mod format;
+pub mod ir;
 pub mod simplify;
 pub mod utils;
 

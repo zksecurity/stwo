@@ -6,6 +6,7 @@ use stwo::core::Fraction;
 use super::assignment::{ExprVarAssignment, ExprVariables};
 use super::degree::NamedExprs;
 use super::{BaseExpr, ExtExpr};
+use crate::expr::ir::{IRBuilder, IRInstr};
 use crate::expr::ColumnExpr;
 use crate::preprocessed_columns::PreProcessedColumnId;
 use crate::{EvalAtRow, Relation, RelationEntry, INTERACTION_TRACE_IDX};
@@ -87,6 +88,27 @@ impl ExprEvaluator {
             ext_intermediates: HashMap::new(),
             ordered_intermediates: vec![],
         }
+    }
+
+    pub fn build_ir(&self) -> Vec<IRInstr> {
+        let mut builder = IRBuilder::new();
+        for name in &self.ordered_intermediates {
+            if let Some(expr) = self.intermediates.get(name) {
+                builder.build_ir(expr, name.clone());
+                builder.env.insert(name.clone(), name.clone());
+            } else if let Some(expr) = self.ext_intermediates.get(name) {
+                unimplemented!("ExtExpr lowering not implemented here");
+            } else {
+                panic!("intermediate '{name}' not found");
+            }
+        }
+
+        // 3‑B. constraints → AssertZero
+        for c in &self.constraints {
+            // not implemented
+        }
+
+        builder.instrs
     }
 
     pub fn format_constraints(&self) -> String {
@@ -295,9 +317,10 @@ mod tests {
     use std::rc::Rc;
 
     use num_traits::One;
+    use stwo::core::fields::m31::BaseField;
     use stwo::core::fields::FieldExpOps;
 
-    use crate::expr::{BaseExpr, BaseExprInner, ExprEvaluator, ExtExpr};
+    use crate::expr::{BaseExpr, BaseExprInner, ColumnExpr, ExprEvaluator, ExtExpr};
     use crate::{relation, EvalAtRow, FrameworkEval, RelationEntry};
 
     #[test]
@@ -556,5 +579,26 @@ mod tests {
         let expected = vec![4, 3];
 
         assert_eq!(eval.constraint_degree_bounds(), expected);
+    }
+
+    #[test]
+    fn build_ir_basic_expr() {
+        let mut eval = ExprEvaluator::new();
+
+        // a = col_0 + 5
+        let expr_a = BaseExpr::Add(
+            BaseExprInner::from(BaseExpr::Col(ColumnExpr::from((0, 0, 0))).into()),
+            BaseExprInner::from(BaseExpr::Const(BaseField::from(5)).into()),
+        );
+
+        eval.intermediates.insert("a".into(), expr_a);
+        eval.ordered_intermediates.push("a".into());
+
+        let ir = eval.build_ir();
+
+        println!("--- IR DUMP ---");
+        for (i, ins) in ir.iter().enumerate() {
+            println!("{i:02}: {ins:?}");
+        }
     }
 }
