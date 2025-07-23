@@ -3,8 +3,11 @@ pub mod degree;
 pub mod evaluator;
 pub mod format;
 pub mod ir;
+pub mod optimizer;
 pub mod simplify;
 pub mod utils;
+pub mod wgsl_gen;
+pub mod wgsl_parser;
 
 use std::ops::{Add, AddAssign, Deref, Mul, MulAssign, Neg, Sub};
 use std::rc::Rc;

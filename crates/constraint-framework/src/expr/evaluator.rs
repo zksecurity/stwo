@@ -94,10 +94,9 @@ impl ExprEvaluator {
         let mut builder = IRBuilder::new();
         for name in &self.ordered_intermediates {
             if let Some(expr) = self.intermediates.get(name) {
-                builder.build_ir(expr, name.clone());
-                builder.env.insert(name.clone(), name.clone());
+                builder.build_ir(expr);
             } else if let Some(expr) = self.ext_intermediates.get(name) {
-                unimplemented!("ExtExpr lowering not implemented here");
+                builder.build_ext_ir(expr);
             } else {
                 panic!("intermediate '{name}' not found");
             }
@@ -105,7 +104,7 @@ impl ExprEvaluator {
 
         // 3‑B. constraints → AssertZero
         for c in &self.constraints {
-            // not implemented
+            builder.build_ext_ir(c);
         }
 
         builder.instrs
@@ -320,6 +319,7 @@ mod tests {
     use stwo::core::fields::m31::BaseField;
     use stwo::core::fields::FieldExpOps;
 
+    use crate::expr::optimizer::global_cse;
     use crate::expr::{BaseExpr, BaseExprInner, ColumnExpr, ExprEvaluator, ExtExpr};
     use crate::{relation, EvalAtRow, FrameworkEval, RelationEntry};
 
@@ -591,13 +591,46 @@ mod tests {
             BaseExprInner::from(BaseExpr::Const(BaseField::from(5)).into()),
         );
 
+        let expr_b = BaseExpr::Add(
+            BaseExprInner::from(BaseExpr::Col(ColumnExpr::from((0, 0, 0))).into()),
+            BaseExprInner::from(BaseExpr::Const(BaseField::from(5)).into()),
+        );
+
         eval.intermediates.insert("a".into(), expr_a);
+        eval.intermediates.insert("b".into(), expr_b);
         eval.ordered_intermediates.push("a".into());
+        eval.ordered_intermediates.push("b".into());
 
         let ir = eval.build_ir();
 
         println!("--- IR DUMP ---");
         for (i, ins) in ir.iter().enumerate() {
+            println!("{i:02}: {ins:?}");
+        }
+
+        let optimized_ir = global_cse(ir);
+
+        println!("--- OPTIMIZED IR DUMP ---");
+        for (i, ins) in optimized_ir.iter().enumerate() {
+            println!("{i:02}: {ins:?}");
+        }
+    }
+
+    #[test]
+    fn test_expr_ir_builder() {
+        let test_struct = TestStruct {};
+        let eval = test_struct.evaluate(ExprEvaluator::new());
+        let ir = eval.build_ir();
+
+        println!("--- IR DUMP ---");
+        for (i, ins) in ir.iter().enumerate() {
+            println!("{i:02}: {ins:?}");
+        }
+
+        let optimized_ir = global_cse(ir);
+
+        println!("--- OPTIMIZED IR DUMP ---");
+        for (i, ins) in optimized_ir.iter().enumerate() {
             println!("{i:02}: {ins:?}");
         }
     }
