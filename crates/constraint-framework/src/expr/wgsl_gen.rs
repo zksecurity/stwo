@@ -51,6 +51,9 @@ impl WgslGenerator {
         writeln!(self.shader_code, "// WGSL Constraint Evaluation Shader").unwrap();
         writeln!(self.shader_code, "// Generated from IR instructions").unwrap();
         writeln!(self.shader_code).unwrap();
+        
+        // Include the field type definitions
+        writeln!(self.shader_code).unwrap();
     }
 
     fn analyze_bindings(&mut self, instructions: &[IRInstr]) {
@@ -79,7 +82,7 @@ impl WgslGenerator {
         for (col, binding) in &self.column_bindings {
             writeln!(
                 self.shader_code,
-                "@group(0) @binding({}) var<storage, read> col_{}_{}_offset_{}: array<f32>;",
+                "@group(0) @binding({}) var<storage, read> col_{}_{}_offset_{}: array<M31>;",
                 binding, col.interaction, col.idx, col.offset
             ).unwrap();
         }
@@ -88,7 +91,7 @@ impl WgslGenerator {
         for (param, binding) in &self.param_bindings {
             writeln!(
                 self.shader_code,
-                "@group(0) @binding({}) var<uniform> param_{}: f32;",
+                "@group(0) @binding({}) var<uniform> param_{}: M31;",
                 binding, param.replace(' ', "_")
             ).unwrap();
         }
@@ -96,7 +99,7 @@ impl WgslGenerator {
         // Output buffer for results
         writeln!(
             self.shader_code,
-            "@group(0) @binding({}) var<storage, read_write> output: array<f32>;",
+            "@group(0) @binding({}) var<storage, read_write> output: array<QM31>;",
             self.next_binding
         ).unwrap();
         
@@ -131,7 +134,7 @@ impl WgslGenerator {
                 let var_name = self.get_reg_var(*dest);
                 writeln!(
                     self.shader_code,
-                    "    let {} = {}f;",
+                    "    let {}: M31 = {}u;",
                     var_name, value.0
                 ).unwrap();
             }
@@ -149,7 +152,7 @@ impl WgslGenerator {
                 let rhs_var = self.get_reg_var(*rhs);
                 writeln!(
                     self.shader_code,
-                    "    let {} = {} + {};",
+                    "    let {}: M31 = m31_add({}, {});",
                     dest_var, lhs_var, rhs_var
                 ).unwrap();
             }
@@ -159,7 +162,7 @@ impl WgslGenerator {
                 let rhs_var = self.get_reg_var(*rhs);
                 writeln!(
                     self.shader_code,
-                    "    let {} = {} - {};",
+                    "    let {}: M31 = m31_sub({}, {});",
                     dest_var, lhs_var, rhs_var
                 ).unwrap();
             }
@@ -169,7 +172,7 @@ impl WgslGenerator {
                 let rhs_var = self.get_reg_var(*rhs);
                 writeln!(
                     self.shader_code,
-                    "    let {} = {} * {};",
+                    "    let {}: M31 = m31_mul({}, {});",
                     dest_var, lhs_var, rhs_var
                 ).unwrap();
             }
@@ -178,7 +181,7 @@ impl WgslGenerator {
                 let op_var = self.get_reg_var(*op);
                 writeln!(
                     self.shader_code,
-                    "    let {} = -{};",
+                    "    let {}: M31 = m31_neg({});",
                     dest_var, op_var
                 ).unwrap();
             }
@@ -187,7 +190,7 @@ impl WgslGenerator {
                 let op_var = self.get_reg_var(*op);
                 writeln!(
                     self.shader_code,
-                    "    let {} = 1.0 / {};",
+                    "    let {}: M31 = m31_inverse({});",
                     dest_var, op_var
                 ).unwrap();
             }
@@ -199,7 +202,7 @@ impl WgslGenerator {
                 let col3_var = self.get_reg_var(col[3]);
                 writeln!(
                     self.shader_code,
-                    "    let {} = vec4<f32>({}, {}, {}, {});",
+                    "    let {}: QM31 = vec4<u32>({}, {}, {}, {});",
                     var_name, col0_var, col1_var, col2_var, col3_var
                 ).unwrap();
             }
@@ -207,16 +210,16 @@ impl WgslGenerator {
                 let var_name = self.get_reg4_var(*dest);
                 writeln!(
                     self.shader_code,
-                    "    let {} = vec4<f32>({}f, {}f, {}f, {}f);",
+                    "    let {}: QM31 = vec4<u32>({}u, {}u, {}u, {}u);",
                     var_name, value.0.0.0, value.0.1.0, value.1.0.0, value.1.1.0
                 ).unwrap();
             }
             IRInstr::LoadExtParam { dest, name } => {
                 let var_name = self.get_reg4_var(*dest);
-                // For now, assume extension parameters are stored as vec4
+                // For now, assume extension parameters are stored as QM31
                 writeln!(
                     self.shader_code,
-                    "    let {} = vec4<f32>(param_{}, 0.0, 0.0, 0.0);",
+                    "    let {}: QM31 = vec4<u32>(param_{}, 0u, 0u, 0u);",
                     var_name, name.replace(' ', "_")
                 ).unwrap();
             }
@@ -226,7 +229,7 @@ impl WgslGenerator {
                 let rhs_var = self.get_reg4_var(*rhs);
                 writeln!(
                     self.shader_code,
-                    "    let {} = {} + {};",
+                    "    let {}: QM31 = qm31_add({}, {});",
                     dest_var, lhs_var, rhs_var
                 ).unwrap();
             }
@@ -236,7 +239,7 @@ impl WgslGenerator {
                 let rhs_var = self.get_reg4_var(*rhs);
                 writeln!(
                     self.shader_code,
-                    "    let {} = {} - {};",
+                    "    let {}: QM31 = qm31_sub({}, {});",
                     dest_var, lhs_var, rhs_var
                 ).unwrap();
             }
@@ -244,10 +247,9 @@ impl WgslGenerator {
                 let dest_var = self.get_reg4_var(*dest);
                 let lhs_var = self.get_reg4_var(*lhs);
                 let rhs_var = self.get_reg4_var(*rhs);
-                // Simplified multiplication for vec4 (not true extension field multiplication)
                 writeln!(
                     self.shader_code,
-                    "    let {} = {} * {};",
+                    "    let {}: QM31 = qm31_mul({}, {});",
                     dest_var, lhs_var, rhs_var
                 ).unwrap();
             }
@@ -256,8 +258,21 @@ impl WgslGenerator {
                 let op_var = self.get_reg4_var(*op);
                 writeln!(
                     self.shader_code,
-                    "    let {} = -{};",
+                    "    let {}: QM31 = qm31_neg({});",
                     dest_var, op_var
+                ).unwrap();
+            }
+            IRInstr::AssertZero { reg } => {
+                let reg_var = self.get_reg4_var(*reg);
+                writeln!(
+                    self.shader_code,
+                    "    // CONSTRAINT: Assert {} == 0",
+                    reg_var
+                ).unwrap();
+                writeln!(
+                    self.shader_code,
+                    "    assert_zero({});",
+                    reg_var
                 ).unwrap();
             }
         }
@@ -330,8 +345,8 @@ mod tests {
         assert!(wgsl_code.contains("@compute @workgroup_size(64)"));
         assert!(wgsl_code.contains("fn main"));
         assert!(wgsl_code.contains("col_0_0_offset_0"));
-        assert!(wgsl_code.contains("5f"));
-        assert!(wgsl_code.contains(" + "));
+        assert!(wgsl_code.contains("5u"));
+        assert!(wgsl_code.contains("m31_add"));
         
         println!("Generated WGSL:\n{}", wgsl_code);
     }

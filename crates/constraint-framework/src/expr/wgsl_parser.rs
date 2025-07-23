@@ -97,8 +97,8 @@ mod tests {
         let wgsl_code = constraints_to_wgsl(&evaluator);
         
         // Should contain multiplication and subtraction
-        assert!(wgsl_code.contains(" * "));
-        assert!(wgsl_code.contains(" - "));
+        assert!(wgsl_code.contains("m31_mul"));
+        assert!(wgsl_code.contains("m31_sub"));
         assert!(wgsl_code.contains("col_"));
         
         println!("Generated WGSL with intermediate:\n{}", wgsl_code);
@@ -127,8 +127,8 @@ mod tests {
         
         let wgsl_code = ir_to_wgsl(&instructions);
         
-        assert!(wgsl_code.contains("42f"));
-        assert!(wgsl_code.contains(" * "));
+        assert!(wgsl_code.contains("42u"));
+        assert!(wgsl_code.contains("m31_mul"));
         assert!(wgsl_code.contains("col_0_0_offset_0"));
         
         println!("Generated WGSL from IR:\n{}", wgsl_code);

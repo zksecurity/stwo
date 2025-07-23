@@ -74,6 +74,7 @@ pub fn global_cse(old: Vec<IRInstr>) -> Vec<IRInstr> {
                 IRInstrId::Bin4(instr.opcode(), lhs, rhs)
             }
             IRInstr::NegExt { op, .. } => IRInstrId::Un4(instr.opcode(), op),
+            IRInstr::AssertZero { reg, .. } => IRInstrId::Un4(instr.opcode(), reg),
         };
 
         // check duplication

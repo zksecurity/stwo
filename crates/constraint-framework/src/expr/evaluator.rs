@@ -92,6 +92,8 @@ impl ExprEvaluator {
 
     pub fn build_ir(&self) -> Vec<IRInstr> {
         let mut builder = IRBuilder::new();
+        
+        // Build intermediate expressions (helper computations)
         for name in &self.ordered_intermediates {
             if let Some(expr) = self.intermediates.get(name) {
                 builder.build_ir(expr);
@@ -102,9 +104,10 @@ impl ExprEvaluator {
             }
         }
 
-        // 3‑B. constraints → AssertZero
+        // Build constraint expressions and emit AssertZero instructions
         for c in &self.constraints {
-            builder.build_ext_ir(c);
+            let reg = builder.build_ext_ir(c);
+            builder.instrs.push(crate::expr::ir::IRInstr::AssertZero { reg });
         }
 
         builder.instrs

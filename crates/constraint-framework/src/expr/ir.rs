@@ -10,6 +10,7 @@ use crate::expr::{BaseExpr, ColumnExpr, ExtExpr};
 #[derive(Debug)]
 // string is to store the name of the variable
 pub enum IRInstr {
+    // === BASE FIELD OPERATIONS ===
     LoadCol { dest: Reg, col: ColumnExpr },
     LoadConst { dest: Reg, value: BaseField },
     LoadParam { dest: Reg, name: String },
@@ -19,6 +20,7 @@ pub enum IRInstr {
     Neg { dest: Reg, op: Reg },
     Inv { dest: Reg, op: Reg },
 
+    // === EXTENSION FIELD OPERATIONS ===
     LoadExtCol { dest: Reg4, col: [Reg; 4] },
     LoadExtConst { dest: Reg4, value: SecureField },
     LoadExtParam { dest: Reg4, name: String },
@@ -26,6 +28,10 @@ pub enum IRInstr {
     SubExt { dest: Reg4, lhs: Reg4, rhs: Reg4 },
     MulExt { dest: Reg4, lhs: Reg4, rhs: Reg4 },
     NegExt { dest: Reg4, op: Reg4 },
+
+    // === CONSTRAINT ASSERTIONS ===
+    /// Assert that the extension field register contains zero (constraint)
+    AssertZero { reg: Reg4 },
 }
 
 #[derive(Debug)]
@@ -118,6 +124,9 @@ impl IRInstr {
                 dest: f_reg4(dest),
                 op: f_reg4(op),
             },
+            IRInstr::AssertZero { reg } => IRInstr::AssertZero {
+                reg: f_reg4(reg),
+            },
         }
     }
 
@@ -138,6 +147,7 @@ impl IRInstr {
             IRInstr::SubExt { .. } => 12,
             IRInstr::MulExt { .. } => 13,
             IRInstr::NegExt { .. } => 14,
+            IRInstr::AssertZero { .. } => 15,
         }
     }
 
@@ -158,6 +168,7 @@ impl IRInstr {
             IRInstr::SubExt { dest, .. } => InstrDest::Reg4(dest),
             IRInstr::MulExt { dest, .. } => InstrDest::Reg4(dest),
             IRInstr::NegExt { dest, .. } => InstrDest::Reg4(dest),
+            IRInstr::AssertZero { .. } => InstrDest::None,
         }
     }
 }
