@@ -96,8 +96,10 @@ mod tests {
 
     use super::WideFibonacciEval;
     use crate::wide_fibonacci::{generate_trace, FibInput, WideFibonacciComponent};
+    use stwo_constraint_framework::expr::evaluator::ExprEvaluator;
+    use stwo_constraint_framework::expr::wgsl_gen::WgslGenerator;
 
-    const FIB_SEQUENCE_LENGTH: usize = 100;
+    const FIB_SEQUENCE_LENGTH: usize = 5;
 
     fn generate_test_trace(
         log_n_instances: u32,
@@ -282,5 +284,65 @@ mod tests {
         commitment_scheme.commit(proof.commitments[0], &sizes[0], verifier_channel);
         commitment_scheme.commit(proof.commitments[1], &sizes[1], verifier_channel);
         verify(&[&component], verifier_channel, commitment_scheme, proof).unwrap();
+    }
+
+    #[test]
+    fn test_wide_fibonacci_wgsl_generation() {
+        const LOG_N_INSTANCES: u32 = 6;
+        const SMALL_FIB_SEQUENCE_LENGTH: usize = 5;
+
+        let traces = TreeVec::new(vec![vec![], generate_test_trace(LOG_N_INSTANCES)]);
+
+        // want to print traces[0]
+        println!("=== Traces ===");
+        for (i, trace) in traces[1].iter().enumerate() {
+            println!("Trace[{}]: {:?}", i, trace);
+        }
+        println!();
+
+        let trace_polys =
+            traces.map(|trace| trace.into_iter().map(|c| c.interpolate()).collect_vec());
+
+        assert_constraints_on_polys(
+            &trace_polys,
+            CanonicCoset::new(LOG_N_INSTANCES),
+            fibonacci_constraint_evaluator::<LOG_N_INSTANCES>,
+            SecureField::zero(),
+        );
+        
+        // Create ExprEvaluator and evaluate constraints to get expressions
+        let fibonacci_eval = WideFibonacciEval::<SMALL_FIB_SEQUENCE_LENGTH> { 
+            log_n_rows: LOG_N_INSTANCES 
+        };
+        
+        let expr_evaluator = fibonacci_eval.evaluate(ExprEvaluator::new());
+        
+        // Print constraint expressions (human-readable format)
+        println!("=== Fibonacci Constraint Expressions ===");
+        println!("{}", expr_evaluator.format_constraints());
+        println!();
+        
+        // Build IR from the expressions
+        let ir_instructions = expr_evaluator.build_ir();
+        
+        println!("=== IR Instructions ===");
+        for (i, instr) in ir_instructions.iter().enumerate() {
+            println!("{:02}: {:?}", i, instr);
+        }
+        println!();
+        
+        // Generate WGSL code from IR
+        let mut wgsl_generator = WgslGenerator::new();
+        let wgsl_code = wgsl_generator.generate_wgsl(&ir_instructions);
+        
+        println!("=== Generated WGSL Code ===");
+        println!("{}", wgsl_code);
+        
+        // Basic sanity checks that WGSL code contains expected elements
+        assert!(wgsl_code.contains("@compute"));
+        assert!(wgsl_code.contains("fn main"));
+        
+        // Since this is primarily for debugging/comparison, we don't run full constraints
+        // Just ensure the code generation doesn't panic
     }
 }

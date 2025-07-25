@@ -15,3 +15,10 @@ tracing.workspace = true
 stwo = { path = "../stwo" }
 rand.workspace = true
 hashbrown.workspace = true
+wgpu = "23.0"
+flume = "0.11"
+pollster = "0.4"
+bytemuck = { version = "1.14", features = ["derive"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }
