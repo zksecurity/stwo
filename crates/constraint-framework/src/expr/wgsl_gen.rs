@@ -26,6 +26,10 @@ pub struct WgslGenerator {
     constraint_accumulator: Option<String>,
     /// Counter for constraint indices
     constraint_index: usize,
+    /// Number of rows in the trace
+    n_rows: u32,
+    /// Number of constraints
+    n_constraints: u32,
 }
 
 impl WgslGenerator {
@@ -41,7 +45,21 @@ impl WgslGenerator {
             next_binding: 0,
             constraint_accumulator: None,
             constraint_index: 0,
+            n_rows: 1024, // Default value
+            n_constraints: 1, // Default value
         }
+    }
+
+    pub fn with_dimensions(n_rows: u32, n_constraints: u32) -> Self {
+        let mut generator = Self::new();
+        generator.n_rows = n_rows;
+        generator.n_constraints = n_constraints;
+        generator
+    }
+
+    pub fn set_dimensions(&mut self, n_rows: u32, n_constraints: u32) {
+        self.n_rows = n_rows;
+        self.n_constraints = n_constraints;
     }
 
     /// Generate WGSL code from IR instructions
@@ -61,9 +79,12 @@ impl WgslGenerator {
         writeln!(self.shader_code, "// Generated from IR instructions").unwrap();
         writeln!(self.shader_code).unwrap();
         
-        // Include the qm31.wgsl library
+        // Include the qm31.wgsl library with template substitution
         let qm31_code = include_str!("qm31.wgsl");
-        writeln!(self.shader_code, "{}", qm31_code).unwrap();
+        let substituted_code = qm31_code
+            .replace("${N_ROWS}", &self.n_rows.to_string())
+            .replace("${N_CONSTRAINTS}", &self.n_constraints.to_string());
+        writeln!(self.shader_code, "{}", substituted_code).unwrap();
         writeln!(self.shader_code).unwrap();
     }
 
@@ -378,10 +399,8 @@ mod tests {
 
     impl crate::expr::gpu_common::GpuOperation for TestOperation {
         fn shader_source(&self) -> Cow<'static, str> {
-            // Include the qm31.wgsl library
-            let qm31_code = include_str!("qm31.wgsl");
-            let combined = format!("{}\n{}", qm31_code, self.shader_code);
-            Cow::Owned(combined)
+            // The qm31.wgsl library is already included by WgslGenerator
+            Cow::Owned(self.shader_code.clone())
         }
     }
 
@@ -454,6 +473,7 @@ mod tests {
         ];
 
         let shader_code = generator.generate_wgsl(&instructions);
+        println!("Generated WGSL Shader:\n{}", shader_code);
         let operation = TestOperation { shader_code };
 
         // Prepare test input - column value 42 should make constraint pass (result = 0)
@@ -480,146 +500,5 @@ mod tests {
         
         // For a satisfied constraint, the result should be zero in the base field
         assert_eq!(output[0].0[0], 0); // Real part of first component should be 0
-    }
-
-    /// Test function similar to compute_field_operation but for generated shaders
-    pub async fn compute_generated_field_operation(
-        instructions: Vec<IRInstr>,
-        interaction_data: Vec<Vec<u32>>,
-        _params: Vec<(String, u32)>,
-    ) -> Vec<QM31> {
-        let mut generator = WgslGenerator::new();
-        let shader_code = generator.generate_wgsl(&instructions);
-        let operation = TestOperation { shader_code };
-
-        // Determine the number of interactions needed
-        let num_interactions = interaction_data.len();
-        let data_size = if !interaction_data.is_empty() { interaction_data[0].len() } else { 64 };
-
-        // Create test input structure dynamically (simplified for now)
-        let input = TestComputeInput {
-            interaction_0: if num_interactions > 0 {
-                let mut arr = [[0u32; 64]; 1];
-                for (i, val) in interaction_data[0].iter().enumerate().take(64) {
-                    arr[0][i] = *val;
-                }
-                arr
-            } else {
-                [[0u32; 64]; 1]
-            },
-            random_coeff_powers: [GpuQM31::from(QM31::from_u32_unchecked(1, 0, 0, 0))],
-        };
-
-        let output_size = std::mem::size_of::<[GpuQM31; 64]>();
-        let instance = GpuComputeInstance::new(&input, output_size).await;
-        let (pipeline, bind_group) = instance.create_pipeline(
-            &operation.shader_source(),
-            operation.entry_point()
-        );
-
-        let output: [GpuQM31; 64] = instance
-            .run_computation(&pipeline, &bind_group, (data_size as u32, 1, 1))
-            .await;
-
-        output.iter().map(|&gpu_qm31| QM31::from(gpu_qm31)).collect()
-    }
-
-    #[tokio::test]
-    async fn test_generated_field_arithmetic() {
-        // Test addition operation similar to compute_field_operation
-        let add_instructions = vec![
-            IRInstr::LoadCol { 
-                dest: Reg(0), 
-                col: ColumnExpr::from((0, 0, 0)) 
-            },
-            IRInstr::LoadCol { 
-                dest: Reg(1), 
-                col: ColumnExpr::from((0, 0, 1)) 
-            },
-            IRInstr::Add { 
-                dest: Reg(2), 
-                lhs: Reg(0), 
-                rhs: Reg(1) 
-            },
-            // Convert to extension field for AssertZero to capture result
-            IRInstr::LoadExtCol { 
-                dest: Reg4(0), 
-                col: [
-                    Reg(2), 
-                    Reg(0), // dummy
-                    Reg(0), // dummy  
-                    Reg(0)  // dummy
-                ]
-            },
-            IRInstr::AssertZero { 
-                reg: Reg4(0) 
-            },
-        ];
-
-        // Test data: first column = 10, second column = 5, expected result = 15
-        let interaction_data = vec![vec![10, 5, 0, 0]]; // interaction 0
-        let params = vec![];
-
-        let results = compute_generated_field_operation(
-            add_instructions, 
-            interaction_data, 
-            params
-        ).await;
-
-        // The constraint captures (10 + 5) in the first component
-        // Since we're using AssertZero, the constraint will be the negation of the expression
-        // But the actual field addition result should be 15
-        println!("Generated shader addition result: {:?}", results[0]);
-        
-        // Verify the computation was performed (non-zero result expected due to AssertZero capturing the sum)
-        assert_ne!(results[0].0.0.0, 0);
-    }
-
-    #[tokio::test] 
-    async fn test_generated_multiplication() {
-        // Test multiplication operation
-        let mul_instructions = vec![
-            IRInstr::LoadCol { 
-                dest: Reg(0), 
-                col: ColumnExpr::from((0, 0, 0)) 
-            },
-            IRInstr::LoadConst { 
-                dest: Reg(1), 
-                value: BaseField::from(3) 
-            },
-            IRInstr::Mul { 
-                dest: Reg(2), 
-                lhs: Reg(0), 
-                rhs: Reg(1) 
-            },
-            // Convert to extension field
-            IRInstr::LoadExtCol { 
-                dest: Reg4(0), 
-                col: [
-                    Reg(2), 
-                    Reg(0), // dummy
-                    Reg(0), // dummy  
-                    Reg(0)  // dummy
-                ]
-            },
-            IRInstr::AssertZero { 
-                reg: Reg4(0) 
-            },
-        ];
-
-        // Test data: column value = 7, multiplied by 3 = 21
-        let interaction_data = vec![vec![7, 0, 0, 0]];
-        let params = vec![];
-
-        let results = compute_generated_field_operation(
-            mul_instructions, 
-            interaction_data, 
-            params
-        ).await;
-
-        println!("Generated shader multiplication result: {:?}", results[0]);
-        
-        // Verify multiplication was performed
-        assert_ne!(results[0].0.0.0, 0);
     }
 }

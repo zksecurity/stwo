@@ -5,6 +5,38 @@
 const P: u32 = 0x7FFFFFFF;  // 2^31 - 1
 const MODULUS_BITS: u32 = 31u;
 const HALF_BITS: u32 = 16u;
+const N_ROWS: u32 = ${N_ROWS};
+const N_CONSTRAINTS: u32 = ${N_CONSTRAINTS};
+
+const N_EXTENDED_ROWS: u32 = N_ROWS * 4;
+const N_STATE: u32 = 16;
+const N_INSTANCES_PER_ROW: u32 = 8;
+const N_TOTAL_FRACS: u32 = N_INSTANCES_PER_ROW * 2;
+const N_COLUMNS: u32 = N_INSTANCES_PER_ROW * N_COLUMNS_PER_REP;
+const N_INTERACTION_COLUMNS: u32 = N_INSTANCES_PER_ROW * 4;
+const N_HALF_FULL_ROUNDS: u32 = 4;
+const FULL_ROUNDS: u32 = 2u * N_HALF_FULL_ROUNDS;
+const N_PARTIAL_ROUNDS: u32 = 14;
+const N_LANES: u32 = 16;
+const N_COLUMNS_PER_REP: u32 = N_STATE * (1 + FULL_ROUNDS) + N_PARTIAL_ROUNDS;
+const N_WORKGROUPS: u32 = N_EXTENDED_ROWS * N_LANES / THREADS_PER_WORKGROUP;
+const THREADS_PER_WORKGROUP: u32 = 256;
+
+const R: CM31 = CM31(M31(2u), M31(1u));
+const ONE = QM31(CM31(M31(1u), M31(0u)), CM31(M31(0u), M31(0u)));
+const N_ORIGINAL_COLUMN_SIZE: u32 = N_LANES * N_ROWS;
+const N_EXTENDED_COLUMN_SIZE: u32 = N_LANES * N_EXTENDED_ROWS;
+
+const N_LINE_TWIDDLES_SIZE: u32 = 32;
+const N_LINE_TWIDDLES_FLAT_SIZE: u32 = N_EXTENDED_ROWS * N_LANES / 2;
+const N_CIRCLE_TWIDDLES_SIZE: u32 = N_LINE_TWIDDLES_FLAT_SIZE + 1;
+const N_ORIGINAL_TRACE_COLUMNS: u32 = N_COLUMNS + N_INTERACTION_COLUMNS;
+
+const N_PREPROCESSED_TRACE_OFFSET: u32 = 0u;
+const N_EXTENDED_TRACE_OFFSET: u32 = N_PREPROCESSED_TRACE_OFFSET;
+const N_INTERACTION_TRACE_OFFSET: u32 = N_EXTENDED_TRACE_OFFSET + N_COLUMNS;
+
+const N_MAX_WORKGROUP_STORAGE_SIZE: u32 = 32 << 10;
 
 alias M31  = u32;
 alias CM31 = vec2<u32>;
@@ -275,4 +307,70 @@ fn fraction_add(x: Fraction, y: Fraction) -> Fraction {
 fn fraction_eq(x: Fraction, y: Fraction) -> bool {
     return all(x.numerator   == y.numerator) &&
            all(x.denominator == y.denominator);
+}
+
+/// Returns the bit reversed index of `i` which is represented by `log_size` bits.
+fn bit_reverse_index(i: u32, log_size: u32) -> u32 {
+    if (log_size == 0u) {
+        return i;
+    }
+    let bits = reverse_bits_u32(i);
+    return bits >> (32u - log_size);
+}
+
+fn reverse_bits_u32(x: u32) -> u32 {
+    var x_mut = x;
+    var result = 0u;
+    
+    for (var i = 0u; i < 32u; i = i + 1u) {
+        result = (result << 1u) | (x_mut & 1u);
+        x_mut = x_mut >> 1u;
+    }
+    
+    return result;
+}
+
+/// Returns the index of the offset element in a bit reversed circle evaluation
+/// of log size `eval_log_size` relative to a smaller domain of size `domain_log_size`.
+fn offset_bit_reversed_circle_domain_index(
+    i: u32,
+    domain_log_size: u32,
+    eval_log_size: u32,
+    offset: i32,
+) -> u32 {
+    var prev_index = bit_reverse_index(i, eval_log_size);
+    let half_size = 1u << (eval_log_size - 1u);
+    let step_size = i32(1u << (eval_log_size - domain_log_size - 1u)) * offset;
+    
+    if (prev_index < half_size) {
+        let temp = i32(prev_index) + step_size;
+        // Implement rem_euclid for positive modulo
+        let m = i32(half_size);
+        let rem = temp % m;
+        prev_index = u32(select(rem + m, rem, rem >= 0));
+    } else {
+        let temp = i32(prev_index - half_size) - step_size;
+        // Implement rem_euclid for positive modulo
+        let m = i32(half_size);
+        let rem = temp % m;
+        prev_index = u32(select(rem + m, rem, rem >= 0)) + half_size;
+    }
+    
+    return bit_reverse_index(prev_index, eval_log_size);
+}
+
+fn circle_domain_index_to_coset_index(i: u32, n: u32) -> u32 {
+    if (i < (n / 2u)) {
+        return 2u * i;
+    } else {
+        return 2u * (n - 1u - i) + 1u;
+    }
+}
+
+fn coset_index_to_circle_domain_index(coset_index: u32, log_domain_size: u32) -> u32 {
+    if (coset_index % 2u == 0u) {
+        return coset_index / 2u;
+    } else {
+        return ((2u << log_domain_size) - coset_index) / 2u;
+    }
 }
