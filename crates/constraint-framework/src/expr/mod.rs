@@ -10,6 +10,8 @@ pub mod wgsl_gen;
 pub mod wgsl_parser;
 pub mod gpu_common;
 pub mod qm31;
+pub mod gpu_types;
+pub mod constants;
 
 use std::ops::{Add, AddAssign, Deref, Mul, MulAssign, Neg, Sub};
 use std::rc::Rc;

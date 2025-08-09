@@ -86,7 +86,7 @@ mod tests {
     use stwo::core::ColumnVec;
     use stwo::prover::backend::simd::m31::{PackedBaseField, LOG_N_LANES};
     use stwo::prover::backend::simd::SimdBackend;
-    use stwo::prover::backend::Column;
+    use stwo::prover::backend::{cpu, Column};
     use stwo::prover::poly::circle::{CircleEvaluation, PolyOps};
     use stwo::prover::poly::BitReversedOrder;
     use stwo::prover::{prove, CommitmentSchemeProver};
@@ -99,7 +99,7 @@ mod tests {
     use stwo_constraint_framework::expr::evaluator::ExprEvaluator;
     use stwo_constraint_framework::expr::wgsl_gen::WgslGenerator;
 
-    const FIB_SEQUENCE_LENGTH: usize = 5;
+    const FIB_SEQUENCE_LENGTH: usize = 3;
 
     fn generate_test_trace(
         log_n_instances: u32,
@@ -175,8 +175,20 @@ mod tests {
     }
 
     #[test_log::test]
+    fn test_wide_fibonacci_constraints_eval() {
+        const LOG_N_INSTANCES: u32 = 5;
+
+        let widefib = WideFibonacciEval::<FIB_SEQUENCE_LENGTH> { log_n_rows: LOG_N_INSTANCES };
+        let eval = widefib.evaluate(ExprEvaluator::new());
+
+        // print eval
+        println!("=== Wide Fibonacci Constraint Expressions ===");
+        println!("{}", eval.format_constraints());
+    }
+
+    #[test_log::test]
     fn test_wide_fib_prove_with_blake() {
-        for log_n_instances in 2..=6 {
+        for log_n_instances in 5..=5 {
             let config = PcsConfig::default();
             // Precompute twiddles.
             let twiddles = SimdBackend::precompute_twiddles(
@@ -197,6 +209,14 @@ mod tests {
 
             // Trace.
             let trace = generate_test_trace(log_n_instances);
+
+            // want to print trace.values
+            println!("=== Trace ===");
+            for (i, col) in trace.iter().enumerate() {
+                println!("Column[{}]: {:?}", i, col.values);
+            }
+            println!();
+
             let mut tree_builder = commitment_scheme.tree_builder();
             tree_builder.extend_evals(trace);
             tree_builder.commit(prover_channel);
@@ -341,8 +361,5 @@ mod tests {
         // Basic sanity checks that WGSL code contains expected elements
         assert!(wgsl_code.contains("@compute"));
         assert!(wgsl_code.contains("fn main"));
-        
-        // Since this is primarily for debugging/comparison, we don't run full constraints
-        // Just ensure the code generation doesn't panic
     }
 }

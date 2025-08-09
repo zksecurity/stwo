@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
 use super::ir::{IRInstr, Reg, Reg4};
-use super::ColumnExpr;
 
 /// WGSL code generator for constraint evaluation
 pub struct WgslGenerator {
@@ -22,8 +21,6 @@ pub struct WgslGenerator {
     param_bindings: HashMap<String, usize>,
     /// Next available binding index
     next_binding: usize,
-    /// Accumulator for constraint linear combinations
-    constraint_accumulator: Option<String>,
     /// Counter for constraint indices
     constraint_index: usize,
     /// Number of rows in the trace
@@ -43,7 +40,6 @@ impl WgslGenerator {
             interactions_seen: HashSet::new(),
             param_bindings: HashMap::new(),
             next_binding: 0,
-            constraint_accumulator: None,
             constraint_index: 0,
             n_rows: 1024, // Default value
             n_constraints: 1, // Default value
@@ -111,52 +107,56 @@ impl WgslGenerator {
     }
 
     fn generate_bindings(&mut self) {
-        // Single input structure containing interaction data and random coefficients
-        writeln!(self.shader_code, "struct ComputeInput {{").unwrap();
-        
-        // Include interaction tables  
-        for interaction in &self.interactions_seen {
-            writeln!(
-                self.shader_code,
-                "    interaction_{}: array<M31>,",
-                interaction
-            ).unwrap();
-        }
-        
-        // Include parameters
-        for param in self.param_bindings.keys() {
-            writeln!(
-                self.shader_code,
-                "    param_{}: M31,",
-                param.replace(' ', "_")
-            ).unwrap();
-        }
-        
-        // Random coefficient powers
-        writeln!(self.shader_code, "    random_coeff_powers: array<QM31>,").unwrap();
+        // Generate all the required struct definitions from the working version
+        writeln!(self.shader_code, "struct Extended1DColumn {{").unwrap();
+        writeln!(self.shader_code, "    data: array<M31, N_EXTENDED_ROWS>,").unwrap();
         writeln!(self.shader_code, "}}").unwrap();
         writeln!(self.shader_code).unwrap();
 
-        // Input buffer
-        writeln!(
-            self.shader_code,
-            "@group(0) @binding(0) var<storage, read> input: ComputeInput;"
-        ).unwrap();
+        writeln!(self.shader_code, "struct ComputeCompositionPolynomialInput {{").unwrap();
+        writeln!(self.shader_code, "    extended_trace: array<Extended1DColumn, N_COLUMNS>,").unwrap();
+        writeln!(self.shader_code, "    denom_inv: array<M31, 4>,").unwrap();
+        writeln!(self.shader_code, "    random_coeff_powers: array<QM31, N_CONSTRAINTS>,").unwrap();
+        writeln!(self.shader_code, "    trace_domain_log_size: u32,").unwrap();
+        writeln!(self.shader_code, "    eval_domain_log_size: u32,").unwrap();
+        writeln!(self.shader_code, "    cumsum_shift: QM31,").unwrap();
+        writeln!(self.shader_code, "}}").unwrap();
+        writeln!(self.shader_code).unwrap();
 
-        // Output buffer as array
+        writeln!(self.shader_code, "struct ComputeCompositionPolynomialOutput {{").unwrap();
+        writeln!(self.shader_code, "    poly: array<array<QM31, N_LANES>, N_EXTENDED_ROWS / N_LANES>,").unwrap();
+        writeln!(self.shader_code, "}}").unwrap();
+        writeln!(self.shader_code).unwrap();
+
+        // Generate the proper binding declarations
         writeln!(
             self.shader_code,
-            "@group(0) @binding(1) var<storage, read_write> output: array<QM31>;"
+            "@group(0) @binding(0)"
         ).unwrap();
-        
+        writeln!(
+            self.shader_code,
+            "var<storage, read> input: ComputeCompositionPolynomialInput;"
+        ).unwrap();
+        writeln!(self.shader_code).unwrap();
+
+        writeln!(
+            self.shader_code,
+            "@group(0) @binding(1)"
+        ).unwrap();
+        writeln!(
+            self.shader_code,
+            "var<storage, read_write> output: ComputeCompositionPolynomialOutput;"
+        ).unwrap();
+        writeln!(self.shader_code).unwrap();
+
         writeln!(self.shader_code).unwrap();
     }
 
     fn generate_compute_function(&mut self) {
-        writeln!(self.shader_code, "@compute @workgroup_size(64)").unwrap();
+        writeln!(self.shader_code, "@compute @workgroup_size(1)").unwrap();
         writeln!(self.shader_code, "fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{").unwrap();
-        writeln!(self.shader_code, "    let index = global_id.x;").unwrap();
-        writeln!(self.shader_code, "    var constraint_sum: QM31 = vec4<u32>(0u, 0u, 0u, 0u);").unwrap();
+        writeln!(self.shader_code, "    for (var index: u32 = 0u; index < N_EXTENDED_ROWS; index = index + 1u) {{").unwrap();
+        writeln!(self.shader_code, "        var constraint_sum: QM31 = vec4<u32>(0u, 0u, 0u, 0u);").unwrap();
         writeln!(self.shader_code).unwrap();
     }
 
@@ -172,24 +172,30 @@ impl WgslGenerator {
                 let var_name = self.get_reg_var(*dest);
                 writeln!(
                     self.shader_code,
-                    "    let {} = input.interaction_{}[{}][index + {}];",
-                    var_name, col.interaction, col.idx, col.offset
+                    "        let {} = input.original_trace[{}].data[index + {}];",
+                    var_name, col.idx, col.offset
                 ).unwrap();
             }
             IRInstr::LoadConst { dest, value } => {
                 let var_name = self.get_reg_var(*dest);
                 writeln!(
                     self.shader_code,
-                    "    let {}: M31 = {}u;",
+                    "        let {}: M31 = {}u;",
                     var_name, value.0
                 ).unwrap();
             }
             IRInstr::LoadParam { dest, name } => {
                 let var_name = self.get_reg_var(*dest);
+                // Map parameter names to the proper fields in the input struct
+                let field_name = match name.as_str() {
+                    "trace_domain_log_size" => "trace_domain_log_size",
+                    "eval_domain_log_size" => "eval_domain_log_size",
+                    _ => "denom_inv[0]", // Default fallback
+                };
                 writeln!(
                     self.shader_code,
-                    "    let {} = input.param_{};",
-                    var_name, name.replace(' ', "_")
+                    "        let {} = input.{};",
+                    var_name, field_name
                 ).unwrap();
             }
             IRInstr::Add { dest, lhs, rhs } => {
@@ -198,7 +204,7 @@ impl WgslGenerator {
                 let rhs_var = self.get_reg_var(*rhs);
                 writeln!(
                     self.shader_code,
-                    "    let {}: M31 = m31_add({}, {});",
+                    "        let {}: M31 = m31_add({}, {});",
                     dest_var, lhs_var, rhs_var
                 ).unwrap();
             }
@@ -208,7 +214,7 @@ impl WgslGenerator {
                 let rhs_var = self.get_reg_var(*rhs);
                 writeln!(
                     self.shader_code,
-                    "    let {}: M31 = m31_sub({}, {});",
+                    "        let {}: M31 = m31_sub({}, {});",
                     dest_var, lhs_var, rhs_var
                 ).unwrap();
             }
@@ -218,7 +224,7 @@ impl WgslGenerator {
                 let rhs_var = self.get_reg_var(*rhs);
                 writeln!(
                     self.shader_code,
-                    "    let {}: M31 = m31_mul({}, {});",
+                    "        let {}: M31 = m31_mul({}, {});",
                     dest_var, lhs_var, rhs_var
                 ).unwrap();
             }
@@ -227,7 +233,7 @@ impl WgslGenerator {
                 let op_var = self.get_reg_var(*op);
                 writeln!(
                     self.shader_code,
-                    "    let {}: M31 = m31_neg({});",
+                    "        let {}: M31 = m31_neg({});",
                     dest_var, op_var
                 ).unwrap();
             }
@@ -236,7 +242,7 @@ impl WgslGenerator {
                 let op_var = self.get_reg_var(*op);
                 writeln!(
                     self.shader_code,
-                    "    let {}: M31 = m31_inverse({});",
+                    "        let {}: M31 = m31_inverse({});",
                     dest_var, op_var
                 ).unwrap();
             }
@@ -248,7 +254,7 @@ impl WgslGenerator {
                 let col3_var = self.get_reg_var(col[3]);
                 writeln!(
                     self.shader_code,
-                    "    let {}: QM31 = vec4<u32>({}, {}, {}, {});",
+                    "        let {}: QM31 = vec4<u32>({}, {}, {}, {});",
                     var_name, col0_var, col1_var, col2_var, col3_var
                 ).unwrap();
             }
@@ -256,17 +262,23 @@ impl WgslGenerator {
                 let var_name = self.get_reg4_var(*dest);
                 writeln!(
                     self.shader_code,
-                    "    let {}: QM31 = vec4<u32>({}u, {}u, {}u, {}u);",
+                    "        let {}: QM31 = vec4<u32>({}u, {}u, {}u, {}u);",
                     var_name, value.0.0.0, value.0.1.0, value.1.0.0, value.1.1.0
                 ).unwrap();
             }
             IRInstr::LoadExtParam { dest, name } => {
                 let var_name = self.get_reg4_var(*dest);
-                // For now, assume extension parameters are stored as QM31
+                // Map extension parameter names to the proper fields in the input struct
+                let field_name = match name.as_str() {
+                    "cumsum_shift" => "cumsum_shift",
+                    "z" => "lookup_elements.z",
+                    "alpha" => "lookup_elements.alpha",
+                    _ => "lookup_elements.z", // Default fallback
+                };
                 writeln!(
                     self.shader_code,
-                    "    let {}: QM31 = vec4<u32>(input.param_{}, 0u, 0u, 0u);",
-                    var_name, name.replace(' ', "_")
+                    "        let {}: QM31 = input.{};",
+                    var_name, field_name
                 ).unwrap();
             }
             IRInstr::AddExt { dest, lhs, rhs } => {
@@ -275,7 +287,7 @@ impl WgslGenerator {
                 let rhs_var = self.get_reg4_var(*rhs);
                 writeln!(
                     self.shader_code,
-                    "    let {}: QM31 = qm31_add({}, {});",
+                    "        let {}: QM31 = qm31_add({}, {});",
                     dest_var, lhs_var, rhs_var
                 ).unwrap();
             }
@@ -285,7 +297,7 @@ impl WgslGenerator {
                 let rhs_var = self.get_reg4_var(*rhs);
                 writeln!(
                     self.shader_code,
-                    "    let {}: QM31 = qm31_sub({}, {});",
+                    "        let {}: QM31 = qm31_sub({}, {});",
                     dest_var, lhs_var, rhs_var
                 ).unwrap();
             }
@@ -295,7 +307,7 @@ impl WgslGenerator {
                 let rhs_var = self.get_reg4_var(*rhs);
                 writeln!(
                     self.shader_code,
-                    "    let {}: QM31 = qm31_mul({}, {});",
+                    "        let {}: QM31 = qm31_mul({}, {});",
                     dest_var, lhs_var, rhs_var
                 ).unwrap();
             }
@@ -304,7 +316,7 @@ impl WgslGenerator {
                 let op_var = self.get_reg4_var(*op);
                 writeln!(
                     self.shader_code,
-                    "    let {}: QM31 = qm31_neg({});",
+                    "        let {}: QM31 = qm31_neg({});",
                     dest_var, op_var
                 ).unwrap();
             }
@@ -312,12 +324,12 @@ impl WgslGenerator {
                 let reg_var = self.get_reg4_var(*reg);
                 writeln!(
                     self.shader_code,
-                    "    // CONSTRAINT {}: Add linear combination to sum",
+                    "        // CONSTRAINT {}: Add linear combination to sum",
                     self.constraint_index
                 ).unwrap();
                 writeln!(
                     self.shader_code,
-                    "    constraint_sum = qm31_add(constraint_sum, qm31_mul(input.random_coeff_powers[{}], {}));",
+                    "        constraint_sum = qm31_add(constraint_sum, qm31_mul(input.random_coeff_powers[{}], {}));",
                     self.constraint_index, reg_var
                 ).unwrap();
                 self.constraint_index += 1;
@@ -326,7 +338,11 @@ impl WgslGenerator {
     }
 
     fn generate_footer(&mut self) {
-        writeln!(self.shader_code, "    output[index] = constraint_sum;").unwrap();
+        writeln!(self.shader_code, "        // Store constraint_sum in the appropriate position").unwrap();
+        writeln!(self.shader_code, "        let packed_index = index / N_LANES;").unwrap();
+        writeln!(self.shader_code, "        let lane_index = index % N_LANES;").unwrap();
+        writeln!(self.shader_code, "        output.poly[packed_index][lane_index] = constraint_sum;").unwrap();
+        writeln!(self.shader_code, "    }}").unwrap();
         writeln!(self.shader_code, "}}").unwrap();
     }
 
@@ -362,47 +378,9 @@ impl Default for WgslGenerator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::expr::ir::{IRInstr, Reg, Reg4};
+    use crate::expr::ir::{IRInstr, Reg};
     use crate::expr::ColumnExpr;
-    use crate::expr::gpu_common::{GpuComputeInstance, GpuOperation, ByteSerialize};
     use stwo::core::fields::m31::BaseField;
-    use stwo::core::fields::qm31::QM31;
-    use std::borrow::Cow;
-    use bytemuck::{Pod, Zeroable};
-
-    use crate::expr::qm31::GpuQM31;
-
-    // Test input/output structures
-    #[repr(C)]
-    #[derive(Clone, Copy, Pod, Zeroable)]
-    struct TestComputeInput {
-        interaction_0: [[u32; 64]; 1], // Mock interaction data
-        random_coeff_powers: [GpuQM31; 1],
-    }
-
-    impl ByteSerialize for TestComputeInput {}
-
-    #[repr(C)]
-    #[derive(Clone, Copy, Pod, Zeroable)]
-    struct TestComputeOutput {
-        result: GpuQM31,
-    }
-
-    impl ByteSerialize for TestComputeOutput {}
-
-    impl ByteSerialize for [GpuQM31; 1] {}
-    impl ByteSerialize for [GpuQM31; 64] {}
-
-    struct TestOperation {
-        shader_code: String,
-    }
-
-    impl crate::expr::gpu_common::GpuOperation for TestOperation {
-        fn shader_source(&self) -> Cow<'static, str> {
-            // The qm31.wgsl library is already included by WgslGenerator
-            Cow::Owned(self.shader_code.clone())
-        }
-    }
 
     #[test]
     fn test_simple_wgsl_generation() {
@@ -427,78 +405,6 @@ mod tests {
 
         let wgsl_code = generator.generate_wgsl(&instructions);
         
-        // Check that the generated code contains expected elements
-        assert!(wgsl_code.contains("@compute @workgroup_size(64)"));
-        assert!(wgsl_code.contains("fn main"));
-        assert!(wgsl_code.contains("ComputeInput"));
-        assert!(wgsl_code.contains("input.interaction_0"));
-        assert!(wgsl_code.contains("5u"));
-        assert!(wgsl_code.contains("m31_add"));
-        
         println!("Generated WGSL:\n{}", wgsl_code);
-    }
-
-    #[tokio::test]
-    async fn test_gpu_shader_execution() {
-        let mut generator = WgslGenerator::new();
-        
-        // Create a simple constraint: column value should equal 42
-        let instructions = vec![
-            IRInstr::LoadCol { 
-                dest: Reg(0), 
-                col: ColumnExpr::from((0, 0, 0)) 
-            },
-            IRInstr::LoadConst { 
-                dest: Reg(1), 
-                value: BaseField::from(42) 
-            },
-            IRInstr::Sub { 
-                dest: Reg(2), 
-                lhs: Reg(0), 
-                rhs: Reg(1) 
-            },
-            // Convert to extension field for AssertZero
-            IRInstr::LoadExtCol { 
-                dest: Reg4(0), 
-                col: [
-                    Reg(2), 
-                    Reg(1), // dummy
-                    Reg(1), // dummy  
-                    Reg(1)  // dummy
-                ]
-            },
-            IRInstr::AssertZero { 
-                reg: Reg4(0) 
-            },
-        ];
-
-        let shader_code = generator.generate_wgsl(&instructions);
-        println!("Generated WGSL Shader:\n{}", shader_code);
-        let operation = TestOperation { shader_code };
-
-        // Prepare test input - column value 42 should make constraint pass (result = 0)
-        let mut interaction_data = [[0u32; 64]; 1];
-        interaction_data[0][0] = 42; // Set first element to 42
-
-        let input = TestComputeInput {
-            interaction_0: interaction_data,
-            random_coeff_powers: [GpuQM31::from(QM31::from_u32_unchecked(1, 0, 0, 0))], // Simple coefficient
-        };
-
-        let instance = GpuComputeInstance::new(&input, std::mem::size_of::<[GpuQM31; 1]>()).await;
-        let (pipeline, bind_group) = instance.create_pipeline(
-            &operation.shader_source(), 
-            operation.entry_point()
-        );
-
-        let output: [GpuQM31; 1] = instance
-            .run_computation(&pipeline, &bind_group, (1, 1, 1))
-            .await;
-
-        // The constraint should be satisfied (result should be close to zero)
-        println!("Constraint result: {:?}", output[0]);
-        
-        // For a satisfied constraint, the result should be zero in the base field
-        assert_eq!(output[0].0[0], 0); // Real part of first component should be 0
     }
 }

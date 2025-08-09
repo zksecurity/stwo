@@ -11,7 +11,7 @@ use stwo::core::poly::circle::CanonicCoset;
 use stwo::core::utils::bit_reverse;
 use stwo::prover::backend::simd::column::VeryPackedSecureColumnByCoords;
 use stwo::prover::backend::simd::m31::LOG_N_LANES;
-use stwo::prover::backend::simd::very_packed_m31::{VeryPackedBaseField, LOG_N_VERY_PACKED_ELEMS};
+use stwo::prover::backend::simd::very_packed_m31::{VeryPackedBaseField, VeryPackedSecureField, LOG_N_VERY_PACKED_ELEMS};
 use stwo::prover::backend::simd::SimdBackend;
 use stwo::prover::poly::circle::{CircleEvaluation, PolyOps};
 use stwo::prover::poly::BitReversedOrder;
@@ -23,6 +23,29 @@ use super::{CpuDomainEvaluator, SimdDomainEvaluator};
 use crate::{FrameworkComponent, FrameworkEval, PREPROCESSED_TRACE_IDX};
 
 const CHUNK_SIZE: usize = 1;
+
+fn format_very_packed_secure_field_as_csv(data: &VeryPackedSecureField) -> String {
+    let mut rows = Vec::new();
+    
+    // Extract all the u32 values from the nested structure using public methods
+    for vectorized_elem in &data.0 {
+        let qm31_array = vectorized_elem.to_array();
+        for qm31 in qm31_array {
+            // QM31 is composed of 4 M31 values (2 CM31, each with 2 M31)
+            let m31_array = qm31.to_m31_array();
+            let values: Vec<String> = m31_array.iter().map(|m31| format!("{}", m31)).collect();
+            rows.push(values.join(","));
+        }
+    }
+    
+    rows.join("\n")
+}
+
+fn format_secure_field_as_csv(data: &stwo::core::fields::qm31::QM31) -> String {
+    let m31_array = data.to_m31_array();
+    let values: Vec<String> = m31_array.iter().map(|m31| format!("{}", m31)).collect();
+    values.join(",")
+}
 
 impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponent<E> {
     fn evaluate_constraint_quotients_on_domain(
@@ -44,12 +67,36 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
             .map(|idx| &trace.polys[PREPROCESSED_TRACE_IDX][*idx])
             .collect();
 
+        // print component_polys
+        println!("=== Component Polys ===");
+        for (i, col) in component_polys.as_cols_ref().iter().enumerate() {
+            if i == 0 {
+                continue;
+            }
+            for (j, poly) in col.iter().enumerate() {
+                println!("Column[{}]: {:?}", j, poly);
+            }
+        }
+        println!();
+
         let mut component_evals = trace.evals.sub_tree(&self.trace_locations);
         component_evals[PREPROCESSED_TRACE_IDX] = self
             .preprocessed_column_indices
             .iter()
             .map(|idx| &trace.evals[PREPROCESSED_TRACE_IDX][*idx])
             .collect();
+
+        // print component_evals
+        println!("=== Component Evals ===");
+        for (i, col) in component_evals.as_cols_ref().iter().enumerate() {
+            if i == 0 {
+                continue;
+            }
+            for (j, eval) in col.iter().enumerate() {
+                println!("Column[{}]: {:?}", j, eval.values);
+            }
+        }
+        println!();
 
         // Extend trace if necessary.
         // TODO: Don't extend when eval_size < committed_size. Instead, pick a good
@@ -89,6 +136,19 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
         )
         .entered();
 
+        let trace_cols_for_print = trace.as_cols_ref().map_cols(|c| c.as_ref());
+        // print trace_cols_for_print 
+        println!("=== Trace Columns ===");
+        for (i, col) in trace_cols_for_print.iter().enumerate() {
+            if i == 0 {
+                continue; // Skip the first column (usually the interaction trace).
+            }
+            for (j, trace_col) in col.iter().enumerate() {
+                println!("Column[{}]: {:?}", j, trace_col.values);
+            }
+        }
+        println!();
+
         if trace_domain.log_size() < LOG_N_LANES + LOG_N_VERY_PACKED_ELEMS {
             // Fall back to CPU if the trace is too small.
             let mut col = accum.col.to_cpu();
@@ -108,6 +168,10 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
                     self.claimed_sum,
                 );
                 let row_res = self.eval.evaluate(eval).row_res;
+
+                // print row_res as CSV
+                println!("not simd");
+                println!("Row {}: {}", row, format_secure_field_as_csv(&row_res));
 
                 // Finalize row.
                 let denom_inv = denom_inv[row >> trace_domain.log_size()];
@@ -152,6 +216,12 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
                     self_claimed_sum,
                 );
                 let row_res = self_eval.evaluate(eval).row_res;
+
+                println!("simd");
+                println!("Row {}: {:?}", vec_row, row_res);
+                println!();
+                //println!("Row {}: {}", vec_row, format_very_packed_secure_field_as_csv(&row_res));
+                // just print how many packedqm31 is in the vec_row and row_res
 
                 // Finalize row.
                 unsafe {

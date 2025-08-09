@@ -3,8 +3,8 @@ use bytemuck::{Pod, Zeroable};
 use super::gpu_common::ByteSerialize;
 
 use stwo::core::fields::cm31::CM31;
-use stwo::core::fields::m31::{M31, P};
-use stwo::core::fields::qm31::{QM31, SecureField};
+use stwo::core::fields::m31::M31;
+use stwo::core::fields::qm31::QM31;
 
 #[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
 #[repr(C, align(4))]

@@ -55,8 +55,8 @@ pub fn ir_to_wgsl(instructions: &[IRInstr]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::expr::{BaseExpr, ColumnExpr, ExprEvaluator};
-    use crate::{EvalAtRow, FrameworkEval};
+    use crate::expr::{ColumnExpr, ExprEvaluator};
+    use crate::{EvalAtRow};
     use stwo::core::fields::m31::BaseField;
 
     #[test]

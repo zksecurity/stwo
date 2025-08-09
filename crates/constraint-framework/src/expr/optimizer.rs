@@ -110,6 +110,7 @@ pub fn global_cse(old: Vec<IRInstr>) -> Vec<IRInstr> {
     new_ir
 }
 
+#[allow(warnings)]
 pub fn dce(old: Vec<IRInstr>) -> Vec<IRInstr> {
     let mut live_r: HashSet<Reg> = HashSet::new();
     let mut live_r4: HashSet<Reg4> = HashSet::new();
