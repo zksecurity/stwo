@@ -68,7 +68,7 @@ pub fn generate_trace<const N: usize>(
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use itertools::Itertools;
     use num_traits::{One, Zero};
     use stwo::core::air::Component;
@@ -101,7 +101,7 @@ mod tests {
 
     const FIB_SEQUENCE_LENGTH: usize = 3;
 
-    fn generate_test_trace(
+    pub fn generate_test_trace(
         log_n_instances: u32,
     ) -> ColumnVec<CircleEvaluation<SimdBackend, BaseField, BitReversedOrder>> {
         if log_n_instances < LOG_N_LANES {
@@ -309,7 +309,7 @@ mod tests {
     #[test]
     fn test_wide_fibonacci_wgsl_generation() {
         const LOG_N_INSTANCES: u32 = 6;
-        const SMALL_FIB_SEQUENCE_LENGTH: usize = 5;
+        const SMALL_FIB_SEQUENCE_LENGTH: usize = 3;
 
         let traces = TreeVec::new(vec![vec![], generate_test_trace(LOG_N_INSTANCES)]);
 
@@ -353,7 +353,7 @@ mod tests {
         
         // Generate WGSL code from IR
         let mut wgsl_generator = WgslGenerator::new();
-        let wgsl_code = wgsl_generator.generate_wgsl(&ir_instructions);
+        let wgsl_code = wgsl_generator.generate_wgsl(&ir_instructions, true);
         
         println!("=== Generated WGSL Code ===");
         println!("{}", wgsl_code);

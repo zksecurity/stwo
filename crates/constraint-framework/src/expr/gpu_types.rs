@@ -21,5 +21,5 @@ pub struct ComputeCompositionPolynomialInput {
 #[derive(Debug, Clone, Copy)]
 #[repr(C, align(16))]
 pub struct ComputeCompositionPolynomialOutput {
-    pub poly: [[GpuQM31; N_LANES as usize]; (N_EXTENDED_ROWS / N_LANES) as usize],
+    pub poly: [[GpuQM31; N_LANES as usize]; N_PACKED_ROWS as usize],
 }

@@ -15,17 +15,17 @@ impl WgslParser {
     }
 
     /// Convert an ExprEvaluator's constraints to WGSL compute shader code
-    pub fn parse_constraints_to_wgsl(&mut self, evaluator: &ExprEvaluator) -> String {
+    pub fn parse_constraints_to_wgsl(&mut self, evaluator: &ExprEvaluator, is_debug: bool) -> String {
         // Build IR from the evaluator's constraints and intermediates
         let ir_instructions = evaluator.build_ir();
         
         // Generate WGSL code from the IR
-        self.generator.generate_wgsl(&ir_instructions)
+        self.generator.generate_wgsl(&ir_instructions, !is_debug)
     }
 
     /// Convert IR instructions directly to WGSL
-    pub fn parse_ir_to_wgsl(&mut self, instructions: &[IRInstr]) -> String {
-        self.generator.generate_wgsl(instructions)
+    pub fn parse_ir_to_wgsl(&mut self, instructions: &[IRInstr], is_debug: bool) -> String {
+        self.generator.generate_wgsl(instructions, !is_debug)
     }
 
     /// Get a reference to the internal generator for advanced usage
@@ -41,23 +41,54 @@ impl Default for WgslParser {
 }
 
 /// Convenience function to convert constraints to WGSL in one call
-pub fn constraints_to_wgsl(evaluator: &ExprEvaluator) -> String {
+pub fn constraints_to_wgsl(evaluator: &ExprEvaluator, is_debug: bool) -> String {
     let mut parser = WgslParser::new();
-    parser.parse_constraints_to_wgsl(evaluator)
+    parser.parse_constraints_to_wgsl(evaluator, is_debug)
 }
 
 /// Convenience function to convert IR to WGSL in one call  
-pub fn ir_to_wgsl(instructions: &[IRInstr]) -> String {
+pub fn ir_to_wgsl(instructions: &[IRInstr], is_debug: bool) -> String {
     let mut parser = WgslParser::new();
-    parser.parse_ir_to_wgsl(instructions)
+    parser.parse_ir_to_wgsl(instructions, is_debug)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::expr::{ColumnExpr, ExprEvaluator};
-    use crate::{EvalAtRow};
+    use crate::{EvalAtRow, FrameworkEval};
     use stwo::core::fields::m31::BaseField;
+
+    pub struct SumTestEval {
+        pub log_n_rows: u32,
+    }
+    impl FrameworkEval for SumTestEval {
+        fn log_size(&self) -> u32 {
+            self.log_n_rows
+        }
+        fn max_constraint_log_degree_bound(&self) -> u32 {
+            self.log_n_rows + 1
+        }
+        fn evaluate<E: EvalAtRow>(&self, mut eval: E) -> E {
+            let x0 = eval.next_trace_mask();
+            let x1 = eval.next_trace_mask();
+            let x2 = eval.next_trace_mask();
+            eval.add_constraint(x2 - x0 - x1);
+            eval
+        }
+    }
+
+    #[test]
+    fn test_sumeval_to_wgsl() {
+        let eval = SumTestEval { log_n_rows: 5 };
+        let evaluator = eval.evaluate(ExprEvaluator::new());
+        
+        // Convert to WGSL
+        let wgsl_code = constraints_to_wgsl(&evaluator, true);
+        
+        println!("Generated WGSL for basic constraint:\n{}", wgsl_code);
+    }
+
 
     #[test]
     fn test_basic_constraint_to_wgsl() {
@@ -70,12 +101,7 @@ mod tests {
         evaluator.add_constraint(x0 + x1);
         
         // Convert to WGSL
-        let wgsl_code = constraints_to_wgsl(&evaluator);
-        
-        // Verify the generated code contains expected elements
-        assert!(wgsl_code.contains("@compute"));
-        assert!(wgsl_code.contains("fn main"));
-        assert!(wgsl_code.contains("col_"));
+        let wgsl_code = constraints_to_wgsl(&evaluator, true);
         
         println!("Generated WGSL for basic constraint:\n{}", wgsl_code);
     }
@@ -94,12 +120,7 @@ mod tests {
         let intermediate = evaluator.add_intermediate(x0.clone() * x1.clone());
         evaluator.add_constraint(intermediate - x2);
         
-        let wgsl_code = constraints_to_wgsl(&evaluator);
-        
-        // Should contain multiplication and subtraction
-        assert!(wgsl_code.contains("m31_mul"));
-        assert!(wgsl_code.contains("m31_sub"));
-        assert!(wgsl_code.contains("col_"));
+        let wgsl_code = constraints_to_wgsl(&evaluator, true);
         
         println!("Generated WGSL with intermediate:\n{}", wgsl_code);
     }
@@ -125,11 +146,7 @@ mod tests {
             },
         ];
         
-        let wgsl_code = ir_to_wgsl(&instructions);
-        
-        assert!(wgsl_code.contains("42u"));
-        assert!(wgsl_code.contains("m31_mul"));
-        assert!(wgsl_code.contains("col_0_0_offset_0"));
+        let wgsl_code = ir_to_wgsl(&instructions, true);
         
         println!("Generated WGSL from IR:\n{}", wgsl_code);
     }

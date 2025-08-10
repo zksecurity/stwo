@@ -11,8 +11,10 @@ pub struct WgslGenerator {
     reg_map: HashMap<usize, String>,
     /// Maps 4-element register IDs to WGSL variable names
     reg4_map: HashMap<usize, String>,
-    /// Counter for generating unique variable names
-    var_counter: usize,
+    /// Counter for generating unique base field variable names
+    reg_counter: usize,
+    /// Counter for generating unique extension field variable names
+    reg4_counter: usize,
     /// Column bindings for input data - maps interaction to binding index
     interaction_bindings: HashMap<usize, usize>,
     /// Track which interactions we've seen
@@ -35,7 +37,8 @@ impl WgslGenerator {
             shader_code: String::new(),
             reg_map: HashMap::new(),
             reg4_map: HashMap::new(),
-            var_counter: 0,
+            reg_counter: 0,
+            reg4_counter: 0,
             interaction_bindings: HashMap::new(),
             interactions_seen: HashSet::new(),
             param_bindings: HashMap::new(),
@@ -59,8 +62,10 @@ impl WgslGenerator {
     }
 
     /// Generate WGSL code from IR instructions
-    pub fn generate_wgsl(&mut self, instructions: &[IRInstr]) -> String {
-        self.generate_header();
+    pub fn generate_wgsl(&mut self, instructions: &[IRInstr], header: bool) -> String {
+        if header {
+            self.generate_header();
+        }
         self.analyze_bindings(instructions);
         self.generate_bindings();
         self.generate_compute_function();
@@ -124,7 +129,7 @@ impl WgslGenerator {
         writeln!(self.shader_code).unwrap();
 
         writeln!(self.shader_code, "struct ComputeCompositionPolynomialOutput {{").unwrap();
-        writeln!(self.shader_code, "    poly: array<array<QM31, N_LANES>, N_EXTENDED_ROWS / N_LANES>,").unwrap();
+        writeln!(self.shader_code, "    poly: array<array<QM31, N_LANES>, N_PACKED_ROWS>,").unwrap();
         writeln!(self.shader_code, "}}").unwrap();
         writeln!(self.shader_code).unwrap();
 
@@ -172,7 +177,7 @@ impl WgslGenerator {
                 let var_name = self.get_reg_var(*dest);
                 writeln!(
                     self.shader_code,
-                    "        let {} = input.original_trace[{}].data[index + {}];",
+                    "        let {} = input.extended_trace[{}].data[index + {}];",
                     var_name, col.idx, col.offset
                 ).unwrap();
             }
@@ -324,11 +329,6 @@ impl WgslGenerator {
                 let reg_var = self.get_reg4_var(*reg);
                 writeln!(
                     self.shader_code,
-                    "        // CONSTRAINT {}: Add linear combination to sum",
-                    self.constraint_index
-                ).unwrap();
-                writeln!(
-                    self.shader_code,
                     "        constraint_sum = qm31_add(constraint_sum, qm31_mul(input.random_coeff_powers[{}], {}));",
                     self.constraint_index, reg_var
                 ).unwrap();
@@ -350,8 +350,8 @@ impl WgslGenerator {
         if let Some(var_name) = self.reg_map.get(&reg.0) {
             var_name.clone()
         } else {
-            let var_name = format!("r{}", self.var_counter);
-            self.var_counter += 1;
+            let var_name = format!("r{}", self.reg_counter);
+            self.reg_counter += 1;
             self.reg_map.insert(reg.0, var_name.clone());
             var_name
         }
@@ -361,8 +361,8 @@ impl WgslGenerator {
         if let Some(var_name) = self.reg4_map.get(&reg.0) {
             var_name.clone()
         } else {
-            let var_name = format!("r4_{}", self.var_counter);
-            self.var_counter += 1;
+            let var_name = format!("r4_{}", self.reg4_counter);
+            self.reg4_counter += 1;
             self.reg4_map.insert(reg.0, var_name.clone());
             var_name
         }
@@ -401,10 +401,17 @@ mod tests {
                 lhs: Reg(0), 
                 rhs: Reg(1) 
             },
+            IRInstr::LoadExtCol { 
+                dest: Reg4(0), 
+                col: [Reg(2), Reg(0), Reg(0), Reg(0)] 
+            },
+            IRInstr::AssertZero { reg: Reg4(0) },
         ];
 
-        let wgsl_code = generator.generate_wgsl(&instructions);
+        let wgsl_code = generator.generate_wgsl(&instructions, true);
         
         println!("Generated WGSL:\n{}", wgsl_code);
     }
+
+
 }

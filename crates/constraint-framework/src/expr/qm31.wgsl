@@ -12,7 +12,8 @@ const N_CONSTRAINTS: u32 = ${N_CONSTRAINTS};
 const N_LANES: u32 = 16;
 const N_EXTENDED_ROWS: u32 = N_ROWS * 4;
 const N_ORIGINAL_ROWS: u32 = N_ROWS;
-const N_COLUMNS: u32 = 2;
+const N_PACKED_ROWS: u32 = N_EXTENDED_ROWS / N_LANES;
+const N_COLUMNS: u32 = 3;
 
 const R: CM31 = CM31(M31(2u), M31(1u));
 const ONE = QM31(CM31(M31(1u), M31(0u)), CM31(M31(0u), M31(0u)));

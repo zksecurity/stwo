@@ -4,4 +4,5 @@ pub mod plonk;
 pub mod poseidon;
 pub mod state_machine;
 pub mod wide_fibonacci;
+pub mod wgsl_runner;
 pub mod xor;

@@ -173,6 +173,12 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
                 println!("not simd");
                 println!("Row {}: {}", row, format_secure_field_as_csv(&row_res));
 
+                // print randoom coeff powers
+                println!("Random Coeff Powers: {:?}", &accum.random_coeff_powers);
+
+                // print denom_inv
+                println!("Denom Inv: {:?}", denom_inv);
+
                 // Finalize row.
                 let denom_inv = denom_inv[row >> trace_domain.log_size()];
                 col.set(row, col.at(row) + row_res * denom_inv)
