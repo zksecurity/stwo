@@ -117,6 +117,8 @@ where
         writeln!(self.shader_code, "    extended_trace: array<Extended1DColumn, N_COLUMNS>,").unwrap();
         writeln!(self.shader_code, "    denom_inv: array<M31, 4>,").unwrap();
         writeln!(self.shader_code, "    random_coeff_powers: array<QM31, N_CONSTRAINTS>,").unwrap();
+        writeln!(self.shader_code, "    claimed_sum: QM31,").unwrap();
+        writeln!(self.shader_code, "    column_size: u32,").unwrap();
         writeln!(self.shader_code, "}}").unwrap();
         writeln!(self.shader_code).unwrap();
 
@@ -193,12 +195,24 @@ where
                         dest_var, index, name
                     ).unwrap();
                 } else {
-                    // Regular parameter - not implemented yet
-                    writeln!(
-                        self.shader_code,
-                        "        // TODO: Load parameter {} into {}",
-                        name, dest_var
-                    ).unwrap();
+                    // Handle special logup parameters
+                    match name.as_str() {
+                        "column_size" => {
+                            writeln!(
+                                self.shader_code,
+                                "        let {}: M31 = input.column_size; // Load column_size",
+                                dest_var
+                            ).unwrap();
+                        }
+                        _ => {
+                            // Regular parameter - not implemented yet
+                            writeln!(
+                                self.shader_code,
+                                "        // TODO: Load parameter {} into {}",
+                                name, dest_var
+                            ).unwrap();
+                        }
+                    }
                 }
             }
             IRInstr::Add { dest, lhs, rhs } => {
@@ -279,12 +293,24 @@ where
                         dest_var, index, name
                     ).unwrap();
                 } else {
-                    // Regular extension parameter - not implemented yet
-                    writeln!(
-                        self.shader_code,
-                        "        // TODO: Load ext parameter {} into {}",
-                        name, dest_var
-                    ).unwrap();
+                    // Handle special logup extension parameters
+                    match name.as_str() {
+                        "claimed_sum" => {
+                            writeln!(
+                                self.shader_code,
+                                "        let {}: QM31 = input.claimed_sum; // Load claimed_sum",
+                                dest_var
+                            ).unwrap();
+                        }
+                        _ => {
+                            // Regular extension parameter - not implemented yet
+                            writeln!(
+                                self.shader_code,
+                                "        // TODO: Load ext parameter {} into {}",
+                                name, dest_var
+                            ).unwrap();
+                        }
+                    }
                 }
             }
             IRInstr::AddExt { dest, lhs, rhs } => {
@@ -442,6 +468,38 @@ mod tests {
         let wgsl_code = generator.generate_wgsl(&instructions, true);
         
         println!("Generated WGSL:\n{}", wgsl_code);
+    }
+
+    #[test]
+    fn test_logup_parameter_generation() {
+        let mut generator = DefaultWgslGenerator::new();
+        
+        // Test logup parameters: claimed_sum / column_size
+        let instructions = vec![
+            IRInstr::LoadExtParam { 
+                dest: Reg4(0), 
+                name: "claimed_sum".to_string() 
+            },
+            IRInstr::LoadParam { 
+                dest: Reg(0), 
+                name: "column_size".to_string() 
+            },
+            IRInstr::LoadExtCol { 
+                dest: Reg4(1), 
+                col: [Reg(0), Reg(0), Reg(0), Reg(0)] 
+            },
+            IRInstr::AssertZero { reg: Reg4(1) },
+        ];
+
+        let wgsl_code = generator.generate_wgsl(&instructions, true);
+        
+        // Check that claimed_sum and column_size are properly handled
+        assert!(wgsl_code.contains("claimed_sum: QM31,"));
+        assert!(wgsl_code.contains("column_size: u32,"));
+        assert!(wgsl_code.contains("input.claimed_sum"));
+        assert!(wgsl_code.contains("input.column_size"));
+        
+        println!("Generated WGSL with logup params:\n{}", wgsl_code);
     }
 
 
