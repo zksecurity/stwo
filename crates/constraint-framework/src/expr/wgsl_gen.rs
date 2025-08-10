@@ -286,6 +286,24 @@ impl WgslGenerator {
                     dest_var, op_var
                 ).unwrap();
             }
+            IRInstr::StoreIntermediate { reg, name } => {
+                // not implemented
+                let reg_var = self.get_reg_var(*reg);
+                writeln!(
+                    self.shader_code,
+                    "        // Store intermediate: {} = {}",
+                    name, reg_var
+                ).unwrap();
+            }
+            IRInstr::StoreExtIntermediate { reg, name } => {
+                // not implemented
+                let reg_var = self.get_reg4_var(*reg);
+                writeln!(
+                    self.shader_code,
+                    "        // Store ext intermediate: {} = {}",
+                    name, reg_var
+                ).unwrap();
+            }
             IRInstr::AssertZero { reg } => {
                 let reg_var = self.get_reg4_var(*reg);
                 writeln!(

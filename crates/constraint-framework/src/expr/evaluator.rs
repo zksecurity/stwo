@@ -93,12 +93,20 @@ impl ExprEvaluator {
     pub fn build_ir(&self) -> Vec<IRInstr> {
         let mut builder = IRBuilder::new();
         
-        // Build intermediate expressions (helper computations)
+        // Build intermediate expressions (helper computations) and store them
         for name in &self.ordered_intermediates {
             if let Some(expr) = self.intermediates.get(name) {
-                builder.build_ir(expr);
+                let reg = builder.build_ir(expr);
+                builder.instrs.push(crate::expr::ir::IRInstr::StoreIntermediate {
+                    reg,
+                    name: name.clone(),
+                });
             } else if let Some(expr) = self.ext_intermediates.get(name) {
-                builder.build_ext_ir(expr);
+                let reg = builder.build_ext_ir(expr);
+                builder.instrs.push(crate::expr::ir::IRInstr::StoreExtIntermediate {
+                    reg,
+                    name: name.clone(),
+                });
             } else {
                 panic!("intermediate '{name}' not found");
             }

@@ -29,6 +29,12 @@ pub enum IRInstr {
     MulExt { dest: Reg4, lhs: Reg4, rhs: Reg4 },
     NegExt { dest: Reg4, op: Reg4 },
 
+    // === INTERMEDIATE VALUE STORAGE ===
+    /// Store base field register value as an intermediate
+    StoreIntermediate { reg: Reg, name: String },
+    /// Store extension field register value as an intermediate
+    StoreExtIntermediate { reg: Reg4, name: String },
+
     // === CONSTRAINT ASSERTIONS ===
     /// Assert that the extension field register contains zero (constraint)
     AssertZero { reg: Reg4 },
@@ -124,6 +130,14 @@ impl IRInstr {
                 dest: f_reg4(dest),
                 op: f_reg4(op),
             },
+            IRInstr::StoreIntermediate { reg, ref name } => IRInstr::StoreIntermediate {
+                reg: f_reg(reg),
+                name: name.clone(),
+            },
+            IRInstr::StoreExtIntermediate { reg, ref name } => IRInstr::StoreExtIntermediate {
+                reg: f_reg4(reg),
+                name: name.clone(),
+            },
             IRInstr::AssertZero { reg } => IRInstr::AssertZero {
                 reg: f_reg4(reg),
             },
@@ -147,7 +161,9 @@ impl IRInstr {
             IRInstr::SubExt { .. } => 12,
             IRInstr::MulExt { .. } => 13,
             IRInstr::NegExt { .. } => 14,
-            IRInstr::AssertZero { .. } => 15,
+            IRInstr::StoreIntermediate { .. } => 15,
+            IRInstr::StoreExtIntermediate { .. } => 16,
+            IRInstr::AssertZero { .. } => 17,
         }
     }
 
@@ -168,6 +184,8 @@ impl IRInstr {
             IRInstr::SubExt { dest, .. } => InstrDest::Reg4(dest),
             IRInstr::MulExt { dest, .. } => InstrDest::Reg4(dest),
             IRInstr::NegExt { dest, .. } => InstrDest::Reg4(dest),
+            IRInstr::StoreIntermediate { .. } => InstrDest::None,
+            IRInstr::StoreExtIntermediate { .. } => InstrDest::None,
             IRInstr::AssertZero { .. } => InstrDest::None,
         }
     }

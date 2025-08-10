@@ -20,6 +20,9 @@ enum IRInstrId {
     Un(usize, Reg),
     Bin4(usize, Reg4, Reg4),
     Un4(usize, Reg4),
+    // intermediate storage
+    StoreIntermediate(String, Reg),
+    StoreExtIntermediate(String, Reg4),
 }
 
 fn order(lhs: Reg, rhs: Reg, is_comm: bool) -> (Reg, Reg) {
@@ -74,6 +77,8 @@ pub fn global_cse(old: Vec<IRInstr>) -> Vec<IRInstr> {
                 IRInstrId::Bin4(instr.opcode(), lhs, rhs)
             }
             IRInstr::NegExt { op, .. } => IRInstrId::Un4(instr.opcode(), op),
+            IRInstr::StoreIntermediate { reg, ref name } => IRInstrId::StoreIntermediate(name.clone(), reg),
+            IRInstr::StoreExtIntermediate { reg, ref name } => IRInstrId::StoreExtIntermediate(name.clone(), reg),
             IRInstr::AssertZero { reg, .. } => IRInstrId::Un4(instr.opcode(), reg),
         };
 
