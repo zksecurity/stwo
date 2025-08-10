@@ -1,15 +1,17 @@
 use itertools::Itertools;
 use num_traits::One;
 use stwo::core::fields::m31::BaseField;
+use stwo::core::fields::qm31::SecureField;
 use stwo::core::fields::FieldExpOps;
 use stwo::core::poly::circle::CanonicCoset;
 use stwo::core::ColumnVec;
-use stwo::prover::backend::simd::m31::PackedBaseField;
+use stwo::prover::backend::simd::m31::{PackedBaseField, LOG_N_LANES};
+use stwo::prover::backend::simd::qm31::PackedSecureField;
 use stwo::prover::backend::simd::SimdBackend;
 use stwo::prover::backend::{Col, Column};
 use stwo::prover::poly::circle::CircleEvaluation;
 use stwo::prover::poly::BitReversedOrder;
-use stwo_constraint_framework::{EvalAtRow, FrameworkComponent, FrameworkEval, relation, RelationEntry};
+use stwo_constraint_framework::{EvalAtRow, FrameworkComponent, FrameworkEval, LogupTraceGenerator, relation, Relation, RelationEntry};
 
 pub type WideFibonacciComponent<const N: usize> = FrameworkComponent<WideFibonacciEval<N>>;
 
@@ -61,28 +63,103 @@ impl<const N: usize> FrameworkEval for WideFibonacciEval<N> {
     }
 }
 
+pub struct FibLookupData<const N: usize> {
+    pub fibonacci_triplets: Vec<[Col<SimdBackend, BaseField>; 3]>,
+}
+
 pub fn generate_trace<const N: usize>(
     log_size: u32,
     inputs: &[FibInput],
-) -> ColumnVec<CircleEvaluation<SimdBackend, BaseField, BitReversedOrder>> {
+) -> (
+    ColumnVec<CircleEvaluation<SimdBackend, BaseField, BitReversedOrder>>,
+    FibLookupData<N>,
+) {
     let mut trace = (0..N)
         .map(|_| Col::<SimdBackend, BaseField>::zeros(1 << log_size))
         .collect_vec();
+    
+    let mut lookup_data = FibLookupData {
+        fibonacci_triplets: Vec::new(),
+    };
+    
     for (vec_index, input) in inputs.iter().enumerate() {
         let mut a = input.a;
         let mut b = input.b;
         trace[0].data[vec_index] = a;
         trace[1].data[vec_index] = b;
-        trace.iter_mut().skip(2).for_each(|col| {
-            (a, b) = (b, a.square() + b.square());
-            col.data[vec_index] = b;
-        });
+        
+        // Store lookup data for each Fibonacci triplet (a, b, c)
+        for i in 2..N {
+            let c = a.square() + b.square();
+            trace[i].data[vec_index] = c;
+            
+            // Store the triplet for lookup
+            if lookup_data.fibonacci_triplets.len() <= (i - 2) {
+                lookup_data.fibonacci_triplets.push([
+                    Col::<SimdBackend, BaseField>::zeros(1 << log_size),
+                    Col::<SimdBackend, BaseField>::zeros(1 << log_size),
+                    Col::<SimdBackend, BaseField>::zeros(1 << log_size),
+                ]);
+            }
+            
+            lookup_data.fibonacci_triplets[i - 2][0].data[vec_index] = a;
+            lookup_data.fibonacci_triplets[i - 2][1].data[vec_index] = b;
+            lookup_data.fibonacci_triplets[i - 2][2].data[vec_index] = c;
+            
+            a = b;
+            b = c;
+        }
     }
+    
     let domain = CanonicCoset::new(log_size).circle_domain();
-    trace
+    let trace = trace
         .into_iter()
         .map(|eval| CircleEvaluation::<SimdBackend, _, BitReversedOrder>::new(domain, eval))
-        .collect_vec()
+        .collect_vec();
+    
+    (trace, lookup_data)
+}
+
+pub fn generate_interaction_trace<const N: usize>(
+    log_size: u32,
+    lookup_data: FibLookupData<N>,
+    fibonacci_relation: &FibonacciRelation,
+) -> (
+    ColumnVec<CircleEvaluation<SimdBackend, BaseField, BitReversedOrder>>,
+    SecureField,
+) {
+    let mut logup_gen = unsafe { LogupTraceGenerator::uninitialized(log_size) };
+    
+    // For each Fibonacci triplet, add fractions to logup
+    for triplet_cols in lookup_data.fibonacci_triplets {
+        let frac_at_row = |vec_row: usize| {
+            let values = [
+                triplet_cols[0].data[vec_row],
+                triplet_cols[1].data[vec_row], 
+                triplet_cols[2].data[vec_row],
+            ];
+            
+            let denom: PackedSecureField = fibonacci_relation.combine(
+                &values.each_ref().map(|s| *s),
+            );
+            
+            // Return (numerator, denominator) for logup
+            (PackedSecureField::one(), denom)
+        };
+        
+        let range = 0..1 << (log_size - LOG_N_LANES);
+        
+        #[cfg(not(feature = "parallel"))]
+        logup_gen.col_from_iter(range.map(frac_at_row));
+        
+        #[cfg(feature = "parallel")]
+        {
+            use rayon::prelude::*;
+            logup_gen.col_from_par_iter(range.into_par_iter().map(frac_at_row));
+        }
+    }
+    
+    logup_gen.finalize_last()
 }
 
 #[cfg(test)]
@@ -114,7 +191,7 @@ pub mod tests {
     };
 
     use super::WideFibonacciEval;
-    use crate::wide_fibonacci::{generate_trace, FibInput, WideFibonacciComponent};
+    use crate::wide_fibonacci::{generate_trace, generate_interaction_trace, FibInput, FibLookupData, WideFibonacciComponent};
     use stwo_constraint_framework::expr::evaluator::ExprEvaluator;
     use stwo_constraint_framework::expr::wgsl_gen::WgslGenerator;
 
@@ -122,7 +199,10 @@ pub mod tests {
 
     pub fn generate_test_trace(
         log_n_instances: u32,
-    ) -> ColumnVec<CircleEvaluation<SimdBackend, BaseField, BitReversedOrder>> {
+    ) -> (
+        ColumnVec<CircleEvaluation<SimdBackend, BaseField, BitReversedOrder>>,
+        FibLookupData<FIB_SEQUENCE_LENGTH>,
+    ) {
         if log_n_instances < LOG_N_LANES {
             let n_instances = 1 << log_n_instances;
             let inputs = vec![FibInput {
@@ -164,7 +244,17 @@ pub mod tests {
     #[test]
     fn test_wide_fibonacci_constraints() {
         const LOG_N_INSTANCES: u32 = 6;
-        let traces = TreeVec::new(vec![vec![], generate_test_trace(LOG_N_INSTANCES)]);
+        let (trace, lookup_data) = generate_test_trace(LOG_N_INSTANCES);
+        
+        // Generate interaction trace with lookup elements
+        let fibonacci_relation = FibonacciRelation::dummy();
+        let (interaction_trace, claimed_sum) = generate_interaction_trace(
+            LOG_N_INSTANCES, 
+            lookup_data, 
+            &fibonacci_relation
+        );
+        
+        let traces = TreeVec::new(vec![vec![], trace, interaction_trace]);
         let trace_polys =
             traces.map(|trace| trace.into_iter().map(|c| c.interpolate()).collect_vec());
 
@@ -172,7 +262,7 @@ pub mod tests {
             &trace_polys,
             CanonicCoset::new(LOG_N_INSTANCES),
             fibonacci_constraint_evaluator::<LOG_N_INSTANCES>,
-            SecureField::zero(),
+            claimed_sum,
         );
     }
 
@@ -181,10 +271,19 @@ pub mod tests {
     fn test_wide_fibonacci_constraints_fails() {
         const LOG_N_INSTANCES: u32 = 6;
 
-        let mut trace = generate_test_trace(LOG_N_INSTANCES);
+        let (mut trace, lookup_data) = generate_test_trace(LOG_N_INSTANCES);
         // Modify the trace such that a constraint fail.
-        trace[17].values.set(2, BaseField::one());
-        let traces = TreeVec::new(vec![vec![], trace]);
+        trace[2].values.set(2, BaseField::one());  // Change index from 17 to 2 (valid for 3 columns)
+        
+        // Generate interaction trace with the modified trace
+        let fibonacci_relation = FibonacciRelation::dummy();
+        let (interaction_trace, claimed_sum) = generate_interaction_trace(
+            LOG_N_INSTANCES, 
+            lookup_data, 
+            &fibonacci_relation
+        );
+        
+        let traces = TreeVec::new(vec![vec![], trace, interaction_trace]);
         let trace_polys =
             traces.map(|trace| trace.into_iter().map(|c| c.interpolate()).collect_vec());
 
@@ -192,7 +291,7 @@ pub mod tests {
             &trace_polys,
             CanonicCoset::new(LOG_N_INSTANCES),
             fibonacci_constraint_evaluator::<LOG_N_INSTANCES>,
-            SecureField::zero(),
+            claimed_sum,
         );
     }
 
@@ -233,7 +332,7 @@ pub mod tests {
             tree_builder.commit(prover_channel);
 
             // Trace.
-            let trace = generate_test_trace(log_n_instances);
+            let (trace, lookup_data) = generate_test_trace(log_n_instances);
 
             // want to print trace.values
             println!("=== Trace ===");
@@ -246,14 +345,27 @@ pub mod tests {
             tree_builder.extend_evals(trace);
             tree_builder.commit(prover_channel);
 
+            // Draw lookup elements.
+            let fibonacci_relation = FibonacciRelation::draw(prover_channel);
+
+            // Interaction trace.
+            let (interaction_trace, claimed_sum) = generate_interaction_trace(
+                log_n_instances, 
+                lookup_data, 
+                &fibonacci_relation
+            );
+            let mut tree_builder = commitment_scheme.tree_builder();
+            tree_builder.extend_evals(interaction_trace);
+            tree_builder.commit(prover_channel);
+
             // Prove constraints.
             let component = WideFibonacciComponent::new(
                 &mut TraceLocationAllocator::default(),
                 WideFibonacciEval::<FIB_SEQUENCE_LENGTH> {
                     log_n_rows: log_n_instances,
-                    fibonacci_relation: FibonacciRelation::dummy(),
+                    fibonacci_relation,
                 },
-                SecureField::zero(),
+                claimed_sum,
             );
 
             let proof = prove::<SimdBackend, Blake2sMerkleChannel>(
@@ -272,6 +384,11 @@ pub mod tests {
             let sizes = component.trace_log_degree_bounds();
             commitment_scheme.commit(proof.commitments[0], &sizes[0], verifier_channel);
             commitment_scheme.commit(proof.commitments[1], &sizes[1], verifier_channel);
+            // Draw lookup elements.
+            let fibonacci_relation = FibonacciRelation::draw(verifier_channel);
+            assert_eq!(fibonacci_relation, component.fibonacci_relation);
+            // Interaction columns.
+            commitment_scheme.commit(proof.commitments[2], &sizes[2], verifier_channel);
             verify(&[&component], verifier_channel, commitment_scheme, proof).unwrap();
         }
     }
@@ -300,9 +417,22 @@ pub mod tests {
         tree_builder.commit(prover_channel);
 
         // Trace.
-        let trace = generate_test_trace(LOG_N_INSTANCES);
+        let (trace, lookup_data) = generate_test_trace(LOG_N_INSTANCES);
         let mut tree_builder = commitment_scheme.tree_builder();
         tree_builder.extend_evals(trace);
+        tree_builder.commit(prover_channel);
+
+        // Draw lookup elements.
+        let fibonacci_relation = FibonacciRelation::draw(prover_channel);
+
+        // Interaction trace.
+        let (interaction_trace, claimed_sum) = generate_interaction_trace(
+            LOG_N_INSTANCES, 
+            lookup_data, 
+            &fibonacci_relation
+        );
+        let mut tree_builder = commitment_scheme.tree_builder();
+        tree_builder.extend_evals(interaction_trace);
         tree_builder.commit(prover_channel);
 
         // Prove constraints.
@@ -310,9 +440,9 @@ pub mod tests {
             &mut TraceLocationAllocator::default(),
             WideFibonacciEval::<FIB_SEQUENCE_LENGTH> {
                 log_n_rows: LOG_N_INSTANCES,
-                fibonacci_relation: FibonacciRelation::dummy(),
+                fibonacci_relation,
             },
-            SecureField::zero(),
+            claimed_sum,
         );
         let proof = prove::<SimdBackend, Poseidon252MerkleChannel>(
             &[&component],
@@ -330,6 +460,11 @@ pub mod tests {
         let sizes = component.trace_log_degree_bounds();
         commitment_scheme.commit(proof.commitments[0], &sizes[0], verifier_channel);
         commitment_scheme.commit(proof.commitments[1], &sizes[1], verifier_channel);
+        // Draw lookup elements.
+        let fibonacci_relation = FibonacciRelation::draw(verifier_channel);
+        assert_eq!(fibonacci_relation, component.fibonacci_relation);
+        // Interaction columns.
+        commitment_scheme.commit(proof.commitments[2], &sizes[2], verifier_channel);
         verify(&[&component], verifier_channel, commitment_scheme, proof).unwrap();
     }
 
@@ -379,7 +514,8 @@ pub mod tests {
         const LOG_N_INSTANCES: u32 = 6;
         const SMALL_FIB_SEQUENCE_LENGTH: usize = 3;
 
-        let traces = TreeVec::new(vec![vec![], generate_test_trace(LOG_N_INSTANCES)]);
+        let (test_trace, _lookup_data) = generate_test_trace(LOG_N_INSTANCES);
+        let traces = TreeVec::new(vec![vec![], test_trace]);
 
         // want to print traces[0]
         println!("=== Traces ===");
