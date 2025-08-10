@@ -1,16 +1,26 @@
 use super::evaluator::ExprEvaluator;
 use super::ir::IRInstr;
-use super::wgsl_gen::WgslGenerator;
+use super::wgsl_gen::{WgslGenerator, DefaultWgslGenerator};
+use super::constants::ConstraintConfig;
+use std::marker::PhantomData;
 
 /// Main parser that converts constraint expressions to WGSL compute shaders
-pub struct WgslParser {
-    generator: WgslGenerator,
+pub struct WgslParser<C> 
+where
+    C: ConstraintConfig,
+{
+    generator: WgslGenerator<C>,
+    _phantom: PhantomData<C>,
 }
 
-impl WgslParser {
+impl<C> WgslParser<C> 
+where
+    C: ConstraintConfig,
+{
     pub fn new() -> Self {
         Self {
             generator: WgslGenerator::new(),
+            _phantom: PhantomData,
         }
     }
 
@@ -29,12 +39,16 @@ impl WgslParser {
     }
 
     /// Get a reference to the internal generator for advanced usage
-    pub fn generator(&mut self) -> &mut WgslGenerator {
+    pub fn generator(&mut self) -> &mut WgslGenerator<C> {
         &mut self.generator
     }
 }
 
-impl Default for WgslParser {
+// Type alias for default configuration
+use super::constants::DefaultConfig;
+pub type DefaultWgslParser = WgslParser<DefaultConfig>;
+
+impl Default for DefaultWgslParser {
     fn default() -> Self {
         Self::new()
     }
@@ -42,13 +56,13 @@ impl Default for WgslParser {
 
 /// Convenience function to convert constraints to WGSL in one call
 pub fn constraints_to_wgsl(evaluator: &ExprEvaluator, is_debug: bool) -> String {
-    let mut parser = WgslParser::new();
+    let mut parser = DefaultWgslParser::new();
     parser.parse_constraints_to_wgsl(evaluator, is_debug)
 }
 
 /// Convenience function to convert IR to WGSL in one call  
 pub fn ir_to_wgsl(instructions: &[IRInstr], is_debug: bool) -> String {
-    let mut parser = WgslParser::new();
+    let mut parser = DefaultWgslParser::new();
     parser.parse_ir_to_wgsl(instructions, is_debug)
 }
 

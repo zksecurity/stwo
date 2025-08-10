@@ -1,10 +1,15 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
+use std::marker::PhantomData;
 
 use super::ir::{IRInstr, Reg, Reg4};
+use super::constants::ConstraintConfig;
 
 /// WGSL code generator for constraint evaluation
-pub struct WgslGenerator {
+pub struct WgslGenerator<C> 
+where
+    C: ConstraintConfig,
+{
     /// Generated WGSL compute shader code
     shader_code: String,
     /// Maps register IDs to WGSL variable names
@@ -21,13 +26,22 @@ pub struct WgslGenerator {
     next_binding: usize,
     /// Counter for constraint indices
     constraint_index: usize,
-    /// Number of rows in the trace
-    n_rows: u32,
-    /// Number of constraints
-    n_constraints: u32,
+    /// Maps intermediate names to indices for storage
+    intermediate_map: HashMap<String, usize>,
+    /// Maps extension intermediate names to indices for storage
+    ext_intermediate_map: HashMap<String, usize>,
+    /// Counter for intermediate indices
+    intermediate_counter: usize,
+    /// Counter for extension intermediate indices
+    ext_intermediate_counter: usize,
+    /// Phantom data for config type
+    _phantom: PhantomData<C>,
 }
 
-impl WgslGenerator {
+impl<C> WgslGenerator<C> 
+where
+    C: ConstraintConfig,
+{
     pub fn new() -> Self {
         Self {
             shader_code: String::new(),
@@ -38,21 +52,12 @@ impl WgslGenerator {
             param_bindings: HashMap::new(),
             next_binding: 0,
             constraint_index: 0,
-            n_rows: 1024, // Default value
-            n_constraints: 1, // Default value
+            intermediate_map: HashMap::new(),
+            ext_intermediate_map: HashMap::new(),
+            intermediate_counter: 0,
+            ext_intermediate_counter: 0,
+            _phantom: PhantomData,
         }
-    }
-
-    pub fn with_dimensions(n_rows: u32, n_constraints: u32) -> Self {
-        let mut generator = Self::new();
-        generator.n_rows = n_rows;
-        generator.n_constraints = n_constraints;
-        generator
-    }
-
-    pub fn set_dimensions(&mut self, n_rows: u32, n_constraints: u32) {
-        self.n_rows = n_rows;
-        self.n_constraints = n_constraints;
     }
 
     /// Generate WGSL code from IR instructions
@@ -77,8 +82,11 @@ impl WgslGenerator {
         // Include the qm31.wgsl library with template substitution
         let qm31_code = include_str!("qm31.wgsl");
         let substituted_code = qm31_code
-            .replace("${N_ROWS}", &self.n_rows.to_string())
-            .replace("${N_CONSTRAINTS}", &self.n_constraints.to_string());
+            .replace("${N_ROWS}", &C::N_ROWS.to_string())
+            .replace("${N_CONSTRAINTS}", &C::N_CONSTRAINTS.to_string())
+            .replace("${N_COLUMNS}", &C::N_COLUMNS.to_string())
+            .replace("${N_INTERMEDIATES}", &C::N_INTERMEDIATES.to_string())
+            .replace("${N_EXT_INTERMEDIATES}", &C::N_EXT_INTERMEDIATES.to_string());
         writeln!(self.shader_code, "{}", substituted_code).unwrap();
         writeln!(self.shader_code).unwrap();
     }
@@ -114,6 +122,8 @@ impl WgslGenerator {
 
         writeln!(self.shader_code, "struct ComputeCompositionPolynomialOutput {{").unwrap();
         writeln!(self.shader_code, "    poly: array<array<QM31, N_LANES>, N_PACKED_ROWS>,").unwrap();
+        writeln!(self.shader_code, "    intermediates: array<M31, N_INTERMEDIATES>,").unwrap();
+        writeln!(self.shader_code, "    ext_intermediates: array<QM31, N_EXT_INTERMEDIATES>,").unwrap();
         writeln!(self.shader_code, "}}").unwrap();
         writeln!(self.shader_code).unwrap();
 
@@ -174,7 +184,22 @@ impl WgslGenerator {
                 ).unwrap();
             }
             IRInstr::LoadParam { dest, name } => {
-                // not implemented
+                let dest_var = self.get_reg_var(*dest);
+                // Check if this is an intermediate value
+                if let Some(&index) = self.intermediate_map.get(name) {
+                    writeln!(
+                        self.shader_code,
+                        "        let {}: M31 = output.intermediates[{}u]; // Load {}",
+                        dest_var, index, name
+                    ).unwrap();
+                } else {
+                    // Regular parameter - not implemented yet
+                    writeln!(
+                        self.shader_code,
+                        "        // TODO: Load parameter {} into {}",
+                        name, dest_var
+                    ).unwrap();
+                }
             }
             IRInstr::Add { dest, lhs, rhs } => {
                 let dest_var = self.get_reg_var(*dest);
@@ -245,7 +270,22 @@ impl WgslGenerator {
                 ).unwrap();
             }
             IRInstr::LoadExtParam { dest, name } => {
-                // not implemented
+                let dest_var = self.get_reg4_var(*dest);
+                // Check if this is an extension intermediate value
+                if let Some(&index) = self.ext_intermediate_map.get(name) {
+                    writeln!(
+                        self.shader_code,
+                        "        let {}: QM31 = output.ext_intermediates[{}u]; // Load {}",
+                        dest_var, index, name
+                    ).unwrap();
+                } else {
+                    // Regular extension parameter - not implemented yet
+                    writeln!(
+                        self.shader_code,
+                        "        // TODO: Load ext parameter {} into {}",
+                        name, dest_var
+                    ).unwrap();
+                }
             }
             IRInstr::AddExt { dest, lhs, rhs } => {
                 let dest_var = self.get_reg4_var(*dest);
@@ -287,21 +327,29 @@ impl WgslGenerator {
                 ).unwrap();
             }
             IRInstr::StoreIntermediate { reg, name } => {
-                // not implemented
                 let reg_var = self.get_reg_var(*reg);
+                let index = self.intermediate_map.entry(name.clone()).or_insert_with(|| {
+                    let idx = self.intermediate_counter;
+                    self.intermediate_counter += 1;
+                    idx
+                });
                 writeln!(
                     self.shader_code,
-                    "        // Store intermediate: {} = {}",
-                    name, reg_var
+                    "        output.intermediates[{}u] = {}; // Store {}",
+                    index, reg_var, name
                 ).unwrap();
             }
             IRInstr::StoreExtIntermediate { reg, name } => {
-                // not implemented
                 let reg_var = self.get_reg4_var(*reg);
+                let index = self.ext_intermediate_map.entry(name.clone()).or_insert_with(|| {
+                    let idx = self.ext_intermediate_counter;
+                    self.ext_intermediate_counter += 1;
+                    idx
+                });
                 writeln!(
                     self.shader_code,
-                    "        // Store ext intermediate: {} = {}",
-                    name, reg_var
+                    "        output.ext_intermediates[{}u] = {}; // Store {}",
+                    index, reg_var, name
                 ).unwrap();
             }
             IRInstr::AssertZero { reg } => {
@@ -348,7 +396,11 @@ impl WgslGenerator {
     }
 }
 
-impl Default for WgslGenerator {
+// Type alias for default configuration
+use super::constants::DefaultConfig;
+pub type DefaultWgslGenerator = WgslGenerator<DefaultConfig>;
+
+impl Default for DefaultWgslGenerator {
     fn default() -> Self {
         Self::new()
     }
@@ -363,7 +415,7 @@ mod tests {
 
     #[test]
     fn test_simple_wgsl_generation() {
-        let mut generator = WgslGenerator::new();
+        let mut generator = DefaultWgslGenerator::new();
         
         // Simple test: r0 = col(0,0,0) + 5
         let instructions = vec![
