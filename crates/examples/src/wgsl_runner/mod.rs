@@ -5,9 +5,9 @@ use stwo::core::fields::qm31::QM31;
 use stwo::core::fields::FieldExpOps;
 use stwo::prover::backend::Column;
 use stwo_constraint_framework::expr::gpu_common::{ByteSerialize, GpuComputeInstance};
-use stwo_constraint_framework::expr::gpu_types::*;
+use stwo_constraint_framework::expr::gpu_types::{DefaultComputeInput, DefaultComputeOutput, DefaultGpuExtendedColumn};
 use stwo_constraint_framework::expr::qm31::{GpuM31, GpuQM31};
-use stwo_constraint_framework::expr::wgsl_parser::*;
+use stwo_constraint_framework::expr::wgsl_parser::DefaultWgslParser;
 use stwo_constraint_framework::expr::evaluator::ExprEvaluator;
 use stwo_constraint_framework::{EvalAtRow, FrameworkEval};
 
@@ -54,10 +54,10 @@ impl FrameworkEval for FiveFibonacciEval {
 
 /// A wrapper struct that is local to this crate to avoid orphan rule issues
 #[derive(Clone)]
-pub struct LocalInput(pub ComputeCompositionPolynomialInput);
+pub struct LocalInput(pub DefaultComputeInput);
 
 #[derive(Clone)]  
-pub struct LocalOutput(pub ComputeCompositionPolynomialOutput);
+pub struct LocalOutput(pub DefaultComputeOutput);
 
 impl ByteSerialize for LocalInput {}
 impl ByteSerialize for LocalOutput {}
@@ -68,12 +68,8 @@ pub struct WgslComputeRunner {
 
 impl WgslComputeRunner {
     pub fn new_from_evaluator(evaluator: &ExprEvaluator) -> Self {
-        // Generate WGSL code from the evaluator with proper dimensions
-        let mut parser = WgslParser::new();
-        parser.generator().set_dimensions(
-            stwo_constraint_framework::expr::constants::N_ROWS,
-            stwo_constraint_framework::expr::constants::N_CONSTRAINTS
-        );
+        // Generate WGSL code from the evaluator using default configuration
+        let mut parser = DefaultWgslParser::new();
         let shader_source = parser.parse_constraints_to_wgsl(evaluator, false);
         println!("Generated WGSL shader:\n{}", shader_source);
         
@@ -92,8 +88,8 @@ impl WgslComputeRunner {
         println!("Denom Inv: {:?}", denom_inv);
         
         // Create input data structure
-        let input_data = LocalInput(ComputeCompositionPolynomialInput {
-            extended_trace: [GpuExtendedColumn { 
+        let input_data = LocalInput(DefaultComputeInput {
+            extended_trace: [DefaultGpuExtendedColumn { 
                 data: [GpuM31(0); stwo_constraint_framework::expr::constants::N_EXTENDED_ROWS as usize] 
             }; stwo_constraint_framework::expr::constants::N_COLUMNS as usize],
             denom_inv: [
@@ -122,7 +118,7 @@ impl WgslComputeRunner {
             }
         }
 
-        let output_size = mem::size_of::<ComputeCompositionPolynomialOutput>();
+        let output_size = mem::size_of::<DefaultComputeOutput>();
         let instance = GpuComputeInstance::new(&input_data_mut, output_size).await;
         
         let (pipeline, bind_group) = instance.create_pipeline(&self.shader_source, "main");
@@ -148,8 +144,8 @@ impl WgslComputeRunner {
         println!("Denom Inv: {:?}", denom_inv);
         
         // Create input data structure
-        let input_data = LocalInput(ComputeCompositionPolynomialInput {
-            extended_trace: [GpuExtendedColumn { 
+        let input_data = LocalInput(DefaultComputeInput {
+            extended_trace: [DefaultGpuExtendedColumn { 
                 data: [GpuM31(0); stwo_constraint_framework::expr::constants::N_EXTENDED_ROWS as usize] 
             }; stwo_constraint_framework::expr::constants::N_COLUMNS as usize],
             denom_inv: [
@@ -215,7 +211,7 @@ impl WgslComputeRunner {
         println!("Created manual trace with 64 rows for Circle STARK");
         println!("Input data for WGSL computation: {:?}", input_data_mut.0.extended_trace);
 
-        let output_size = mem::size_of::<ComputeCompositionPolynomialOutput>();
+        let output_size = mem::size_of::<DefaultComputeOutput>();
         let instance = GpuComputeInstance::new(&input_data_mut, output_size).await;
         
         let (pipeline, bind_group) = instance.create_pipeline(&self.shader_source, "main");
@@ -276,6 +272,39 @@ pub async fn run_five_fibonacci_wgsl_example() {
     // Print the output polynomial
     for (i, row) in result.0.poly.iter().enumerate() {
         println!("Row {}: {:?}", i, row); 
+    }
+    
+    // Assert that WGSL result matches expected SIMD result
+    let expected_poly = [
+        [2137988080, 1451751973, 113983954, 1491382960, 1175579780, 1716820830, 256021903, 1982151747,
+         1199767490, 1406368, 281210658, 612273341, 98093932, 1365934458, 138043036, 368162232],
+        [1549692856, 1421972499, 1802619738, 122074689, 1599574042, 1583865260, 439537658, 388531570,
+         1971656051, 553715884, 500019000, 1800867141, 1429884088, 616480563, 1599252821, 815533572],
+        [1034987527, 1834620662, 615115045, 223280462, 88579901, 929565542, 961617891, 2069161170,
+         1802557927, 1714655332, 380747667, 1054265317, 1669957523, 1695814227, 1311668845, 34931594],
+        [1135532567, 1427602188, 2140662400, 90540451, 1120345958, 2075113487, 941882183, 268291441,
+         1823759809, 699258573, 1976753785, 144268912, 1293936090, 1041308478, 1916191798, 616651786]
+    ];
+    
+    // Verify all rows
+    for (row_idx, expected_row) in expected_poly.iter().enumerate() {
+        for (lane_idx, &expected_val) in expected_row.iter().enumerate() {
+            let actual_val = result.0.poly[row_idx][lane_idx].0[0]; // First component of QM31
+            assert_eq!(actual_val, expected_val, 
+                       "Row {}, Lane {}: expected {}, got {}", row_idx, lane_idx, expected_val, actual_val);
+        }
+    }
+    
+    // Verify that the other QM31 components are zero (as expected from SIMD output)
+    for row_idx in 0..4 {
+        for lane_idx in 0..16 {
+            for component_idx in 1..4 { // Components 1, 2, 3 should be zero
+                let actual_val = result.0.poly[row_idx][lane_idx].0[component_idx];
+                assert_eq!(actual_val, 0, 
+                           "Row {}, Lane {}, Component {}: expected 0, got {}", 
+                           row_idx, lane_idx, component_idx, actual_val);
+            }
+        }
     }
     
     println!("Five Fibonacci example completed successfully!");

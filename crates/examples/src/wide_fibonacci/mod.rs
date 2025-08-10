@@ -352,7 +352,7 @@ pub mod tests {
         println!();
         
         // Generate WGSL code from IR
-        let mut wgsl_generator = WgslGenerator::new();
+        let mut wgsl_generator = stwo_constraint_framework::expr::wgsl_gen::DefaultWgslGenerator::new();
         let wgsl_code = wgsl_generator.generate_wgsl(&ir_instructions, true);
         
         println!("=== Generated WGSL Code ===");
