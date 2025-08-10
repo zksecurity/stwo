@@ -19,8 +19,8 @@ pub type WideFibonacciComponent<const N: usize> = FrameworkComponent<WideFibonac
 relation!(FibonacciRelation, 3);
 
 pub struct FibInput {
-    a: PackedBaseField,
-    b: PackedBaseField,
+    pub a: PackedBaseField,
+    pub b: PackedBaseField,
 }
 
 /// A component that enforces the Fibonacci sequence.

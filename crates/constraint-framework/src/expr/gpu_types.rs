@@ -18,6 +18,8 @@ pub struct ComputeCompositionPolynomialInput<
     pub extended_trace: [GpuExtendedColumn<N_EXTENDED_ROWS>; N_COLUMNS],
     pub denom_inv: [GpuM31; 4],
     pub random_coeff_powers: [GpuQM31; N_CONSTRAINTS],
+    pub claimed_sum: GpuQM31,
+    pub column_size: u32,
     pub lookup_elements: GpuLookupElements<N_LOOKUP_ELEMENTS>,
 }
 

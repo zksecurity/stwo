@@ -3,13 +3,20 @@ use std::mem;
 use stwo::core::fields::m31::M31;
 use stwo::core::fields::qm31::QM31;
 use stwo::core::fields::FieldExpOps;
-use stwo::prover::backend::Column;
 use stwo_constraint_framework::expr::gpu_common::{ByteSerialize, GpuComputeInstance};
 use stwo_constraint_framework::expr::gpu_types::{DefaultComputeInput, DefaultComputeOutput, DefaultGpuExtendedColumn, DefaultGpuLookupElements};
 use stwo_constraint_framework::expr::qm31::{GpuM31, GpuQM31};
 use stwo_constraint_framework::expr::wgsl_parser::DefaultWgslParser;
 use stwo_constraint_framework::expr::evaluator::ExprEvaluator;
 use stwo_constraint_framework::{EvalAtRow, FrameworkEval};
+use num_traits::{Zero, One};
+
+// Import wide fibonacci components  
+use crate::wide_fibonacci::{WideFibonacciEval, FibonacciRelation, generate_trace, generate_interaction_trace, FibInput};
+use stwo::prover::backend::Column;
+use stwo::prover::backend::simd::m31::{PackedBaseField, LOG_N_LANES};
+use stwo::core::fields::m31::BaseField;
+use itertools::Itertools;
 
 pub struct SumEvalExample {
     pub log_n_rows: u32,
@@ -102,6 +109,8 @@ impl WgslComputeRunner {
                 GpuQM31::from(random_coeff_powers[0]); 
                 stwo_constraint_framework::expr::constants::N_CONSTRAINTS as usize
             ],
+            claimed_sum: GpuQM31::from(QM31::zero()),
+            column_size: stwo_constraint_framework::expr::constants::N_EXTENDED_ROWS as u32,
             lookup_elements: DefaultGpuLookupElements::dummy(),
         });
 
@@ -159,6 +168,8 @@ impl WgslComputeRunner {
                 GpuQM31::from(random_coeff_powers[0]); 
                 stwo_constraint_framework::expr::constants::N_CONSTRAINTS as usize
             ],
+            claimed_sum: GpuQM31::from(QM31::zero()),
+            column_size: stwo_constraint_framework::expr::constants::N_EXTENDED_ROWS as u32,
             lookup_elements: DefaultGpuLookupElements::dummy(),
         });
 
@@ -226,7 +237,84 @@ impl WgslComputeRunner {
         println!("Fibonacci WGSL computation completed successfully!");
         result
     }
+
+    pub async fn run_with_wide_fibonacci_trace(
+        &self, 
+        trace: &[stwo::prover::poly::circle::CircleEvaluation<stwo::prover::backend::simd::SimdBackend, stwo::core::fields::m31::BaseField, stwo::prover::poly::BitReversedOrder>],
+        _interaction_trace: &[stwo::prover::poly::circle::CircleEvaluation<stwo::prover::backend::simd::SimdBackend, stwo::core::fields::m31::BaseField, stwo::prover::poly::BitReversedOrder>],
+        random_coeff_powers: &[QM31], 
+        denom_inv: &[M31],
+        claimed_sum: stwo::core::fields::qm31::SecureField
+    ) -> LocalOutput {
+        println!("=== Running Wide Fibonacci WGSL Computation ===");
+        
+        // Set up input data with the provided parameters
+        println!("Random Coeff Powers: {:?}", random_coeff_powers);
+        println!("Denom Inv: {:?}", denom_inv);
+        println!("Claimed Sum: {:?}", claimed_sum);
+        
+        // Create input data structure
+        let input_data = LocalInput(DefaultComputeInput {
+            extended_trace: [DefaultGpuExtendedColumn { 
+                data: [GpuM31(0); stwo_constraint_framework::expr::constants::N_EXTENDED_ROWS as usize] 
+            }; stwo_constraint_framework::expr::constants::N_COLUMNS as usize],
+            denom_inv: [
+                GpuM31(denom_inv[0].into()), 
+                GpuM31(denom_inv[1].into()),
+                GpuM31(0), 
+                GpuM31(0)
+            ],
+            random_coeff_powers: [
+                GpuQM31::from(random_coeff_powers[0]); 
+                stwo_constraint_framework::expr::constants::N_CONSTRAINTS as usize
+            ],
+            claimed_sum: GpuQM31::from(claimed_sum),
+            column_size: stwo_constraint_framework::expr::constants::N_EXTENDED_ROWS as u32,
+            lookup_elements: DefaultGpuLookupElements::dummy(),
+        });
+
+        // Fill extended_trace with the trace data from wide fibonacci
+        let mut input_data_mut = input_data;
+        
+        // Copy trace columns (main trace has 3 columns for fibonacci)
+        let n_trace_cols = trace.len().min(stwo_constraint_framework::expr::constants::N_COLUMNS as usize);
+        for col_idx in 0..n_trace_cols {
+            let trace_col = &trace[col_idx];
+            for row_idx in 0..stwo_constraint_framework::expr::constants::N_EXTENDED_ROWS as usize {
+                if row_idx < trace_col.values.len() {
+                    // Extract packed values - trace is packed with SIMD lanes
+                    let packed_row_idx = row_idx / 16; // 16 lanes per packed element
+                    let lane_idx = row_idx % 16;
+                    if packed_row_idx < trace_col.values.data.len() {
+                        let packed_value = trace_col.values.data[packed_row_idx];
+                        // Use to_array to extract the lane value
+                        let array_values = packed_value.to_array();
+                        if lane_idx < array_values.len() {
+                            let lane_value = array_values[lane_idx];
+                            input_data_mut.0.extended_trace[col_idx].data[row_idx] = GpuM31(lane_value.0);
+                        }
+                    }
+                }
+            }
+        }
+
+        println!("Filled {} trace columns with wide fibonacci data", n_trace_cols);
+        
+        let output_size = mem::size_of::<DefaultComputeOutput>();
+        let instance = GpuComputeInstance::new(&input_data_mut, output_size).await;
+        
+        let (pipeline, bind_group) = instance.create_pipeline(&self.shader_source, "main");
+        let workgroup_count = (1, 1, 1);
+        
+        let result: LocalOutput = instance
+            .run_computation(&pipeline, &bind_group, workgroup_count)
+            .await;
+            
+        println!("Wide Fibonacci WGSL computation completed successfully!");
+        result
+    }
 }
+
 
 pub async fn run_wgsl_example() {
     println!("=== WGSL Runner Example ===");
@@ -312,6 +400,92 @@ pub async fn run_five_fibonacci_wgsl_example() {
     println!("Five Fibonacci example completed successfully!");
 }
 
+pub async fn run_wide_fibonacci_wgsl_example() {
+    println!("=== Wide Fibonacci WGSL Runner Example ===");
+    
+    const FIB_SEQUENCE_LENGTH: usize = 3;
+    const LOG_N_INSTANCES: u32 = 6; // Same as the test
+    
+    // Generate the test trace and lookup data manually (based on generate_test_trace)
+    let inputs = if LOG_N_INSTANCES < LOG_N_LANES {
+        let n_instances = 1 << LOG_N_INSTANCES;
+        vec![FibInput {
+            a: PackedBaseField::from_array(std::array::from_fn(|j| {
+                if j < n_instances {
+                    BaseField::one()
+                } else {
+                    BaseField::zero()
+                }
+            })),
+            b: PackedBaseField::from_array(std::array::from_fn(|j| {
+                if j < n_instances {
+                    BaseField::from_u32_unchecked(j as u32)
+                } else {
+                    BaseField::zero()
+                }
+            })),
+        }]
+    } else {
+        (0..(1 << (LOG_N_INSTANCES - LOG_N_LANES)))
+            .map(|i| FibInput {
+                a: PackedBaseField::one(),
+                b: PackedBaseField::from_array(std::array::from_fn(|j| {
+                    BaseField::from_u32_unchecked((i * 16 + j) as u32)
+                })),
+            })
+            .collect_vec()
+    };
+    
+    let (trace, lookup_data) = generate_trace::<FIB_SEQUENCE_LENGTH>(LOG_N_INSTANCES, &inputs);
+    
+    // Draw lookup elements (using dummy for WGSL test)
+    let fibonacci_relation = FibonacciRelation::dummy();
+    
+    // Generate interaction trace
+    let (interaction_trace, claimed_sum) = generate_interaction_trace(
+        LOG_N_INSTANCES,
+        lookup_data,
+        &fibonacci_relation,
+    );
+    
+    println!("Trace columns: {}", trace.len());
+    println!("Interaction trace columns: {}", interaction_trace.len());
+    println!("Claimed sum: {:?}", claimed_sum);
+    
+    // Create the Wide Fibonacci evaluation with proper parameters
+    let eval = WideFibonacciEval::<FIB_SEQUENCE_LENGTH> {
+        log_n_rows: LOG_N_INSTANCES,
+        fibonacci_relation: fibonacci_relation.clone(),
+    };
+    let evaluator = eval.evaluate(ExprEvaluator::new());
+    
+    // Create WGSL runner
+    let runner = WgslComputeRunner::new_from_evaluator(&evaluator);
+    
+    // Set up input data with the provided parameters
+    let random_coeff_powers = vec![QM31::from_u32_unchecked(1, 0, 0, 0)]; // (1 + 0i) + (0 + 0i)u
+    let denom_inv = vec![M31::from(65536), M31::from(2147418111)];
+    
+    // Run the computation with wide fibonacci trace data
+    let result = runner.run_with_wide_fibonacci_trace(
+        &trace, 
+        &interaction_trace, 
+        &random_coeff_powers, 
+        &denom_inv,
+        claimed_sum
+    ).await;
+    
+    println!("Wide Fibonacci result computed! Output has {} polynomial lanes", 
+             result.0.poly.len());
+
+    // Print the output polynomial (first few rows)
+    for (i, row) in result.0.poly.iter().take(4).enumerate() {
+        println!("Row {}: {:?}", i, row); 
+    }
+    
+    println!("Wide Fibonacci example completed successfully!");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,5 +498,10 @@ mod tests {
     #[tokio::test]
     async fn test_five_fibonacci_wgsl_runner() {
         run_five_fibonacci_wgsl_example().await;
+    }
+
+    #[tokio::test]
+    async fn test_wide_fibonacci_wgsl_runner() {
+        run_wide_fibonacci_wgsl_example().await;
     }
 }

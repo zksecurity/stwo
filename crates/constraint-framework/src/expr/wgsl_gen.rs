@@ -173,10 +173,15 @@ where
         match instr {
             IRInstr::LoadCol { dest, col } => {
                 let var_name = self.get_reg_var(*dest);
+                let index_expr = if col.offset >= 0 {
+                    format!("index + {}u", col.offset)
+                } else {
+                    format!("index - {}u", -col.offset)
+                };
                 writeln!(
                     self.shader_code,
-                    "        let {} = input.extended_trace[{}].data[index + {}];",
-                    var_name, col.idx, col.offset
+                    "        let {} = input.extended_trace[{}].data[{}];",
+                    var_name, col.idx, index_expr
                 ).unwrap();
             }
             IRInstr::LoadConst { dest, value } => {
