@@ -1,4 +1,5 @@
 use itertools::Itertools;
+use num_traits::One;
 use stwo::core::fields::m31::BaseField;
 use stwo::core::fields::FieldExpOps;
 use stwo::core::poly::circle::CanonicCoset;
@@ -8,9 +9,12 @@ use stwo::prover::backend::simd::SimdBackend;
 use stwo::prover::backend::{Col, Column};
 use stwo::prover::poly::circle::CircleEvaluation;
 use stwo::prover::poly::BitReversedOrder;
-use stwo_constraint_framework::{EvalAtRow, FrameworkComponent, FrameworkEval};
+use stwo_constraint_framework::{EvalAtRow, FrameworkComponent, FrameworkEval, relation, RelationEntry};
 
 pub type WideFibonacciComponent<const N: usize> = FrameworkComponent<WideFibonacciEval<N>>;
+
+// Define a relation for Fibonacci value lookups: (prev_value, curr_value, next_value)
+relation!(FibonacciRelation, 3);
 
 pub struct FibInput {
     a: PackedBaseField,
@@ -22,6 +26,7 @@ pub struct FibInput {
 #[derive(Clone)]
 pub struct WideFibonacciEval<const N: usize> {
     pub log_n_rows: u32,
+    pub fibonacci_relation: FibonacciRelation,
 }
 impl<const N: usize> FrameworkEval for WideFibonacciEval<N> {
     fn log_size(&self) -> u32 {
@@ -33,12 +38,25 @@ impl<const N: usize> FrameworkEval for WideFibonacciEval<N> {
     fn evaluate<E: EvalAtRow>(&self, mut eval: E) -> E {
         let mut a = eval.next_trace_mask();
         let mut b = eval.next_trace_mask();
+        
+        // Add regular Fibonacci constraints
         for _ in 2..N {
             let c = eval.next_trace_mask();
             eval.add_constraint(c.clone() - (a.square() + b.square()));
+            
+            // Add logup relation entry for Fibonacci sequence (a, b, c)
+            eval.add_to_relation(RelationEntry::new(
+                &self.fibonacci_relation,
+                E::EF::one(),
+                &[a.clone(), b.clone(), c.clone()],
+            ));
+            
             a = b;
             b = c;
         }
+        
+        // Finalize logup
+        eval.finalize_logup();
         eval
     }
 }
@@ -71,6 +89,7 @@ pub fn generate_trace<const N: usize>(
 pub mod tests {
     use itertools::Itertools;
     use num_traits::{One, Zero};
+    use crate::wide_fibonacci::FibonacciRelation;
     use stwo::core::air::Component;
     use stwo::core::channel::Blake2sChannel;
     #[cfg(not(target_arch = "wasm32"))]
@@ -136,7 +155,10 @@ pub mod tests {
     }
 
     fn fibonacci_constraint_evaluator<const N: u32>(eval: AssertEvaluator<'_>) {
-        WideFibonacciEval::<FIB_SEQUENCE_LENGTH> { log_n_rows: N }.evaluate(eval);
+        WideFibonacciEval::<FIB_SEQUENCE_LENGTH> { 
+            log_n_rows: N,
+            fibonacci_relation: FibonacciRelation::dummy(),
+        }.evaluate(eval);
     }
 
     #[test]
@@ -178,7 +200,10 @@ pub mod tests {
     fn test_wide_fibonacci_constraints_eval() {
         const LOG_N_INSTANCES: u32 = 5;
 
-        let widefib = WideFibonacciEval::<FIB_SEQUENCE_LENGTH> { log_n_rows: LOG_N_INSTANCES };
+        let widefib = WideFibonacciEval::<FIB_SEQUENCE_LENGTH> { 
+            log_n_rows: LOG_N_INSTANCES,
+            fibonacci_relation: FibonacciRelation::dummy(),
+        };
         let eval = widefib.evaluate(ExprEvaluator::new());
 
         // print eval
@@ -226,6 +251,7 @@ pub mod tests {
                 &mut TraceLocationAllocator::default(),
                 WideFibonacciEval::<FIB_SEQUENCE_LENGTH> {
                     log_n_rows: log_n_instances,
+                    fibonacci_relation: FibonacciRelation::dummy(),
                 },
                 SecureField::zero(),
             );
@@ -284,6 +310,7 @@ pub mod tests {
             &mut TraceLocationAllocator::default(),
             WideFibonacciEval::<FIB_SEQUENCE_LENGTH> {
                 log_n_rows: LOG_N_INSTANCES,
+                fibonacci_relation: FibonacciRelation::dummy(),
             },
             SecureField::zero(),
         );
@@ -304,6 +331,47 @@ pub mod tests {
         commitment_scheme.commit(proof.commitments[0], &sizes[0], verifier_channel);
         commitment_scheme.commit(proof.commitments[1], &sizes[1], verifier_channel);
         verify(&[&component], verifier_channel, commitment_scheme, proof).unwrap();
+    }
+
+    #[test]
+    fn test_wide_fibonacci_wgsl_generation_with_logup() {
+        const LOG_N_INSTANCES: u32 = 6;
+        const SMALL_FIB_SEQUENCE_LENGTH: usize = 3;
+
+        // Create ExprEvaluator and evaluate constraints to get expressions
+        let fibonacci_eval = WideFibonacciEval::<SMALL_FIB_SEQUENCE_LENGTH> { 
+            log_n_rows: LOG_N_INSTANCES,
+            fibonacci_relation: FibonacciRelation::dummy(),
+        };
+        
+        let expr_evaluator = fibonacci_eval.evaluate(ExprEvaluator::new());
+        
+        // Print constraint expressions (human-readable format)
+        println!("=== Fibonacci Constraint Expressions with Logup ===");
+        println!("{}", expr_evaluator.format_constraints());
+        println!();
+        
+        // Build IR from the expressions
+        let ir_instructions = expr_evaluator.build_ir();
+        
+        println!("=== IR Instructions ===");
+        for (i, instr) in ir_instructions.iter().enumerate() {
+            println!("{:02}: {:?}", i, instr);
+        }
+        println!();
+        
+        // Generate WGSL code from IR
+        let mut wgsl_generator = stwo_constraint_framework::expr::wgsl_gen::DefaultWgslGenerator::new();
+        let wgsl_code = wgsl_generator.generate_wgsl(&ir_instructions, true);
+        
+        println!("=== Generated WGSL Code with Logup ===");
+        println!("{}", wgsl_code);
+        
+        // Check that WGSL code contains logup parameters
+        assert!(wgsl_code.contains("claimed_sum: QM31,"));
+        assert!(wgsl_code.contains("column_size: u32,"));
+        assert!(wgsl_code.contains("@compute"));
+        assert!(wgsl_code.contains("fn main"));
     }
 
     #[test]
@@ -332,7 +400,8 @@ pub mod tests {
         
         // Create ExprEvaluator and evaluate constraints to get expressions
         let fibonacci_eval = WideFibonacciEval::<SMALL_FIB_SEQUENCE_LENGTH> { 
-            log_n_rows: LOG_N_INSTANCES 
+            log_n_rows: LOG_N_INSTANCES,
+            fibonacci_relation: FibonacciRelation::dummy(),
         };
         
         let expr_evaluator = fibonacci_eval.evaluate(ExprEvaluator::new());

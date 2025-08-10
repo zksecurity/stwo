@@ -5,7 +5,7 @@ use stwo::core::fields::qm31::QM31;
 use stwo::core::fields::FieldExpOps;
 use stwo::prover::backend::Column;
 use stwo_constraint_framework::expr::gpu_common::{ByteSerialize, GpuComputeInstance};
-use stwo_constraint_framework::expr::gpu_types::{DefaultComputeInput, DefaultComputeOutput, DefaultGpuExtendedColumn};
+use stwo_constraint_framework::expr::gpu_types::{DefaultComputeInput, DefaultComputeOutput, DefaultGpuExtendedColumn, DefaultGpuLookupElements};
 use stwo_constraint_framework::expr::qm31::{GpuM31, GpuQM31};
 use stwo_constraint_framework::expr::wgsl_parser::DefaultWgslParser;
 use stwo_constraint_framework::expr::evaluator::ExprEvaluator;
@@ -102,6 +102,7 @@ impl WgslComputeRunner {
                 GpuQM31::from(random_coeff_powers[0]); 
                 stwo_constraint_framework::expr::constants::N_CONSTRAINTS as usize
             ],
+            lookup_elements: DefaultGpuLookupElements::dummy(),
         });
 
         // Fill extended_trace with some example data (Sum constraint)
@@ -158,6 +159,7 @@ impl WgslComputeRunner {
                 GpuQM31::from(random_coeff_powers[0]); 
                 stwo_constraint_framework::expr::constants::N_CONSTRAINTS as usize
             ],
+            lookup_elements: DefaultGpuLookupElements::dummy(),
         });
 
         // Manually create the trace with the provided values for 64 rows
