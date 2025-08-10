@@ -86,7 +86,8 @@ where
             .replace("${N_CONSTRAINTS}", &C::N_CONSTRAINTS.to_string())
             .replace("${N_COLUMNS}", &C::N_COLUMNS.to_string())
             .replace("${N_INTERMEDIATES}", &C::N_INTERMEDIATES.to_string())
-            .replace("${N_EXT_INTERMEDIATES}", &C::N_EXT_INTERMEDIATES.to_string());
+            .replace("${N_EXT_INTERMEDIATES}", &C::N_EXT_INTERMEDIATES.to_string())
+            .replace("${N_LOOKUP_ELEMENTS}", &C::N_LOOKUP_ELEMENTS.to_string());
         writeln!(self.shader_code, "{}", substituted_code).unwrap();
         writeln!(self.shader_code).unwrap();
     }
@@ -119,6 +120,7 @@ where
         writeln!(self.shader_code, "    random_coeff_powers: array<QM31, N_CONSTRAINTS>,").unwrap();
         writeln!(self.shader_code, "    claimed_sum: QM31,").unwrap();
         writeln!(self.shader_code, "    column_size: u32,").unwrap();
+        writeln!(self.shader_code, "    lookup_elements: LookupElements,").unwrap();
         writeln!(self.shader_code, "}}").unwrap();
         writeln!(self.shader_code).unwrap();
 
@@ -301,6 +303,46 @@ where
                                 "        let {}: QM31 = input.claimed_sum; // Load claimed_sum",
                                 dest_var
                             ).unwrap();
+                        }
+                        name if name.ends_with("_z") => {
+                            writeln!(
+                                self.shader_code,
+                                "        let {}: QM31 = input.lookup_elements.z; // Load lookup z",
+                                dest_var
+                            ).unwrap();
+                        }
+                        name if name.ends_with("_alpha") => {
+                            writeln!(
+                                self.shader_code,
+                                "        let {}: QM31 = input.lookup_elements.alpha; // Load lookup alpha",
+                                dest_var
+                            ).unwrap();
+                        }
+                        name if name.contains("_alpha") && name.chars().last().map_or(false, |c| c.is_ascii_digit()) => {
+                            // Extract alpha power index from parameter name (e.g., "FibonacciRelation_alpha0" -> 0)
+                            // Handle multi-digit numbers by parsing the suffix after "_alpha"
+                            if let Some(alpha_pos) = name.rfind("_alpha") {
+                                let index_str = &name[alpha_pos + 6..]; // Skip "_alpha"
+                                if let Ok(index) = index_str.parse::<u32>() {
+                                    writeln!(
+                                        self.shader_code,
+                                        "        let {}: QM31 = input.lookup_elements.alpha_powers[{}u]; // Load alpha power {}",
+                                        dest_var, index, index
+                                    ).unwrap();
+                                } else {
+                                    writeln!(
+                                        self.shader_code,
+                                        "        // TODO: Invalid alpha power index in parameter {} -> {}",
+                                        name, dest_var
+                                    ).unwrap();
+                                }
+                            } else {
+                                writeln!(
+                                    self.shader_code,
+                                    "        // TODO: Load alpha power parameter {} into {}",
+                                    name, dest_var
+                                ).unwrap();
+                            }
                         }
                         _ => {
                             // Regular extension parameter - not implemented yet
@@ -500,6 +542,36 @@ mod tests {
         assert!(wgsl_code.contains("input.column_size"));
         
         println!("Generated WGSL with logup params:\n{}", wgsl_code);
+    }
+
+    #[test]
+    fn test_general_alpha_power_parsing() {
+        let mut generator = DefaultWgslGenerator::new();
+        
+        // Test alpha powers for different ranges (simulating various N_LOOKUP_ELEMENTS)
+        let instructions = vec![
+            // Single digit alpha powers
+            IRInstr::LoadExtParam { dest: Reg4(0), name: "TestRelation_alpha0".to_string() },
+            IRInstr::LoadExtParam { dest: Reg4(1), name: "TestRelation_alpha7".to_string() },
+            // Multi-digit alpha powers  
+            IRInstr::LoadExtParam { dest: Reg4(2), name: "PoseidonElements_alpha10".to_string() },
+            IRInstr::LoadExtParam { dest: Reg4(3), name: "PoseidonElements_alpha15".to_string() },
+            // Edge cases
+            IRInstr::LoadExtParam { dest: Reg4(4), name: "SomeRelation_z".to_string() },
+            IRInstr::LoadExtParam { dest: Reg4(5), name: "claimed_sum".to_string() },
+        ];
+        
+        let wgsl_code = generator.generate_wgsl(&instructions, true);
+        
+        // Verify that all alpha power accesses are generated correctly
+        assert!(wgsl_code.contains("input.lookup_elements.alpha_powers[0u]"));
+        assert!(wgsl_code.contains("input.lookup_elements.alpha_powers[7u]"));
+        assert!(wgsl_code.contains("input.lookup_elements.alpha_powers[10u]"));
+        assert!(wgsl_code.contains("input.lookup_elements.alpha_powers[15u]"));
+        assert!(wgsl_code.contains("input.lookup_elements.z"));
+        assert!(wgsl_code.contains("input.claimed_sum"));
+        
+        println!("Generated WGSL with general alpha powers:\n{}", wgsl_code);
     }
 
 

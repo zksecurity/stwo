@@ -17,6 +17,7 @@ const N_COLUMNS: u32 = ${N_COLUMNS};
 
 const N_INTERMEDIATES: u32 = ${N_INTERMEDIATES};
 const N_EXT_INTERMEDIATES: u32 = ${N_EXT_INTERMEDIATES};
+const N_LOOKUP_ELEMENTS: u32 = ${N_LOOKUP_ELEMENTS};
 
 const R: CM31 = CM31(M31(2u), M31(1u));
 const ONE = QM31(CM31(M31(1u), M31(0u)), CM31(M31(0u), M31(0u)));
@@ -356,4 +357,33 @@ fn coset_index_to_circle_domain_index(coset_index: u32, log_domain_size: u32) ->
     } else {
         return ((2u << log_domain_size) - coset_index) / 2u;
     }
+}
+
+// Lookup elements for logup protocol
+struct LookupElements {
+    z: QM31,
+    alpha: QM31,
+    alpha_powers: array<QM31, N_LOOKUP_ELEMENTS>,
+}
+
+// Combine values using lookup elements: values[0] + values[1]*alpha + ... + values[N-1]*alpha^(N-1) - z
+fn lookup_combine(lookup_elements: LookupElements, values: array<M31, N_LOOKUP_ELEMENTS>) -> QM31 {
+    var result: QM31 = qm31_zero();
+    
+    for (var i = 0u; i < N_LOOKUP_ELEMENTS; i = i + 1u) {
+        let value_qm31 = qm31_from_m31(values[i]);
+        result = qm31_add(result, qm31_mul(lookup_elements.alpha_powers[i], value_qm31));
+    }
+    
+    return qm31_sub(result, lookup_elements.z);
+}
+
+// Create QM31 from M31 value
+fn qm31_from_m31(value: M31) -> QM31 {
+    return QM31(value, 0u, 0u, 0u);
+}
+
+// Zero QM31 value
+fn qm31_zero() -> QM31 {
+    return QM31(0u, 0u, 0u, 0u);
 }
