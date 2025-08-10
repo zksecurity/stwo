@@ -10,7 +10,7 @@ const N_ROWS: u32 = ${N_ROWS};
 const N_CONSTRAINTS: u32 = ${N_CONSTRAINTS};
 
 const N_LANES: u32 = 16;
-const N_EXTENDED_ROWS: u32 = N_ROWS * 4;
+const N_EXTENDED_ROWS: u32 = N_ROWS * 2;
 const N_ORIGINAL_ROWS: u32 = N_ROWS;
 const N_PACKED_ROWS: u32 = N_EXTENDED_ROWS / N_LANES;
 const N_COLUMNS: u32 = 3;

@@ -15,10 +15,6 @@ pub struct WgslGenerator {
     reg_counter: usize,
     /// Counter for generating unique extension field variable names
     reg4_counter: usize,
-    /// Column bindings for input data - maps interaction to binding index
-    interaction_bindings: HashMap<usize, usize>,
-    /// Track which interactions we've seen
-    interactions_seen: HashSet<usize>,
     /// Parameter bindings
     param_bindings: HashMap<String, usize>,
     /// Next available binding index
@@ -39,8 +35,6 @@ impl WgslGenerator {
             reg4_map: HashMap::new(),
             reg_counter: 0,
             reg4_counter: 0,
-            interaction_bindings: HashMap::new(),
-            interactions_seen: HashSet::new(),
             param_bindings: HashMap::new(),
             next_binding: 0,
             constraint_index: 0,
@@ -93,13 +87,6 @@ impl WgslGenerator {
         // Scan instructions to find all interactions and parameters that need bindings
         for instr in instructions {
             match instr {
-                IRInstr::LoadCol { col, .. } => {
-                    if !self.interactions_seen.contains(&col.interaction) {
-                        self.interactions_seen.insert(col.interaction);
-                        self.interaction_bindings.insert(col.interaction, self.next_binding);
-                        self.next_binding += 1;
-                    }
-                }
                 IRInstr::LoadParam { name, .. } | IRInstr::LoadExtParam { name, .. } => {
                     if !self.param_bindings.contains_key(name) {
                         self.param_bindings.insert(name.clone(), self.next_binding);
@@ -122,9 +109,6 @@ impl WgslGenerator {
         writeln!(self.shader_code, "    extended_trace: array<Extended1DColumn, N_COLUMNS>,").unwrap();
         writeln!(self.shader_code, "    denom_inv: array<M31, 4>,").unwrap();
         writeln!(self.shader_code, "    random_coeff_powers: array<QM31, N_CONSTRAINTS>,").unwrap();
-        writeln!(self.shader_code, "    trace_domain_log_size: u32,").unwrap();
-        writeln!(self.shader_code, "    eval_domain_log_size: u32,").unwrap();
-        writeln!(self.shader_code, "    cumsum_shift: QM31,").unwrap();
         writeln!(self.shader_code, "}}").unwrap();
         writeln!(self.shader_code).unwrap();
 
@@ -190,18 +174,7 @@ impl WgslGenerator {
                 ).unwrap();
             }
             IRInstr::LoadParam { dest, name } => {
-                let var_name = self.get_reg_var(*dest);
-                // Map parameter names to the proper fields in the input struct
-                let field_name = match name.as_str() {
-                    "trace_domain_log_size" => "trace_domain_log_size",
-                    "eval_domain_log_size" => "eval_domain_log_size",
-                    _ => "denom_inv[0]", // Default fallback
-                };
-                writeln!(
-                    self.shader_code,
-                    "        let {} = input.{};",
-                    var_name, field_name
-                ).unwrap();
+                // not implemented
             }
             IRInstr::Add { dest, lhs, rhs } => {
                 let dest_var = self.get_reg_var(*dest);
@@ -272,19 +245,7 @@ impl WgslGenerator {
                 ).unwrap();
             }
             IRInstr::LoadExtParam { dest, name } => {
-                let var_name = self.get_reg4_var(*dest);
-                // Map extension parameter names to the proper fields in the input struct
-                let field_name = match name.as_str() {
-                    "cumsum_shift" => "cumsum_shift",
-                    "z" => "lookup_elements.z",
-                    "alpha" => "lookup_elements.alpha",
-                    _ => "lookup_elements.z", // Default fallback
-                };
-                writeln!(
-                    self.shader_code,
-                    "        let {}: QM31 = input.{};",
-                    var_name, field_name
-                ).unwrap();
+                // not implemented
             }
             IRInstr::AddExt { dest, lhs, rhs } => {
                 let dest_var = self.get_reg4_var(*dest);

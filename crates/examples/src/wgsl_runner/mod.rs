@@ -106,9 +106,6 @@ impl WgslComputeRunner {
                 GpuQM31::from(random_coeff_powers[0]); 
                 stwo_constraint_framework::expr::constants::N_CONSTRAINTS as usize
             ],
-            trace_domain_log_size: 5,
-            eval_domain_log_size: 7,
-            cumsum_shift: GpuQM31([0, 0, 0, 0]),
         });
 
         // Fill extended_trace with some example data (Sum constraint)
@@ -165,9 +162,6 @@ impl WgslComputeRunner {
                 GpuQM31::from(random_coeff_powers[0]); 
                 stwo_constraint_framework::expr::constants::N_CONSTRAINTS as usize
             ],
-            trace_domain_log_size: 6, // Changed to 6 for 64 rows (2^6 = 64)
-            eval_domain_log_size: 8,  // Changed to 8 for Circle STARK
-            cumsum_shift: GpuQM31([0, 0, 0, 0]),
         });
 
         // Manually create the trace with the provided values for 64 rows
@@ -195,7 +189,7 @@ impl WgslComputeRunner {
         // Fill the trace data
         // Column 0: All 1s
         for row_idx in 0..64.min(stwo_constraint_framework::expr::constants::N_EXTENDED_ROWS as usize) {
-            input_data_mut.0.extended_trace[0].data[row_idx] = GpuM31(1);
+            input_data_mut.0.extended_trace[0].data[row_idx] = GpuM31(col0_data[row_idx]);
         }
         
         // Column 1: Unpack the provided values

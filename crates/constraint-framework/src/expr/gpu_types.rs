@@ -13,9 +13,6 @@ pub struct ComputeCompositionPolynomialInput {
     pub extended_trace: [GpuExtendedColumn; N_COLUMNS as usize],
     pub denom_inv: [GpuM31; 4],
     pub random_coeff_powers: [GpuQM31; N_CONSTRAINTS as usize],
-    pub trace_domain_log_size: u32,
-    pub eval_domain_log_size: u32,
-    pub cumsum_shift: GpuQM31,
 }
 
 #[derive(Debug, Clone, Copy)]
