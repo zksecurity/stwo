@@ -421,7 +421,7 @@ pub async fn run_five_fibonacci_wgsl_example() {
 pub async fn run_wide_fibonacci_wgsl_example() {
     println!("=== Wide Fibonacci WGSL Runner Example ===");
     
-    const FIB_SEQUENCE_LENGTH: usize = 3;
+    const FIB_SEQUENCE_LENGTH: usize = 10;
     const LOG_N_INSTANCES: u32 = 6; // Same as the test
     
     // Generate the test trace and lookup data manually (based on generate_test_trace)

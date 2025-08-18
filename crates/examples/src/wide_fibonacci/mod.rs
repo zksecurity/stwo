@@ -195,7 +195,7 @@ pub mod tests {
     use stwo_constraint_framework::expr::evaluator::ExprEvaluator;
     use stwo_constraint_framework::expr::wgsl_gen::WgslGenerator;
 
-    const FIB_SEQUENCE_LENGTH: usize = 3;
+    const FIB_SEQUENCE_LENGTH: usize = 10;
 
     pub fn generate_test_trace(
         log_n_instances: u32,
