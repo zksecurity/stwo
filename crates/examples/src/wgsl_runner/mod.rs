@@ -132,7 +132,13 @@ impl WgslComputeRunner {
         let instance = GpuComputeInstance::new(&input_data_mut, output_size).await;
         
         let (pipeline, bind_group) = instance.create_pipeline(&self.shader_source, "main");
-        let workgroup_count = (1, 1, 1); // Single workgroup for simplicity
+        // Calculate workgroup count: total rows / threads per workgroup (16)
+        let workgroup_size = 16;
+        let total_rows = stwo_constraint_framework::expr::constants::N_EXTENDED_ROWS as u32;
+        let num_workgroups = (total_rows + workgroup_size - 1) / workgroup_size;
+        let workgroup_count = (num_workgroups, 1, 1);
+        println!("Using {} workgroups with {} threads each for {} total rows", 
+                 num_workgroups, workgroup_size, total_rows);
         
         let result: LocalOutput = instance
             .run_computation(&pipeline, &bind_group, workgroup_count)
@@ -228,7 +234,13 @@ impl WgslComputeRunner {
         let instance = GpuComputeInstance::new(&input_data_mut, output_size).await;
         
         let (pipeline, bind_group) = instance.create_pipeline(&self.shader_source, "main");
-        let workgroup_count = (1, 1, 1);
+        // Calculate workgroup count: total rows / threads per workgroup (16)
+        let workgroup_size = 16;
+        let total_rows = stwo_constraint_framework::expr::constants::N_EXTENDED_ROWS as u32;
+        let num_workgroups = (total_rows + workgroup_size - 1) / workgroup_size;
+        let workgroup_count = (num_workgroups, 1, 1);
+        println!("Using {} workgroups with {} threads each for {} total rows", 
+                 num_workgroups, workgroup_size, total_rows);
         
         let result: LocalOutput = instance
             .run_computation(&pipeline, &bind_group, workgroup_count)
@@ -304,7 +316,13 @@ impl WgslComputeRunner {
         let instance = GpuComputeInstance::new(&input_data_mut, output_size).await;
         
         let (pipeline, bind_group) = instance.create_pipeline(&self.shader_source, "main");
-        let workgroup_count = (1, 1, 1);
+        // Calculate workgroup count: total rows / threads per workgroup (16)
+        let workgroup_size = 16;
+        let total_rows = stwo_constraint_framework::expr::constants::N_EXTENDED_ROWS as u32;
+        let num_workgroups = (total_rows + workgroup_size - 1) / workgroup_size;
+        let workgroup_count = (num_workgroups, 1, 1);
+        println!("Using {} workgroups with {} threads each for {} total rows", 
+                 num_workgroups, workgroup_size, total_rows);
         
         let result: LocalOutput = instance
             .run_computation(&pipeline, &bind_group, workgroup_count)
