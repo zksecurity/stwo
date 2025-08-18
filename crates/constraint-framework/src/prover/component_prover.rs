@@ -149,7 +149,7 @@ impl<E: FrameworkEval + Sync> ComponentProver<SimdBackend> for FrameworkComponen
         }
         println!();
 
-        if trace_domain.log_size() < LOG_N_LANES + LOG_N_VERY_PACKED_ELEMS {
+        if trace_domain.log_size() < LOG_N_LANES + LOG_N_VERY_PACKED_ELEMS + 5 {
             // Fall back to CPU if the trace is too small.
             let mut col = accum.col.to_cpu();
 

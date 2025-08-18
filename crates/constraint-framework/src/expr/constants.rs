@@ -42,7 +42,7 @@ impl<
 }
 
 /// Default configuration type alias
-pub type DefaultConfig = Config<5, 16, 42, 10, 10, 10>;
+pub type DefaultConfig = Config<5, 2, 7, 1, 1, 3>;
 
 // For backward compatibility, re-export default values as constants
 pub const N_LOG_INSTANCES: u32 = DefaultConfig::N_LOG_INSTANCES;

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 use std::marker::PhantomData;
 
@@ -156,23 +156,10 @@ where
     }
 
     fn generate_compute_function(&mut self) {
-        // Use 16 threads per workgroup to allow more workgroups
-        // This will create 4 workgroups for 64 rows (64/16 = 4)
-        writeln!(self.shader_code, "@compute @workgroup_size(16, 1, 1)").unwrap();
-        writeln!(self.shader_code, "fn main(").unwrap();
-        writeln!(self.shader_code, "    @builtin(global_invocation_id) global_id: vec3<u32>,").unwrap();
-        writeln!(self.shader_code, "    @builtin(local_invocation_id) local_id: vec3<u32>,").unwrap();
-        writeln!(self.shader_code, "    @builtin(workgroup_id) workgroup_id: vec3<u32>").unwrap();
-        writeln!(self.shader_code, ") {{").unwrap();
-        writeln!(self.shader_code, "    // Each thread processes one row").unwrap();
-        writeln!(self.shader_code, "    let index = global_id.x;").unwrap();
-        writeln!(self.shader_code, "    ").unwrap();
-        writeln!(self.shader_code, "    // Bounds check to ensure we don't process beyond the array").unwrap();
-        writeln!(self.shader_code, "    if (index >= N_EXTENDED_ROWS) {{").unwrap();
-        writeln!(self.shader_code, "        return;").unwrap();
-        writeln!(self.shader_code, "    }}").unwrap();
-        writeln!(self.shader_code, "    ").unwrap();
-        writeln!(self.shader_code, "    var constraint_sum: QM31 = vec4<u32>(0u, 0u, 0u, 0u);").unwrap();
+        writeln!(self.shader_code, "@compute @workgroup_size(1)").unwrap();
+        writeln!(self.shader_code, "fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{").unwrap();
+        writeln!(self.shader_code, "    for (var index: u32 = 0u; index < N_EXTENDED_ROWS; index = index + 1u) {{").unwrap();
+        writeln!(self.shader_code, "        var constraint_sum: QM31 = vec4<u32>(0u, 0u, 0u, 0u);").unwrap();
         writeln!(self.shader_code).unwrap();
     }
 
@@ -193,7 +180,7 @@ where
                 };
                 writeln!(
                     self.shader_code,
-                    "    let {} = input.extended_trace[{}].data[{}];",
+                    "        let {} = input.extended_trace[{}].data[{}];",
                     var_name, col.idx, index_expr
                 ).unwrap();
             }
@@ -201,7 +188,7 @@ where
                 let var_name = self.get_reg_var(*dest);
                 writeln!(
                     self.shader_code,
-                    "    let {}: M31 = {}u;",
+                    "        let {}: M31 = {}u;",
                     var_name, value.0
                 ).unwrap();
             }
@@ -211,7 +198,7 @@ where
                 if let Some(&index) = self.intermediate_map.get(name) {
                     writeln!(
                         self.shader_code,
-                        "    let {}: M31 = output.intermediates[{}u]; // Load {}",
+                        "        let {}: M31 = output.intermediates[{}u]; // Load {}",
                         dest_var, index, name
                     ).unwrap();
                 } else {
@@ -220,7 +207,7 @@ where
                         "column_size" => {
                             writeln!(
                                 self.shader_code,
-                                "    let {}: M31 = input.column_size; // Load column_size",
+                                "        let {}: M31 = input.column_size; // Load column_size",
                                 dest_var
                             ).unwrap();
                         }
@@ -228,7 +215,7 @@ where
                             // Regular parameter - not implemented yet
                             writeln!(
                                 self.shader_code,
-                                "    // TODO: Load parameter {} into {}",
+                                "        // TODO: Load parameter {} into {}",
                                 name, dest_var
                             ).unwrap();
                         }
@@ -241,7 +228,7 @@ where
                 let rhs_var = self.get_reg_var(*rhs);
                 writeln!(
                     self.shader_code,
-                    "    let {}: M31 = m31_add({}, {});",
+                    "        let {}: M31 = m31_add({}, {});",
                     dest_var, lhs_var, rhs_var
                 ).unwrap();
             }
@@ -251,7 +238,7 @@ where
                 let rhs_var = self.get_reg_var(*rhs);
                 writeln!(
                     self.shader_code,
-                    "    let {}: M31 = m31_sub({}, {});",
+                    "        let {}: M31 = m31_sub({}, {});",
                     dest_var, lhs_var, rhs_var
                 ).unwrap();
             }
@@ -261,7 +248,7 @@ where
                 let rhs_var = self.get_reg_var(*rhs);
                 writeln!(
                     self.shader_code,
-                    "    let {}: M31 = m31_mul({}, {});",
+                    "        let {}: M31 = m31_mul({}, {});",
                     dest_var, lhs_var, rhs_var
                 ).unwrap();
             }
@@ -270,7 +257,7 @@ where
                 let op_var = self.get_reg_var(*op);
                 writeln!(
                     self.shader_code,
-                    "    let {}: M31 = m31_neg({});",
+                    "        let {}: M31 = m31_neg({});",
                     dest_var, op_var
                 ).unwrap();
             }
@@ -279,7 +266,7 @@ where
                 let op_var = self.get_reg_var(*op);
                 writeln!(
                     self.shader_code,
-                    "    let {}: M31 = m31_inverse({});",
+                    "        let {}: M31 = m31_inverse({});",
                     dest_var, op_var
                 ).unwrap();
             }
@@ -291,7 +278,7 @@ where
                 let col3_var = self.get_reg_var(col[3]);
                 writeln!(
                     self.shader_code,
-                    "    let {}: QM31 = vec4<u32>({}, {}, {}, {});",
+                    "        let {}: QM31 = vec4<u32>({}, {}, {}, {});",
                     var_name, col0_var, col1_var, col2_var, col3_var
                 ).unwrap();
             }
@@ -299,7 +286,7 @@ where
                 let var_name = self.get_reg4_var(*dest);
                 writeln!(
                     self.shader_code,
-                    "    let {}: QM31 = vec4<u32>({}u, {}u, {}u, {}u);",
+                    "        let {}: QM31 = vec4<u32>({}u, {}u, {}u, {}u);",
                     var_name, value.0.0.0, value.0.1.0, value.1.0.0, value.1.1.0
                 ).unwrap();
             }
@@ -309,7 +296,7 @@ where
                 if let Some(&index) = self.ext_intermediate_map.get(name) {
                     writeln!(
                         self.shader_code,
-                        "    let {}: QM31 = output.ext_intermediates[{}u]; // Load {}",
+                        "        let {}: QM31 = output.ext_intermediates[{}u]; // Load {}",
                         dest_var, index, name
                     ).unwrap();
                 } else {
@@ -318,21 +305,21 @@ where
                         "claimed_sum" => {
                             writeln!(
                                 self.shader_code,
-                                "    let {}: QM31 = input.claimed_sum; // Load claimed_sum",
+                                "        let {}: QM31 = input.claimed_sum; // Load claimed_sum",
                                 dest_var
                             ).unwrap();
                         }
                         name if name.ends_with("_z") => {
                             writeln!(
                                 self.shader_code,
-                                "    let {}: QM31 = input.lookup_elements.z; // Load lookup z",
+                                "        let {}: QM31 = input.lookup_elements.z; // Load lookup z",
                                 dest_var
                             ).unwrap();
                         }
                         name if name.ends_with("_alpha") => {
                             writeln!(
                                 self.shader_code,
-                                "    let {}: QM31 = input.lookup_elements.alpha; // Load lookup alpha",
+                                "        let {}: QM31 = input.lookup_elements.alpha; // Load lookup alpha",
                                 dest_var
                             ).unwrap();
                         }
@@ -344,20 +331,20 @@ where
                                 if let Ok(index) = index_str.parse::<u32>() {
                                     writeln!(
                                         self.shader_code,
-                                        "    let {}: QM31 = input.lookup_elements.alpha_powers[{}u]; // Load alpha power {}",
+                                        "        let {}: QM31 = input.lookup_elements.alpha_powers[{}u]; // Load alpha power {}",
                                         dest_var, index, index
                                     ).unwrap();
                                 } else {
                                     writeln!(
                                         self.shader_code,
-                                        "    // TODO: Invalid alpha power index in parameter {} -> {}",
+                                        "        // TODO: Invalid alpha power index in parameter {} -> {}",
                                         name, dest_var
                                     ).unwrap();
                                 }
                             } else {
                                 writeln!(
                                     self.shader_code,
-                                    "    // TODO: Load alpha power parameter {} into {}",
+                                    "        // TODO: Load alpha power parameter {} into {}",
                                     name, dest_var
                                 ).unwrap();
                             }
@@ -366,7 +353,7 @@ where
                             // Regular extension parameter - not implemented yet
                             writeln!(
                                 self.shader_code,
-                                "    // TODO: Load ext parameter {} into {}",
+                                "        // TODO: Load ext parameter {} into {}",
                                 name, dest_var
                             ).unwrap();
                         }
@@ -379,7 +366,7 @@ where
                 let rhs_var = self.get_reg4_var(*rhs);
                 writeln!(
                     self.shader_code,
-                    "    let {}: QM31 = qm31_add({}, {});",
+                    "        let {}: QM31 = qm31_add({}, {});",
                     dest_var, lhs_var, rhs_var
                 ).unwrap();
             }
@@ -389,7 +376,7 @@ where
                 let rhs_var = self.get_reg4_var(*rhs);
                 writeln!(
                     self.shader_code,
-                    "    let {}: QM31 = qm31_sub({}, {});",
+                    "        let {}: QM31 = qm31_sub({}, {});",
                     dest_var, lhs_var, rhs_var
                 ).unwrap();
             }
@@ -399,7 +386,7 @@ where
                 let rhs_var = self.get_reg4_var(*rhs);
                 writeln!(
                     self.shader_code,
-                    "    let {}: QM31 = qm31_mul({}, {});",
+                    "        let {}: QM31 = qm31_mul({}, {});",
                     dest_var, lhs_var, rhs_var
                 ).unwrap();
             }
@@ -408,7 +395,7 @@ where
                 let op_var = self.get_reg4_var(*op);
                 writeln!(
                     self.shader_code,
-                    "    let {}: QM31 = qm31_neg({});",
+                    "        let {}: QM31 = qm31_neg({});",
                     dest_var, op_var
                 ).unwrap();
             }
@@ -421,7 +408,7 @@ where
                 });
                 writeln!(
                     self.shader_code,
-                    "    output.intermediates[{}u] = {}; // Store {}",
+                    "        output.intermediates[{}u] = {}; // Store {}",
                     index, reg_var, name
                 ).unwrap();
             }
@@ -434,7 +421,7 @@ where
                 });
                 writeln!(
                     self.shader_code,
-                    "    output.ext_intermediates[{}u] = {}; // Store {}",
+                    "        output.ext_intermediates[{}u] = {}; // Store {}",
                     index, reg_var, name
                 ).unwrap();
             }
@@ -442,7 +429,7 @@ where
                 let reg_var = self.get_reg4_var(*reg);
                 writeln!(
                     self.shader_code,
-                    "    constraint_sum = qm31_add(constraint_sum, qm31_mul(input.random_coeff_powers[{}], {}));",
+                    "        constraint_sum = qm31_add(constraint_sum, qm31_mul(input.random_coeff_powers[{}], {}));",
                     self.constraint_index, reg_var
                 ).unwrap();
                 self.constraint_index += 1;
@@ -451,10 +438,11 @@ where
     }
 
     fn generate_footer(&mut self) {
-        writeln!(self.shader_code, "    // Store constraint_sum in the appropriate position").unwrap();
-        writeln!(self.shader_code, "    let packed_index = index / N_LANES;").unwrap();
-        writeln!(self.shader_code, "    let lane_index = index % N_LANES;").unwrap();
-        writeln!(self.shader_code, "    output.poly[packed_index][lane_index] = constraint_sum;").unwrap();
+        writeln!(self.shader_code, "        // Store constraint_sum in the appropriate position").unwrap();
+        writeln!(self.shader_code, "        let packed_index = index / N_LANES;").unwrap();
+        writeln!(self.shader_code, "        let lane_index = index % N_LANES;").unwrap();
+        writeln!(self.shader_code, "        output.poly[packed_index][lane_index] = constraint_sum;").unwrap();
+        writeln!(self.shader_code, "    }}").unwrap();
         writeln!(self.shader_code, "}}").unwrap();
     }
 

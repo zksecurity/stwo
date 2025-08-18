@@ -421,8 +421,8 @@ pub async fn run_five_fibonacci_wgsl_example() {
 pub async fn run_wide_fibonacci_wgsl_example() {
     println!("=== Wide Fibonacci WGSL Runner Example ===");
     
-    const FIB_SEQUENCE_LENGTH: usize = 10;
-    const LOG_N_INSTANCES: u32 = 6; // Same as the test
+    const FIB_SEQUENCE_LENGTH: usize = 3;
+    const LOG_N_INSTANCES: u32 = 5; // Same as the test
     
     // Generate the test trace and lookup data manually (based on generate_test_trace)
     let inputs = if LOG_N_INSTANCES < LOG_N_LANES {
@@ -481,7 +481,10 @@ pub async fn run_wide_fibonacci_wgsl_example() {
     let runner = WgslComputeRunner::new_from_evaluator(&evaluator);
     
     // Set up input data with the provided parameters
-    let random_coeff_powers = vec![QM31::from_u32_unchecked(1, 0, 0, 0)]; // (1 + 0i) + (0 + 0i)u
+    let random_coeff_powers = vec![
+        QM31::from_u32_unchecked(1598873276, 361619260, 9373774, 2085251225),
+        QM31::from_u32_unchecked(1, 0, 0, 0)
+    ];
     let denom_inv = vec![M31::from(65536), M31::from(2147418111)];
     
     // Run the computation with wide fibonacci trace data
